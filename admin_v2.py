@@ -2409,11 +2409,31 @@ function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go.
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
 })();</script>"""
 
+def _patch_legacy_footer(html):
+    """목업 원본 푸터의 구형 회사정보 줄을 법정 실값으로 현장 대체."""
+    info = biz_info()
+    total = 0
+    html, n = re.subn(r'주식회사\s*밀집', '맵달서울성수', html); total += n
+    html, n = re.subn(r'사업자등록번호\s*:?\s*\[\s*기입\s*필요\s*\]',
+                      '사업자등록번호: ' + info['reg'], html); total += n
+    html, n = re.subn(r'통신판매업신고\s*:?\s*\[\s*기입\s*필요\s*\]',
+                      '통신판매업신고: ' + info['mail_order'] + ' · 호스팅서비스 제공: Render Services, Inc.', html); total += n
+    html, n = re.subn(r'help@mealzip\.kr', info['email'], html); total += n
+    if total:
+        links = ('<a href="/terms.html" style="color:#c9c9c9;text-decoration:none">이용약관</a>'
+                 '&nbsp;·&nbsp;<a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a>'
+                 '&nbsp;&nbsp;&nbsp;')
+        html, n2 = re.subn(r'(©\s*2026\s*MEAL\s*ZIP)', links + r'\1', html, count=1)
+        if not n2:
+            html = html.replace('맵달서울성수', links + '<br>맵달서울성수', 1)
+    return html, total
+
 def _inject_auth(html):
+    html, patched = _patch_legacy_footer(html)
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
-    if 'mpFooter' not in html: add += footer_snippet()
+    if (not patched) and ('mpFooter' not in html): add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
     return (html[:i] + add + html[i:]) if i >= 0 else (html + add)

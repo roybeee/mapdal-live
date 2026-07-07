@@ -2362,10 +2362,10 @@ TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta
 <p>이 약관은 2026년 7월 7일부터 시행합니다.</p>
 </main></body></html>'''
 
-FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#9a9a9a;font:12px/1.9 'IBM Plex Sans KR',sans-serif;padding:26px 20px 34px;margin-top:50px">
+FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#fff;font:12px/1.9 'IBM Plex Sans KR',sans-serif;padding:26px 20px 34px;margin-top:50px">
 <div style="max-width:1180px;margin:0 auto">
-<div style="margin-bottom:10px"><a href="/terms.html" style="color:#e6e6e6;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a></div>
-<div><span style="color:#ddd;font-weight:700">맵달서울성수</span> · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 (성수동2가)<br>
+<div style="margin-bottom:10px"><a href="/terms.html" style="color:#fff;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a></div>
+<div><span style="color:#fff;font-weight:700">맵달서울성수</span> · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 (성수동2가)<br>
 사업자등록번호 {reg} · 통신판매업신고 {mail_order} · 전화 {phone} · 이메일 {email}<br>
 호스팅서비스 제공: Render Services, Inc.<br>
 <span style="font-size:11px;color:#777">MAPDAL SEOUL — SHOP SEONGSU, FROM ANYWHERE.</span></div>
@@ -2420,12 +2420,19 @@ def _patch_legacy_footer(html):
                       '통신판매업신고: ' + info['mail_order'] + ' · 호스팅서비스 제공: Render Services, Inc.', html); total += n
     html, n = re.subn(r'help@mealzip\.kr', info['email'], html); total += n
     if total:
-        links = ('<a href="/terms.html" style="color:#c9c9c9;text-decoration:none">이용약관</a>'
+        links = ('<a href="/terms.html" style="color:#fff;text-decoration:none">이용약관</a>'
                  '&nbsp;·&nbsp;<a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a>'
                  '&nbsp;&nbsp;&nbsp;')
         html, n2 = re.subn(r'(©\s*2026\s*MEAL\s*ZIP)', links + r'\1', html, count=1)
         if not n2:
             html = html.replace('맵달서울성수', links + '<br>맵달서울성수', 1)
+        if 'mpFootWhite' not in html:
+            html += ('<script id="mpFootWhite">(function(){try{'
+                     'var els=document.querySelectorAll("footer *,footer");'
+                     'for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";'
+                     'if(/\uc0ac\uc5c5\uc790\ub4f1\ub85d\ubc88\ud638|\ud1b5\uc2e0\ud310\ub9e4\uc5c5\uc2e0\uace0|\ub9f5\ub2ec\uc11c\uc6b8\uc131\uc218|MEAL ZIP/.test(t)'
+                     '&&t.length<420&&e.children.length<10){e.style.color="#fff";}}'
+                     '}catch(e){}})();</script>')
     return html, total
 
 def _inject_auth(html):

@@ -176,7 +176,7 @@ def ensure_ready():
             try: run("ALTER TABLE members ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
     lcx = _cols('member_likes')
-    for col, typ in (('page', 'TEXT'), ('pname', 'TEXT'), ('pprice', 'INTEGER')):
+    for col, typ in (('page', 'TEXT'), ('pname', 'TEXT'), ('pprice', 'INTEGER'), ('pimg', 'TEXT')):
         if lcx and col not in lcx:
             try: run("ALTER TABLE member_likes ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
@@ -1843,8 +1843,14 @@ async function receipts(){if(!OV.linked){$('#pane').innerHTML=needPhone();return
  '<div class="hint">세금계산서·현금영수증은 결제 시 신청 내역에 따라 토스 영수증에서 확인됩니다.</div></div>'}
 
 async function likesPane(){const d=await api('/api/member/likes');
+ const thumb=p=>p.img?'<img src="'+esc(p.img)+'" style="width:64px;height:64px;object-fit:cover;display:block" onerror="this.outerHTML=likePh()">':likePh();
+ window.likePh=()=>'<div style=\"width:64px;height:64px;background:#141414;color:#FFB000;display:flex;align-items:center;justify-content:center;font-family:Black Han Sans;font-size:20px\">M</div>';
  $('#pane').innerHTML='<div class="panel"><h3>좋아요 <small style="color:#888;font-weight:400">'+d.rows.length+'개</small></h3>'+
- (d.rows.length?'<table>'+d.rows.map(p=>'<tr><td><a href="'+esc(p.link)+'" style="color:inherit">'+esc(p.name)+'</a></td><td class="r mono">'+(p.price?won(p.price):'-')+'</td><td>'+(p.soldout?'<span class="tagst s3">품절</span>':'<span class="tagst s2">구매가능</span>')+'</td>'+
+ (d.rows.length?'<table>'+d.rows.map(p=>'<tr>'+
+ '<td style="width:72px;padding:8px 4px"><a href="'+esc(p.link)+'">'+thumb(p)+'</a></td>'+
+ '<td><a href="'+esc(p.link)+'" style="color:inherit;font-weight:500">'+esc(p.name)+'</a></td>'+
+ '<td class="r mono" style="white-space:nowrap">'+(p.price?won(p.price):'-')+'</td>'+
+ '<td>'+(p.soldout?'<span class="tagst s3">품절</span>':'<span class="tagst s2">구매가능</span>')+'</td>'+
  '<td class="r"><button class="b ghost" onclick="unlike(\''+p.rid+'\')">해제</button></td></tr>').join('')+'</table>':'<div class="empty">SHOP과 상품 페이지의 ♥ 버튼으로 담아보세요</div>')+'</div>'}
 async function unlike(rid){await post('/api/member/likes/remove',{rid});likesPane()}
 
@@ -2085,6 +2091,7 @@ function hrefOf(a){try{return a.getAttribute('href')||''}catch(e){return ''}}
 function key(h){return h.split('#')[0]}
 function nameOf(a){var t=(a.textContent||'').replace(/\s+/g,' ').trim();var i=t.indexOf('\u20A9');if(i>0)t=t.slice(0,i);return t.trim().slice(0,60)}
 function priceOf(a){var m=(a.textContent||'').match(/\u20A9\s*([\d,]+)/);return m?Number(m[1].replace(/,/g,'')):0}
+function imgOf(a){var i=a.querySelector('img');if(!i)return '';return (i.currentSrc||i.getAttribute('src')||'').slice(0,300)}
 function mkBtn(a,h){var b=document.createElement('button');b.className='mpLike';b.type='button';
  b.style.cssText='position:absolute;top:8px;right:8px;z-index:5;width:32px;height:32px;border:0;border-radius:50%;background:rgba(255,255,255,.92);color:#E8332A;font-size:16px;line-height:32px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.18);padding:0';
  paint(b,!!ST.liked[h]);
@@ -2092,7 +2099,7 @@ function mkBtn(a,h){var b=document.createElement('button');b.className='mpLike';
   if(!ST.login){if(confirm('로그인이 필요합니다. 로그인 페이지로 이동할까요?'))location.href='/account';return}
   var on=!ST.liked[h];
   fetch('/api/member/likes/page',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({href:h,name:nameOf(a),price:priceOf(a),on:on})})
+   body:JSON.stringify({href:h,name:nameOf(a),price:priceOf(a),img:imgOf(a),on:on})})
   .then(function(r){if(!r.ok)throw 0;ST.liked[h]=on?1:0;paint(b,on)})
   .catch(function(){alert('잠시 후 다시 시도해 주세요')})};
  var st=getComputedStyle(a).position;if(st==='static'||!st)a.style.position='relative';
@@ -2452,12 +2459,59 @@ def api_m_like(request: Request, body: dict = Body(...)):
         run('DELETE FROM member_likes WHERE id=?', (ex['id'],))
     return {'ok': True, 'liked': bool(body.get('on'))}
 
+def _k2g_images():
+    if 'k2gimg' in _state: return _state['k2gimg']
+    mp = {}
+    for fp in (os.path.join(BASE, 'data', 'k2g_catalog.json'), os.path.join(STATIC_DIR, 'k2g_catalog.json')):
+        try:
+            data = json.load(open(fp, encoding='utf-8'))
+            items = data.values() if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            for it in items:
+                if not isinstance(it, dict): continue
+                u = str(it.get('uid') or it.get('id') or it.get('goodsno') or '')
+                img = next((it[k] for k in ('img', 'image', 'thumb', 'thumbnail', 'image_url', 'img_url', 'src') if it.get(k)), '')
+                if u and img: mp[u] = str(img)[:300]
+            if mp: break
+        except Exception:
+            continue
+    _state['k2gimg'] = mp
+    return mp
+
+def _page_hero(page):
+    try:
+        html, _, _ = _page_effective(os.path.basename((page or '').split('?')[0]))
+        if not html: return ''
+        for mt in re.finditer(r'<img[^>]+src=["\']([^"\']+)', html, re.I):
+            src = mt.group(1)
+            if 'logo' in src.lower(): continue
+            return src[:300]
+    except Exception:
+        pass
+    return ''
+
+def like_image(r):
+    if r.get('pimg'): return r['pimg']
+    if r.get('jimg'): return r['jimg']
+    src = ''
+    uid_m = re.search(r'uid=([A-Za-z0-9_-]{3,})', r.get('page') or '') or re.search(r'::?([0-9]{4,})$', r.get('product_id') or '')
+    if not uid_m and (r.get('product_id') or '').startswith('k2g::'):
+        uid_m = re.match(r'k2g::(.+)$', r['product_id'])
+    if uid_m:
+        src = _k2g_images().get(uid_m.group(1), '')
+    if not src and (r.get('page') or '').split('?')[0].endswith('.html'):
+        src = _page_hero(r['page'])
+    if src:
+        try: run('UPDATE member_likes SET pimg=? WHERE id=?', (src, r['rid']))
+        except Exception: pass
+    return src
+
 @admin_router.get('/api/member/likes')
 def api_m_likes(request: Request):
     m = member_required(request)
     nm = _state['pname'] or 'id'; pr = _state['pprice']
-    sel = 'l.id AS rid, l.product_id, l.page, l.pname, l.pprice, p.%s AS jname, p.stock, p.soldout' % nm
+    sel = 'l.id AS rid, l.product_id, l.page, l.pname, l.pprice, l.pimg, p.%s AS jname, p.stock, p.soldout' % nm
     if pr: sel += ', p.%s AS jprice' % pr
+    if 'img' in _state['pcols']: sel += ', p.img AS jimg'
     rs = rows('SELECT %s FROM member_likes l LEFT JOIN products p ON p.id=l.product_id WHERE l.member_id=? ORDER BY l.created DESC LIMIT 200' % sel, (m['id'],))
     out = []
     for r in rs:
@@ -2466,6 +2520,7 @@ def api_m_likes(request: Request):
                     'name': r.get('jname') or r.get('pname') or pid or r.get('page') or '',
                     'price': num(r.get('jprice')) if r.get('jprice') is not None else num(r.get('pprice')),
                     'link': ('/p/' + pid) if pid else ('/' + (r.get('page') or '').lstrip('/')),
+                    'img': like_image(r),
                     'soldout': (num(r.get('soldout')) or num(r.get('stock')) <= 0) if pid else False})
     return {'rows': out}
 
@@ -2515,19 +2570,20 @@ def api_m_like_page(request: Request, body: dict = Body(...)):
     on = bool(body.get('on'))
     pname = (body.get('name') or '').strip()[:80] or href
     pprice = num(body.get('price'))
+    pimg = (body.get('img') or '').strip()[:300]
     pid = resolve_page_pid(href)
     if pid:
         ex = one('SELECT id FROM member_likes WHERE member_id=? AND product_id=?', (m['id'], pid))
         if on and not ex:
-            run('INSERT INTO member_likes(id,member_id,product_id,created,page,pname,pprice) VALUES(?,?,?,?,?,?,?)',
-                (uid(), m['id'], pid, now_iso(), href, pname, pprice))
+            run('INSERT INTO member_likes(id,member_id,product_id,created,page,pname,pprice,pimg) VALUES(?,?,?,?,?,?,?,?)',
+                (uid(), m['id'], pid, now_iso(), href, pname, pprice, pimg))
         elif not on and ex:
             run('DELETE FROM member_likes WHERE id=?', (ex['id'],))
     else:
         ex = one('SELECT id FROM member_likes WHERE member_id=? AND page=?', (m['id'], href))
         if on and not ex:
-            run('INSERT INTO member_likes(id,member_id,product_id,created,page,pname,pprice) VALUES(?,?,?,?,?,?,?)',
-                (uid(), m['id'], None, now_iso(), href, pname, pprice))
+            run('INSERT INTO member_likes(id,member_id,product_id,created,page,pname,pprice,pimg) VALUES(?,?,?,?,?,?,?,?)',
+                (uid(), m['id'], None, now_iso(), href, pname, pprice, pimg))
         elif not on and ex:
             run('DELETE FROM member_likes WHERE id=?', (ex['id'],))
     return {'ok': True, 'liked': on}

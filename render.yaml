@@ -1,27 +1,22 @@
-# MAPDAL SEOUL v2 — Render Blueprint (웹서비스 + 관리형 PostgreSQL + 오토스케일링)
-# 사용법: Render 대시보드 → New → Blueprint → 이 저장소 선택 → Apply
 services:
   - type: web
     name: mapdal-seoul
     runtime: docker
-    plan: standard            # 트래픽 대비 기본 권장 (2GB RAM) · 초기 절약 시 starter
+    plan: starter
     healthCheckPath: /healthz
     autoDeploy: true
-    scaling:                  # 오토스케일링 (Professional 워크스페이스에서 활성화됨)
-      minInstances: 1
-      maxInstances: 4
-      targetCPUPercent: 60
     envVars:
-      - key: DATABASE_URL    # 관리형 PostgreSQL 자동 연결
+      - key: DATABASE_URL
         fromDatabase:
           name: mapdal-db
           property: connectionString
       - key: TOSS_CLIENT_KEY
-        sync: false           # 대시보드에서 직접 입력
+        sync: false
       - key: TOSS_SECRET_KEY
         sync: false
       - key: ADMIN_TOKEN
-        generateValue: true   # 강력한 토큰 자동 생성
+        generateValue: true
+
 databases:
   - name: mapdal-db
-    plan: basic-1gb           # 시점 복구(PITR) 지원 관리형 PostgreSQL
+    plan: basic-1gb

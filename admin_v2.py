@@ -171,7 +171,8 @@ def ensure_ready():
     mcx = _cols('members')
     for col, typ in (('pw','TEXT'),('phone','TEXT'),('phone_verified','INTEGER DEFAULT 0'),
                      ('points','INTEGER DEFAULT 0'),('bank','TEXT'),('acct','TEXT'),
-                     ('acct_name','TEXT'),('fav_store','INTEGER DEFAULT 0')):
+                     ('acct_name','TEXT'),('fav_store','INTEGER DEFAULT 0'),
+                     ('gender','TEXT'),('age_range','TEXT'),('birth','TEXT'),('ci','TEXT')):
         if mcx and col not in mcx:
             try: run("ALTER TABLE members ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
@@ -778,6 +779,17 @@ def api_notify_send(request: Request, body: dict = Body(...)):
     if status == 'FAILED': raise HTTPException(400, '발송 실패: ' + detail)
     return {'ok': True, 'dry': False, 'preview': text}
 
+@admin_router.post('/admin/api/notify/test')
+def api_notify_test(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '실발송 테스트')
+    ph = digits(body.get('phone'))
+    if len(ph) < 10: raise HTTPException(400, '수신번호를 확인하세요')
+    ok, dry = system_sms(ph, '[맵달SEOUL] 발송 테스트입니다. 이 문자가 도착했다면 문자 연동이 정상입니다.', '연동테스트')
+    audit(a, '발송테스트', ph, 'DRY' if dry else ('SENT' if ok else 'FAILED'))
+    if dry: return {'ok': True, 'dry': True, 'msg': '발송사 미설정 — 기록 모드로 저장했습니다'}
+    if not ok: raise HTTPException(400, '발송 실패 — 발송 기록의 상세 사유를 확인하세요 (발신번호 미등록/잔액 부족 등)')
+    return {'ok': True, 'dry': False, 'msg': '발송 성공! 수신 확인해 보세요'}
+
 @admin_router.get('/admin/api/notify/log')
 def api_notify_log(request: Request):
     a = get_actor(request); need(a, 0)
@@ -853,7 +865,8 @@ def api_system(request: Request):
     return {'db': 'PostgreSQL' if IS_PG else 'SQLite', 'db_ok': db_ok, 'orders': oc, 'products': pc,
             'customers': cc, 'toss_mode': mode,
             'google_oauth': bool(_genv('GOOGLE_CLIENT_ID')),
-            'apple_oauth': bool(os.environ.get('APPLE_CLIENT_ID')),
+            'apple_oauth': bool(_genv('APPLE_CLIENT_ID')),
+            'kakao_oauth': bool(_genv('KAKAO_CLIENT_ID')),
             'solapi': '설정됨 (발신 %s%s)' % (cf['sender'], ' · 알림톡 연동' if cf['pf'] else ' · SMS만') if cf['key'] else '미설정 (기록 모드)',
             'paykey_col': _state['paykey'] or '(감지 안 됨)', 'time_kst': kst_now().strftime('%Y-%m-%d %H:%M')}
 
@@ -1133,10 +1146,11 @@ function custMode(m){CMODE=m;$('#cm1').className='btn sm'+(m==='buyers'?'':' gho
  if(m==='buyers')loadCust(1);else loadMembers()}
 async function loadMembers(){try{const d=await api('/admin/api/members');
  $('#clist').innerHTML=`<div class="hint" style="margin-bottom:8px">소셜 계정(Google/Apple)으로 가입한 회원 목록입니다. 총 ${d.total}명.</div>
- <table><tr><th>이름</th><th>이메일</th><th>가입방법</th><th>휴대폰</th><th class="right">포인트</th><th>가입일시</th><th></th></tr>
+ <table><tr><th>이름</th><th>이메일</th><th>가입방법</th><th>휴대폰</th><th>성별/출생</th><th class="right">포인트</th><th>가입일시</th><th></th></tr>
  ${d.rows.map(m=>`<tr><td>${esc(m.name)||'-'}</td><td class="mono">${esc(m.email)||'-'}</td>
- <td>${m.provider==='google'?'Google':m.provider==='apple'?'Apple':m.provider==='email'?'이메일':esc(m.provider)}</td>
+ <td>${({google:'Google',apple:'Apple',email:'이메일',kakao:'카카오'})[m.provider]||esc(m.provider)}</td>
  <td class="mono">${esc(m.phone)||'-'}${m.verified?' <span class="st PAID" style="font-size:10px">인증</span>':''}</td>
+ <td>${m.gender==='F'?'여':m.gender==='M'?'남':'-'}${m.birth?' · '+esc(m.birth):''}</td>
  <td class="right mono">${m.points.toLocaleString()}P</td><td class="mono">${esc(m.created)}</td>
  <td>${can(2)?`<button class="btn sm ghost" onclick="grantPoints('${m.id}','${esc(m.email)}')">포인트</button>`:''}</td></tr>`).join('')||'<tr><td colspan=4 class="loading">가입 회원 없음 — 사이트의 /account 에서 가입할 수 있습니다</td></tr>'}</table>`;
  }catch(e){$('#clist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
@@ -1172,12 +1186,16 @@ async function custNotify(ph,name){try{const r=await api('/admin/api/notify/send
  body:JSON.stringify({phone:ph,name:name,template:$('#ctpl').value})});
  toast(r.dry?'기록 모드 (발송사 미설정)':'발송 완료')}catch(e){alert(e.message)}}
 
+async function testSend(){const ph=$('#tstph').value;if(!ph)return toast('수신번호를 입력하세요');
+ try{const r=await api('/admin/api/notify/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:ph})});
+ toast(r.msg);loadNotify()}catch(e){alert(e.message)}}
 async function loadNotify(){try{const d=await api('/admin/api/notify/templates');TPLCACHE=d.rows;
  const c=d.conf;
  $('#nconf').innerHTML=`<div class="cards">
  <div class="card ${c.key?'':'alert'}"><div class="k">발송사 (솔라피)</div><div class="v" style="font-size:15px">${c.key?'연동됨':'미설정'}</div><div class="s">${c.key?'':'미설정 시 발송 대신 로그만 기록'}</div></div>
  <div class="card"><div class="k">발신번호</div><div class="v" style="font-size:15px">${c.sender?'등록됨':'-'}</div></div>
- <div class="card"><div class="k">카카오 알림톡</div><div class="v" style="font-size:15px">${c.pf?'채널 연동됨':'미연동'}</div><div class="s">${c.pf?'':'연동 전엔 SMS 템플릿 사용'}</div></div></div>`;
+ <div class="card"><div class="k">카카오 알림톡</div><div class="v" style="font-size:15px">${c.pf?'채널 연동됨':'미연동'}</div><div class="s">${c.pf?'':'연동 전엔 SMS 템플릿 사용'}</div></div>
+ <div class="card"><div class="k">실발송 테스트</div><div class="v" style="font-size:13px;margin-top:8px"><input id="tstph" placeholder="010-0000-0000" style="width:120px;padding:5px 7px;font-size:12px"> <button class="btn sm" onclick="testSend()">발송</button></div><div class="s">키 입력 후 본인 번호로 확인</div></div></div>`;
  $('#tpls').innerHTML=`<table><tr><th>이름</th><th>종류</th><th>내용 / 템플릿ID</th><th></th></tr>
  ${d.rows.map(t=>`<tr><td><b>${esc(t.name)}</b></td><td>${t.kind==='alimtalk'?'알림톡':'SMS'}</td>
  <td style="font-size:12px;white-space:pre-wrap">${esc(t.kind==='alimtalk'?('템플릿ID: '+(t.template_id||'(미입력)')):t.body)}</td>
@@ -1537,6 +1555,11 @@ def member_of(request: Request):
     if not s or (s.get('expires') or '') <= now_iso(): return None
     return one('SELECT * FROM members WHERE id=?', (s['member_id'],))
 
+def kphone_norm(p):
+    d = digits(p)
+    if d.startswith('82'): d = '0' + d[2:]
+    return d
+
 def member_upsert(provider, sub, email, name):
     row = one('SELECT * FROM members WHERE provider=? AND sub=?', (provider, sub))
     if row:
@@ -1605,6 +1628,96 @@ def auth_google_cb(request: Request):
     except Exception:
         import traceback; traceback.print_exc()
         return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>가입 처리 중 오류가 발생했습니다</h3><p>잠시 후 다시 시도해 주세요. 문제가 계속되면 관리자에게 문의하세요.</p><a href="/account">다시 시도</a>', status_code=500)
+    from fastapi.responses import RedirectResponse
+    resp = RedirectResponse('/account', status_code=302)
+    resp.set_cookie('mp_member', sid, httponly=True, secure=True, samesite='lax', max_age=2592000)
+    resp.delete_cookie('mp_oauth')
+    return resp
+
+@admin_router.get('/auth/kakao')
+def auth_kakao(request: Request):
+    cid = _genv('KAKAO_CLIENT_ID')
+    if not cid:
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>카카오 로그인 준비 중</h3><p>관리자가 KAKAO_CLIENT_ID(REST API 키) 환경변수를 설정하면 활성화됩니다.</p><a href="/account">돌아가기</a>')
+    state = secrets.token_urlsafe(16)
+    q = urllib.parse.urlencode({'client_id': cid, 'redirect_uri': _burl(request) + '/auth/kakao/callback',
+                                'response_type': 'code', 'state': state})
+    from fastapi.responses import RedirectResponse
+    resp = RedirectResponse('https://kauth.kakao.com/oauth/authorize?' + q, status_code=302)
+    resp.set_cookie('mp_oauth', state, max_age=600, httponly=True, secure=True, samesite='none')
+    return resp
+
+@admin_router.get('/auth/kakao/callback')
+def auth_kakao_cb(request: Request):
+    try: ensure_ready()
+    except Exception: pass
+    p = request.query_params
+    if p.get('error'):
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>카카오 로그인이 취소되었습니다</h3><a href="/account">다시 시도</a>', status_code=400)
+    if not p.get('code') or p.get('state') != (request.cookies.get('mp_oauth') or '_'):
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>인증 세션이 만료되었습니다</h3><a href="/account">다시 시도</a>', status_code=400)
+    form = {'grant_type': 'authorization_code', 'client_id': _genv('KAKAO_CLIENT_ID'),
+            'redirect_uri': _burl(request) + '/auth/kakao/callback', 'code': p['code']}
+    if _genv('KAKAO_CLIENT_SECRET'):
+        form['client_secret'] = _genv('KAKAO_CLIENT_SECRET')
+    try:
+        tok = _post_form('https://kauth.kakao.com/oauth/token', form)
+        req = urllib.request.Request('https://kapi.kakao.com/v2/user/me',
+                                     headers={'Authorization': 'Bearer ' + tok.get('access_token', '')})
+        with urllib.request.urlopen(req, timeout=15) as r2:
+            ui = json.loads(r2.read().decode())
+    except urllib.error.HTTPError as e:
+        try: err = json.loads(e.read().decode())
+        except Exception: err = {}
+        print('KAKAO TOKEN ERROR:', err)
+        kcode = err.get('error_code') or err.get('error', 'unknown')
+        hint = {'KOE101': 'KAKAO_CLIENT_ID 값이 REST API 키가 맞는지 확인하세요 (네이티브/JS 키 아님).',
+                'KOE006': '카카오 개발자 콘솔 > 카카오 로그인 > Redirect URI에 https://mapdal.kr/auth/kakao/callback 를 정확히 등록하세요.',
+                'KOE010': 'KAKAO_CLIENT_SECRET 값이 콘솔의 Client Secret과 다릅니다.',
+                'invalid_client': 'REST API 키 또는 Client Secret이 올바르지 않습니다.',
+                'KOE320': '인증 코드가 만료되었습니다. 다시 시도해 주세요.',
+                'invalid_grant': '인증 코드가 만료되었습니다. 다시 시도해 주세요.'}.get(kcode, '앱 키·Redirect URI·Client Secret 설정을 확인하세요.')
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px;max-width:560px"><h3>카카오 인증에 실패했습니다 <small style="color:#c0392b">(%s)</small></h3><p style="line-height:1.7">%s</p><a href="/account">다시 시도</a>' % (kcode, hint), status_code=400)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>카카오 인증에 실패했습니다</h3><p>잠시 후 다시 시도해 주세요.</p><a href="/account">다시 시도</a>', status_code=400)
+    acct = ui.get('kakao_account') or {}
+    nick = ((acct.get('profile') or {}).get('nickname') or '').strip()
+    rname = (acct.get('name') or '').strip() or nick   # 실명 동의 시 실명 우선
+    try:
+        mid, is_new = member_upsert('kakao', str(ui.get('id', '')), acct.get('email', '') or '', rname)
+        # 검수 승인된 항목이 응답에 실릴 때마다 자동 반영 (미승인 항목은 그냥 없음)
+        sets, args = [], []
+        kp = kphone_norm(acct.get('phone_number') or '')
+        if len(kp) >= 10:  # 카카오 본인인증 번호 → 즉시 인증 처리(주문 자동연동)
+            sets += ['phone=?', 'phone_verified=1']; args.append(kp)
+        if acct.get('gender'): sets.append('gender=?'); args.append('F' if acct['gender'] == 'female' else 'M')
+        if acct.get('age_range'): sets.append('age_range=?'); args.append(str(acct['age_range'])[:10])
+        by, bd = str(acct.get('birthyear') or ''), str(acct.get('birthday') or '')
+        if by or bd:
+            sets.append('birth=?'); args.append((by + ('-' + bd[:2] + '-' + bd[2:4] if len(bd) == 4 else '')).strip('-')[:10])
+        if acct.get('ci'): sets.append('ci=?'); args.append(str(acct['ci'])[:120])
+        if sets:
+            run('UPDATE members SET %s WHERE id=?' % ', '.join(sets), tuple(args + [mid]))
+        # 배송지 동의 시: 카카오 배송지 → 배송지 관리에 자동 등록 (최초 1회)
+        try:
+            if not one('SELECT id FROM member_addresses WHERE member_id=? LIMIT 1', (mid,)):
+                req2 = urllib.request.Request('https://kapi.kakao.com/v1/user/shipping_address',
+                                              headers={'Authorization': 'Bearer ' + tok.get('access_token', '')})
+                with urllib.request.urlopen(req2, timeout=10) as r3:
+                    sa = json.loads(r3.read().decode())
+                for ad in (sa.get('shipping_addresses') or [])[:1]:
+                    run('INSERT INTO member_addresses VALUES(?,?,?,?,?,?,?,?,?,?)',
+                        (uid(), mid, (ad.get('name') or '기본')[:20], (ad.get('receiver_name') or rname)[:30],
+                         digits(ad.get('receiver_phone_number1') or kp), str(ad.get('zone_number') or '')[:10],
+                         (ad.get('base_address') or '')[:120], (ad.get('detail_address') or '')[:80],
+                         1, now_iso()))
+        except Exception:
+            pass
+        sid = member_session_make(mid)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>가입 처리 중 오류가 발생했습니다</h3><a href="/account">다시 시도</a>', status_code=500)
     from fastapi.responses import RedirectResponse
     resp = RedirectResponse('/account', status_code=302)
     resp.set_cookie('mp_member', sid, httponly=True, secure=True, samesite='lax', max_age=2592000)
@@ -1867,7 +1980,9 @@ async function profile(){const m=OV;
  $('#pane').innerHTML='<div class="panel"><h3>회원정보 수정</h3>'+
  '<label>이름</label><input id="pfn" value="'+esc(m.name)+'">'+
  '<label>이메일 ('+esc(m.provider)+' 가입)</label><input value="'+esc(m.email)+'" disabled style="background:#f4f3ef">'+
- '<div style="margin-top:14px"><button class="b" onclick="saveName()">이름 저장</button></div>'+
+ '<div class="row2"><div><label>성별</label><select id="pfg"><option value="">선택 안 함</option><option value="F" '+(m.gender==='F'?'selected':'')+'>여성</option><option value="M" '+(m.gender==='M'?'selected':'')+'>남성</option></select></div>'+
+ '<div><label>생년월일</label><input id="pfb" type="date" value="'+esc(m.birth)+'"></div></div>'+
+ '<div style="margin-top:14px"><button class="b" onclick="saveName()">저장</button></div>'+
  (m.has_pw?'<hr style="border:0;border-top:1px solid var(--line);margin:18px 0"><h3>비밀번호 변경</h3>'+
  '<div class="row2"><div><label>현재 비밀번호</label><input id="pw0" type="password"></div><div></div>'+
  '<div><label>새 비밀번호 (8자 이상)</label><input id="pw1" type="password"></div><div><label>새 비밀번호 확인</label><input id="pw2" type="password"></div></div>'+
@@ -1878,7 +1993,7 @@ async function profile(){const m=OV;
  '<div><label>&nbsp;</label><button class="b" style="width:100%;padding:10px" onclick="sendCode()">인증번호 발송</button></div></div>'+
  '<div class="row2" id="vrow" style="display:none;margin-top:4px"><div><label>인증번호 6자리</label><input id="vcd" maxlength="6"></div>'+
  '<div><label>&nbsp;</label><button class="b red" style="width:100%;padding:10px" onclick="verifyCode()">확인</button></div></div></div>'}
-async function saveName(){try{await post('/api/member/profile',{name:$('#pfn').value});toast('저장되었습니다');OV=await api('/api/member/overview');boot()}catch(e){toast(e.message)}}
+async function saveName(){try{await post('/api/member/profile',{name:$('#pfn').value,gender:$('#pfg').value,birth:$('#pfb').value});toast('저장되었습니다');OV=await api('/api/member/overview');boot()}catch(e){toast(e.message)}}
 async function savePw(){if($('#pw1').value!==$('#pw2').value)return toast('새 비밀번호가 서로 다릅니다');
  try{await post('/api/member/password',{old:$('#pw0').value,new:$('#pw1').value});toast('변경되었습니다')}catch(e){toast(e.message)}}
 async function sendCode(){try{const r=await post('/api/member/phone/send',{phone:$('#phn').value});
@@ -1965,7 +2080,10 @@ def account_page(request: Request):
         return HTMLResponse(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False)))
     g_on = bool(_genv('GOOGLE_CLIENT_ID'))
     a_on = all(_apple_conf().values())
-    social = ('<a class="sbtn%s" href="/auth/google">G · Google 계정으로 계속하기%s</a>'
+    k_on = bool(_genv('KAKAO_CLIENT_ID'))
+    social = ('<a class="sbtn kakao%s" href="/auth/kakao" style="background:#FEE500;color:#191919;border-color:#FEE500;font-weight:800">TALK · 카카오로 3초만에 시작하기%s</a>'
+              % ('' if k_on else ' off', '' if k_on else ' (준비 중)')
+              + '<a class="sbtn%s" href="/auth/google">G · Google 계정으로 계속하기%s</a>'
               '<a class="sbtn apple%s" href="/auth/apple">&#63743; · Apple 계정으로 계속하기%s</a>'
               % ('' if g_on else ' off', '' if g_on else ' (준비 중)',
                  '' if a_on else ' off', '' if a_on else ' (준비 중)'))
@@ -1977,8 +2095,11 @@ def account_page(request: Request):
         '<div id="fL"><label>이메일</label><input id="le" type="email" autocomplete="email">'
         '<label>비밀번호</label><input id="lp" type="password" autocomplete="current-password">'
         '<button class="go" onclick="doLogin()">로그인</button></div>'
-        '<div id="fS" style="display:none"><label>이름</label><input id="sn" autocomplete="name">'
-        '<label>이메일</label><input id="se" type="email" autocomplete="email">'
+        '<div id="fS" style="display:none"><label>이름 *</label><input id="sn" autocomplete="name">'
+        '<label>성별 *</label><div style="display:flex;gap:16px;padding:4px 2px"><label style="margin:0;font-weight:400;font-size:13px"><input type="radio" name="sg" value="F" style="width:auto"> 여성</label><label style="margin:0;font-weight:400;font-size:13px"><input type="radio" name="sg" value="M" style="width:auto"> 남성</label></div>'
+        '<label>휴대폰 번호 *</label><input id="sph" placeholder="010-0000-0000" autocomplete="tel">'
+        '<label>생년월일 (선택)</label><input id="sbi" type="date">'
+        '<label>이메일 *</label><input id="se" type="email" autocomplete="email">'
         '<label>비밀번호 (8자 이상)</label><input id="sp" type="password" autocomplete="new-password">'
         '<label>비밀번호 확인</label><input id="sp2" type="password" autocomplete="new-password">'
         '<button class="go" onclick="doSignup()">가입하기</button></div>'
@@ -1994,7 +2115,8 @@ def account_page(request: Request):
         'async function doLogin(){try{await post("/api/member/login",{email:document.getElementById("le").value,password:document.getElementById("lp").value});location.reload()}catch(e){show(e.message)}}'
         'async function doSignup(){const p=document.getElementById("sp").value;'
         'if(p!==document.getElementById("sp2").value)return show("비밀번호가 서로 다릅니다");'
-        'try{await post("/api/member/signup",{name:document.getElementById("sn").value,email:document.getElementById("se").value,password:p});location.reload()}catch(e){show(e.message)}}'
+        'const g=(document.querySelector(\'input[name=sg]:checked\')||{}).value;'
+        'try{await post("/api/member/signup",{name:document.getElementById("sn").value,gender:g,phone:document.getElementById("sph").value,birth:document.getElementById("sbi").value,email:document.getElementById("se").value,password:p});location.reload()}catch(e){show(e.message)}}'
         '</script></body></html>')
 
 @admin_router.get('/admin/api/members')
@@ -2005,7 +2127,7 @@ def api_members(request: Request):
     return {'total': total, 'rows': [{'id': r['id'], 'provider': r.get('provider'), 'email': r.get('email') or '',
             'name': r.get('name') or '', 'created': (r.get('created') or '')[:16].replace('T', ' '),
             'phone': r.get('phone') or '', 'verified': num(r.get('phone_verified')),
-            'points': num(r.get('points'))} for r in rs]}
+            'points': num(r.get('points')), 'gender': r.get('gender') or '', 'birth': ((r.get('birth') or '')[:4] if len(r.get('birth') or '')==10 else (r.get('birth') or ''))} for r in rs]}
 
 # ═══════════════ 이메일 회원가입/로그인 + 헤더 로그인 버튼 ═══════════════
 _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
@@ -2026,14 +2148,19 @@ def api_member_signup(request: Request, body: dict = Body(...)):
     name = (body.get('name') or '').strip()[:40]
     email = (body.get('email') or '').strip().lower()
     pw = body.get('password') or ''
+    gender = body.get('gender') or ''
+    phone = digits(body.get('phone'))
+    birth = (body.get('birth') or '').strip()[:10]
     if not name: raise HTTPException(400, '이름을 입력하세요')
+    if gender not in ('F', 'M'): raise HTTPException(400, '성별을 선택해 주세요')
+    if len(phone) < 10: raise HTTPException(400, '휴대폰 번호를 입력해 주세요')
     if not _EMAIL_RE.fullmatch(email): raise HTTPException(400, '이메일 형식을 확인하세요')
     if len(pw) < 8: raise HTTPException(400, '비밀번호는 8자 이상이어야 합니다')
     if one("SELECT id FROM members WHERE provider='email' AND email=?", (email,)):
         raise HTTPException(400, '이미 가입된 이메일입니다 — 로그인해 주세요')
     mid = uid()
-    run('INSERT INTO members(id,provider,sub,email,name,created,pw) VALUES(?,?,?,?,?,?,?)',
-        (mid, 'email', email, email, name, now_iso(), pw_hash(pw)))
+    run('INSERT INTO members(id,provider,sub,email,name,created,pw,gender,phone,phone_verified,birth) VALUES(?,?,?,?,?,?,?,?,?,0,?)',
+        (mid, 'email', email, email, name, now_iso(), pw_hash(pw), gender, phone, birth))
     sid = member_session_make(mid)
     resp = JSONResponse({'ok': True, 'name': name})
     resp.set_cookie('mp_member', sid, httponly=True, secure=True, samesite='lax', max_age=2592000)
@@ -2260,12 +2387,13 @@ def api_m_overview(request: Request):
             if st: counters[str(st)] += 1
     likes = num((one('SELECT COUNT(*) AS c FROM member_likes WHERE member_id=?', (m['id'],)) or {}).get('c'))
     return {'name': m.get('name') or '회원', 'email': m.get('email') or '',
-            'provider': {'google': 'Google', 'apple': 'Apple', 'email': '이메일'}.get(m.get('provider'), m.get('provider')),
+            'provider': {'google': 'Google', 'apple': 'Apple', 'email': '이메일', 'kakao': '카카오'}.get(m.get('provider'), m.get('provider')),
             'has_pw': m.get('provider') == 'email', 'phone': m.get('phone') or '',
             'phone_verified': num(m.get('phone_verified')), 'points': num(m.get('points')),
             'grade': grade, 'linked': linked, 'counters': counters, 'likes': likes,
             'bank': m.get('bank') or '', 'acct': m.get('acct') or '', 'acct_name': m.get('acct_name') or '',
-            'fav_store': num(m.get('fav_store'))}
+            'fav_store': num(m.get('fav_store')),
+            'gender': m.get('gender') or '', 'birth': m.get('birth') or '', 'age_range': m.get('age_range') or ''}
 
 @admin_router.get('/api/member/orders')
 def api_m_orders(request: Request):
@@ -2408,6 +2536,8 @@ def api_m_profile(request: Request, body: dict = Body(...)):
         nm = (body.get('name') or '').strip()[:40]
         if not nm: raise HTTPException(400, '이름을 입력하세요')
         sets.append('name=?'); args.append(nm)
+    if body.get('gender') in ('F', 'M'): sets.append('gender=?'); args.append(body['gender'])
+    if (body.get('birth') or '').strip(): sets.append('birth=?'); args.append(body['birth'].strip()[:10])
     for k in ('bank', 'acct', 'acct_name'):
         if k in body: sets.append('%s=?' % k); args.append((body.get(k) or '').strip()[:60])
     if 'fav_store' in body: sets.append('fav_store=?'); args.append(1 if body['fav_store'] else 0)

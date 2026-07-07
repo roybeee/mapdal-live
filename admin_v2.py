@@ -126,6 +126,19 @@ def ensure_ready():
            email TEXT, name TEXT, created TEXT)""",
         """CREATE TABLE IF NOT EXISTS member_sessions(id TEXT PRIMARY KEY, member_id TEXT,
            created TEXT, expires TEXT)""",
+        """CREATE TABLE IF NOT EXISTS member_addresses(id TEXT PRIMARY KEY, member_id TEXT, label TEXT,
+           rname TEXT, phone TEXT, zip TEXT, addr1 TEXT, addr2 TEXT, is_default INTEGER DEFAULT 0, created TEXT)""",
+        """CREATE TABLE IF NOT EXISTS member_likes(id TEXT PRIMARY KEY, member_id TEXT, product_id TEXT, created TEXT)""",
+        """CREATE TABLE IF NOT EXISTS member_restock(id TEXT PRIMARY KEY, member_id TEXT, product_id TEXT,
+           phone TEXT, created TEXT, notified INTEGER DEFAULT 0)""",
+        """CREATE TABLE IF NOT EXISTS member_requests(id TEXT PRIMARY KEY, member_id TEXT, order_id TEXT,
+           rtype TEXT, reason TEXT, created TEXT, status TEXT DEFAULT '접수', admin_memo TEXT, updated TEXT)""",
+        """CREATE TABLE IF NOT EXISTS member_inquiries(id TEXT PRIMARY KEY, member_id TEXT, order_id TEXT,
+           title TEXT, body TEXT, created TEXT, status TEXT DEFAULT '접수', answer TEXT, answered_at TEXT, answered_by TEXT)""",
+        """CREATE TABLE IF NOT EXISTS member_pqna(id TEXT PRIMARY KEY, member_id TEXT, product_id TEXT,
+           question TEXT, created TEXT, status TEXT DEFAULT '접수', answer TEXT, answered_at TEXT, answered_by TEXT)""",
+        """CREATE TABLE IF NOT EXISTS phone_verifications(id TEXT PRIMARY KEY, member_id TEXT, phone TEXT,
+           code TEXT, created TEXT, expires TEXT, used INTEGER DEFAULT 0)""",
     ):
         try: run(ddl)
         except Exception: pass
@@ -153,9 +166,12 @@ def ensure_ready():
     except Exception:
         pass
     mcx = _cols('members')
-    if mcx and 'pw' not in mcx:
-        try: run("ALTER TABLE members ADD COLUMN pw TEXT")
-        except Exception: pass
+    for col, typ in (('pw','TEXT'),('phone','TEXT'),('phone_verified','INTEGER DEFAULT 0'),
+                     ('points','INTEGER DEFAULT 0'),('bank','TEXT'),('acct','TEXT'),
+                     ('acct_name','TEXT'),('fav_store','INTEGER DEFAULT 0')):
+        if mcx and col not in mcx:
+            try: run("ALTER TABLE members ADD COLUMN %s %s" % (col, typ))
+            except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr'):
         if pcx and col not in pcx:
@@ -341,6 +357,12 @@ def api_summary(request: Request):
         r['buyer_name'] = (jload(r.pop('buyer', None), {}) or {}).get('name', '')
         r['amount'] = num(r.get('amount'))
     cust = one('SELECT COUNT(*) AS c FROM customers') or {}
+    try:
+        cs = (num((one("SELECT COUNT(*) AS c FROM member_inquiries WHERE status='접수'") or {}).get('c'))
+              + num((one("SELECT COUNT(*) AS c FROM member_pqna WHERE status='접수'") or {}).get('c'))
+              + num((one("SELECT COUNT(*) AS c FROM member_requests WHERE status IN ('접수','처리중')") or {}).get('c')))
+    except Exception:
+        cs = 0
     return {'today': {'cnt': num(day.get('c')), 'sum': num(day.get('s'))},
             'week': {'cnt': num(w7.get('c')), 'sum': num(w7.get('s'))},
             'month': {'cnt': num(m30.get('c')), 'sum': num(m30.get('s'))},
@@ -351,7 +373,7 @@ def api_summary(request: Request):
             'top': sorted(({'name': k, **v} for k, v in top.items()), key=lambda x: (x['rev'], x['qty']), reverse=True)[:10],
             'pending_ship': num(pend.get('c')), 'customers': num(cust.get('c')),
             'low_stock': [{'id': r['id'], 'name': r.get('name') or r['id'], 'stock': num(r.get('stock')), 'soldout': num(r.get('soldout'))} for r in low],
-            'latest': latest}
+            'latest': latest, 'pending_cs': cs}
 
 @admin_router.get('/admin/api/orders')
 def api_orders(request: Request):
@@ -473,6 +495,7 @@ def api_product_update(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 1, '재고 관리')
     pid = body.get('id')
     if not pid: raise HTTPException(400, 'id required')
+    old = one('SELECT stock, soldout FROM products WHERE id=?', (pid,)) or {}
     sets, args, log = [], [], []
     if body.get('stock') is not None:
         s = num(body['stock'])
@@ -489,6 +512,20 @@ def api_product_update(request: Request, body: dict = Body(...)):
     n = run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
     if not n: raise HTTPException(404, 'not found')
     audit(a, '상품수정', pid, ', '.join(log))
+    try:
+        nowr = one('SELECT stock, soldout FROM products WHERE id=?', (pid,)) or {}
+        was_off = num(old.get('soldout')) or num(old.get('stock')) <= 0
+        now_on = (not num(nowr.get('soldout'))) and num(nowr.get('stock')) > 0
+        if was_off and now_on:
+            pn = (one('SELECT %s AS n FROM products WHERE id=?' % (_state['pname'] or 'id'), (pid,)) or {}).get('n') or pid
+            subs = rows('SELECT * FROM member_restock WHERE product_id=? AND notified=0 LIMIT 500', (pid,))
+            for sub in subs:
+                if sub.get('phone'):
+                    system_sms(sub['phone'], '[맵달SEOUL] 재입고 알림 — %s 상품이 다시 입고되었습니다. 서두르세요!\nhttps://mapdal.kr/p/%s' % (str(pn)[:30], pid), '재입고알림')
+                run('UPDATE member_restock SET notified=1 WHERE id=?', (sub['id'],))
+            if subs: audit(a, '재입고알림발송', pid, '%d명' % len(subs))
+    except Exception:
+        pass
     return {'ok': True}
 
 @admin_router.get('/admin/api/orders.csv')
@@ -957,6 +994,11 @@ button.btn.sm{padding:4px 9px;font-size:12px}button.btn:disabled{opacity:.4;curs
   <div id="tpls" class="loading">불러오는 중…</div>
   <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="editTpl()" id="tpladd">+ 템플릿 추가</button></div></div>
   <div class="panel"><h3>발송 기록 (최근 200)</h3><div id="nlog" class="loading">불러오는 중…</div></div></section>
+<section id="t-cs" style="display:none">
+  <div class="panel"><h3>취소/반품/교환 요청</h3><div id="csreq" class="loading">불러오는 중…</div>
+  <div class="hint">취소 요청 승인 시: [완료]로 바꾼 뒤 [주문 관리]에서 해당 주문의 결제취소(환불)를 실행하세요. 재고는 자동 복원됩니다.</div></div>
+  <div class="panel"><h3>1:1 문의</h3><div id="csinq" class="loading">불러오는 중…</div></div>
+  <div class="panel"><h3>상품 Q&amp;A <span class="tag">답변 시 상품페이지에 공개</span></h3><div id="cspq" class="loading">불러오는 중…</div></div></section>
 <section id="t-admins" style="display:none">
   <div class="panel"><h3>관리자 계정</h3><div id="alist" class="loading">불러오는 중…</div>
   <div class="toolbar" style="margin-top:12px"><input id="aname" placeholder="이름 (예: 김스태프)" style="width:130px">
@@ -982,8 +1024,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['cust','고객',0],['notify','알림',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,cust:()=>loadCust(1),notify:loadNotify,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -997,7 +1039,8 @@ async function loadDash(){try{const d=await api('/admin/api/summary');
  <div class="card"><div class="k">최근 7일</div><div class="v">${won(d.week.sum)}</div><div class="s">${d.week.cnt}건</div></div>
  <div class="card"><div class="k">최근 30일</div><div class="v">${won(d.month.sum)}</div><div class="s">${d.month.cnt}건 · 객단가 ${won(d.aov)}</div></div>
  <div class="card"><div class="k">누적 결제액</div><div class="v">${won(d.all.paid_sum)}</div><div class="s">전체 ${d.all.cnt}건 · 고객 ${d.customers}명</div></div>
- <div class="card ${d.pending_ship?'alert':''}"><div class="k">발송 대기</div><div class="v">${d.pending_ship}건</div><div class="s">결제완료 · 미발송</div></div></div>
+ <div class="card ${d.pending_ship?'alert':''}"><div class="k">발송 대기</div><div class="v">${d.pending_ship}건</div><div class="s">결제완료 · 미발송</div></div>
+ <div class="card ${d.pending_cs?'alert':''}"><div class="k">문의·요청 대기</div><div class="v">${d.pending_cs||0}건</div><div class="s">1:1 · Q&A · 취소/반품</div></div></div>
  <div class="panel"><h3>최근 30일 일별 매출 <span class="tag">PAID</span></h3>
  <div class="chart">${d.series.map(s=>`<div class="bar" style="height:${Math.round(s.v/mx*100)}%" title="${s.d} · ${won(s.v)}"></div>`).join('')}</div>
  <div class="chart-x"><span>${d.series[0].d.slice(5)}</span><span>${d.series[14].d.slice(5)}</span><span>${d.series[29].d.slice(5)}</span></div></div>
@@ -1082,9 +1125,12 @@ function custMode(m){CMODE=m;$('#cm1').className='btn sm'+(m==='buyers'?'':' gho
  if(m==='buyers')loadCust(1);else loadMembers()}
 async function loadMembers(){try{const d=await api('/admin/api/members');
  $('#clist').innerHTML=`<div class="hint" style="margin-bottom:8px">소셜 계정(Google/Apple)으로 가입한 회원 목록입니다. 총 ${d.total}명.</div>
- <table><tr><th>이름</th><th>이메일</th><th>가입방법</th><th>가입일시</th></tr>
+ <table><tr><th>이름</th><th>이메일</th><th>가입방법</th><th>휴대폰</th><th class="right">포인트</th><th>가입일시</th><th></th></tr>
  ${d.rows.map(m=>`<tr><td>${esc(m.name)||'-'}</td><td class="mono">${esc(m.email)||'-'}</td>
- <td>${m.provider==='google'?'Google':m.provider==='apple'?'Apple':m.provider==='email'?'이메일':esc(m.provider)}</td><td class="mono">${esc(m.created)}</td></tr>`).join('')||'<tr><td colspan=4 class="loading">가입 회원 없음 — 사이트의 /account 에서 가입할 수 있습니다</td></tr>'}</table>`;
+ <td>${m.provider==='google'?'Google':m.provider==='apple'?'Apple':m.provider==='email'?'이메일':esc(m.provider)}</td>
+ <td class="mono">${esc(m.phone)||'-'}${m.verified?' <span class="st PAID" style="font-size:10px">인증</span>':''}</td>
+ <td class="right mono">${m.points.toLocaleString()}P</td><td class="mono">${esc(m.created)}</td>
+ <td>${can(2)?`<button class="btn sm ghost" onclick="grantPoints('${m.id}','${esc(m.email)}')">포인트</button>`:''}</td></tr>`).join('')||'<tr><td colspan=4 class="loading">가입 회원 없음 — 사이트의 /account 에서 가입할 수 있습니다</td></tr>'}</table>`;
  }catch(e){$('#clist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 let cpage=1;
 async function syncCust(){try{const r=await api('/admin/api/customers/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
@@ -1235,6 +1281,29 @@ async function histPage(path){try{const d=await api('/admin/api/pages/history?pa
 async function restorePage(id){try{await api('/admin/api/pages/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
  toast('해당 버전으로 복원되었습니다');closeM();loadPages()}catch(e){toast(e.message)}}
 
+async function loadCS(){try{const d=await api('/admin/api/cs');
+ const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':v==='거절'?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
+ $('#csreq').innerHTML=d.reqs.length?`<table><tr><th>일시</th><th>유형</th><th>주문번호</th><th>회원</th><th>사유</th><th>상태</th><th></th></tr>
+ ${d.reqs.map(r=>`<tr><td class="mono">${esc(r.created)}</td><td><b>${esc(r.rtype)}</b></td><td class="mono" style="font-size:11px">${esc(r.order_id)}</td>
+ <td>${esc(r.mname)}<br><span class="mono" style="font-size:10.5px;color:#888">${esc(r.mphone)}</span></td>
+ <td style="font-size:12px">${esc(r.reason)}${r.memo?'<br><span style="color:#888">메모: '+esc(r.memo)+'</span>':''}</td>
+ <td>${stag(r.status)}</td><td>${can(1)?`<button class="btn sm ghost" onclick="csReq('${r.id}','${esc(r.status)}')">처리</button>`:''}</td></tr>`).join('')}</table>`:'<div class="loading">요청 없음</div>';
+ const block=(rows,kind)=>rows.length?rows.map(q=>`<div style="border-bottom:1px solid var(--line);padding:10px 4px">
+ <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span>
+ <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap">${esc(kind==='inq'?q.body:q.question)}</div>
+ ${q.answer?`<div style="margin-top:6px;background:#faf9f5;padding:8px;font-size:12.5px;white-space:pre-wrap"><b>답변</b> ${esc(q.answer)}</div>`:''}
+ ${can(1)?`<div style="margin-top:8px"><button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button></div>`:''}</div>`).join(''):'<div class="loading">없음</div>';
+ $('#csinq').innerHTML=block(d.inq,'inq');$('#cspq').innerHTML=block(d.pqna,'pqna');
+}catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+async function csAnswer(kind,id){const ans=prompt('답변 내용을 입력하세요 (회원에게 표시됩니다)');if(!ans)return;
+ try{await api('/admin/api/cs/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id,answer:ans})});toast('답변 등록');loadCS()}catch(e){toast(e.message)}}
+async function csReq(id,cur){const st=prompt('상태 입력: 접수 / 처리중 / 완료 / 거절',cur==='접수'?'처리중':'완료');if(!st)return;
+ const memo=prompt('회원에게 표시할 메모 (선택)','')||'';
+ try{await api('/admin/api/cs/req-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status:st,memo})});toast('처리되었습니다');loadCS()}catch(e){toast(e.message)}}
+async function grantPoints(id,email){const v=prompt(email+' 님에게 지급(+) / 차감(-)할 포인트','1000');if(!v)return;
+ const reason=prompt('사유 (감사로그 기록)','CS 보상')||'';
+ try{const r=await api('/admin/api/members/points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,delta:Number(v),reason})});
+ toast('현재 '+r.points.toLocaleString()+'P');loadMembers()}catch(e){toast(e.message)}}
 async function loadSys(){try{const s=await api('/admin/api/system');
  $('#sys').innerHTML=`<div class="cards">
  <div class="card"><div class="k">데이터베이스</div><div class="v" style="font-size:16px">${esc(s.db)}</div><div class="s">${s.db_ok?'정상':'연결 오류'}</div></div>
@@ -1378,8 +1447,44 @@ h1{font-size:22px;line-height:1.35;margin-bottom:10px}
 <h1>%(name)s</h1><div class="price">₩%(price)s</div>
 <span class="badge %(bcls)s">%(bmsg)s</span>
 <div class="desc">%(descr)s</div>
+<div style="display:flex;gap:8px;margin-top:18px">
+<button id="likeBtn" onclick="toggleLike()" style="flex:1;font:700 14px 'IBM Plex Sans KR';padding:13px;border:1px solid #141414;background:#fff;cursor:pointer">&#9825; 좋아요</button>
+<button id="rsBtn" onclick="toggleRestock()" style="flex:1;display:none;font:700 14px 'IBM Plex Sans KR';padding:13px;border:0;background:#FFB000;color:#141414;cursor:pointer">재입고 알림 신청</button>
+</div>
 <a class="cta" href="/shop.html">SHOP에서 주문하기</a></div></div>
-<div class="foot">SHOP SEONGSU, FROM ANYWHERE · %(pid)s</div></main></body></html>'''
+<div style="max-width:860px;margin:22px auto 0;background:#fff;border:1px solid #e3e1db;padding:22px">
+<h2 style="font-size:15px;border-left:4px solid #E8332A;padding-left:8px;margin-bottom:6px">상품 Q&amp;A</h2>
+<div id="qnaList" style="font-size:13px;color:#999;padding:10px 4px">불러오는 중…</div>
+<button onclick="askQ()" style="font:700 12.5px 'IBM Plex Sans KR';padding:9px 16px;border:0;background:#141414;color:#fff;cursor:pointer">상품 문의하기</button>
+<div style="font-size:11px;color:#999;margin-top:8px">문의 답변은 마이페이지 &gt; 상품 Q&amp;A 내역에서도 확인할 수 있습니다.</div></div>
+<div class="foot">SHOP SEONGSU, FROM ANYWHERE · %(pid)s</div></main>
+<script>
+var PID=%(pidjs)s, SOLD=%(soldjs)s, ST={login:false,liked:false,restock:false};
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function paint(){var lb=document.getElementById('likeBtn');
+ lb.innerHTML=(ST.liked?'&#9829; 좋아요 취소':'&#9825; 좋아요');
+ lb.style.background=ST.liked?'#141414':'#fff';lb.style.color=ST.liked?'#FFB000':'#141414';
+ var rb=document.getElementById('rsBtn');
+ if(SOLD){rb.style.display='block';rb.textContent=ST.restock?'재입고 알림 신청됨 (해제)':'재입고 알림 신청';}}
+fetch('/api/member/pdp-state?product_id='+encodeURIComponent(PID)).then(function(r){return r.json()}).then(function(d){ST=d;paint()}).catch(function(){paint()});
+function needLogin(){if(confirm('로그인이 필요합니다. 로그인 페이지로 이동할까요?'))location.href='/account';}
+function post(u,b,cb){fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
+ .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||'오류');return j})}).then(cb)
+ .catch(function(e){alert(e.message)})}
+function toggleLike(){if(!ST.login)return needLogin();
+ post('/api/member/likes',{product_id:PID,on:!ST.liked},function(){ST.liked=!ST.liked;paint()})}
+function toggleRestock(){if(!ST.login)return needLogin();
+ post('/api/member/restock',ST.restock?{product_id:PID,off:true}:{product_id:PID},function(j){ST.restock=!!j.on;paint()})}
+function askQ(){if(!ST.login)return needLogin();
+ var q=prompt('상품에 대해 궁금한 점을 남겨주세요');if(!q)return;
+ post('/api/member/pqna',{product_id:PID,question:q},function(){alert('문의가 접수되었습니다. 답변은 마이페이지에서 확인하세요.');})}
+fetch('/api/pqna?product_id='+encodeURIComponent(PID)).then(function(r){return r.json()}).then(function(d){
+ var el=document.getElementById('qnaList');
+ if(!d.rows.length){el.textContent='아직 등록된 문의가 없습니다.';return}
+ el.innerHTML=d.rows.map(function(x){return '<div style="border-bottom:1px solid #eee;padding:10px 2px;color:#141414">'+
+ '<div style="font-weight:700">Q. '+esc(x.q)+' <span style="color:#aaa;font-weight:400;font-size:11px">'+esc(x.name)+' · '+esc(x.at)+'</span></div>'+
+ '<div style="margin-top:6px;background:#faf9f5;padding:9px;white-space:pre-wrap">A. '+esc(x.a)+'</div></div>'}).join('')});
+</script></body></html>'''
 
 @admin_router.get('/p/{pid:path}', response_class=HTMLResponse)
 def pdp(pid: str):
@@ -1403,7 +1508,7 @@ def pdp(pid: str):
         'descr': h(r.get('descr')) or 'MAPDAL SEOUL 상품입니다.',
         'imgtag': ('<img src="%s" alt="">' % h(img)) if img else 'MAPDAL SEOUL',
         'og': ('<meta property="og:image" content="%s">' % h(img)) if img else '',
-        'pid': h(pid)})
+        'pid': h(pid), 'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false'})
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 def _burl(request: Request):
@@ -1574,6 +1679,243 @@ h1{font-family:'Black Han Sans';font-size:24px}h1 span{color:var(--red)}
 .out{display:block;text-align:center;font-size:12.5px;color:#888;margin-top:18px}
 .foot{font-family:'IBM Plex Mono';font-size:10px;color:#aaa;margin-top:24px;text-align:center}</style>'''
 
+
+_MYPAGE_HTML = r'''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>마이페이지 — MAPDAL SEOUL</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+<style>
+:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2;--amber:#FFB000;--line:#e3e1db}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'IBM Plex Sans KR',sans-serif;background:var(--paper);color:var(--black);font-size:14px}
+header{background:var(--black);color:#fff;padding:0 20px;height:54px;display:flex;align-items:center;justify-content:space-between}
+header a.logo{color:#fff;text-decoration:none;font-family:'Black Han Sans';font-size:19px}header a.logo span{color:var(--red)}
+header .r a{color:#ccc;font-size:12px;font-weight:700;text-decoration:none;margin-left:16px}
+main{max-width:1080px;margin:0 auto;padding:24px 16px 90px;display:grid;grid-template-columns:190px 1fr;gap:26px}
+@media(max-width:820px){main{grid-template-columns:1fr}}
+h1{font-size:24px;margin-bottom:18px}
+aside .grp{font-size:15px;font-weight:800;margin:18px 0 10px}
+aside a{display:block;font-size:13.5px;color:#555;text-decoration:none;padding:5px 0}
+aside a.on{color:var(--red);font-weight:700}
+aside hr{border:0;border-top:1px solid var(--line);margin:16px 0}
+.banner{background:var(--black);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.banner .hi{font-weight:700}.banner .gr{background:var(--red);color:#fff;font-size:11px;font-weight:800;padding:3px 10px}
+.banner .sp{margin-left:auto;display:flex;gap:22px;font-size:12.5px}
+.banner .sp b{font-family:'IBM Plex Mono';font-size:16px;display:block;color:var(--amber)}
+.steps{display:flex;background:#fff;border:1px solid var(--line);border-top:0;padding:20px 8px}
+.steps .st{flex:1;text-align:center;position:relative}
+.steps .st b{font-family:'IBM Plex Mono';font-size:26px;display:block;color:#bbb}
+.steps .st.on b{color:var(--black)}
+.steps .st span{font-size:12px;color:#777}
+.steps .st:not(:last-child):after{content:'›';position:absolute;right:-4px;top:8px;color:#ccc;font-size:18px}
+.panel{background:#fff;border:1px solid var(--line);padding:18px;margin-top:16px}
+.panel h3{font-size:14px;border-left:4px solid var(--red);padding-left:8px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#faf9f5;border-bottom:2px solid var(--black);font-size:11.5px;padding:8px;text-align:left}
+td{border-bottom:1px solid var(--line);padding:9px 8px;vertical-align:middle}
+.r{text-align:right}.mono{font-family:'IBM Plex Mono'}
+.tagst{font-size:11px;font-weight:800;padding:2px 8px;background:#eee}
+.tagst.s1{background:#fff6e0;color:#9a6b00}.tagst.s2{background:#e9f7ee;color:#0a7d38}
+.tagst.s3{background:#fff2f1;color:var(--red)}.tagst.s4{background:#e8f3ff;color:#1a5fb4}
+.tagst.s5{background:#141414;color:#FFB000}.tagst.s0{background:#f0f0f0;color:#999}
+button.b,a.b{font:inherit;font-weight:700;font-size:12px;border:0;padding:7px 12px;cursor:pointer;background:var(--black);color:#fff;text-decoration:none;display:inline-block}
+button.b.ghost,a.b.ghost{background:#fff;color:var(--black);border:1px solid #999}
+button.b.red{background:var(--red)}
+input,select,textarea{font:inherit;padding:8px 10px;border:1px solid #ccc;background:#fff;width:100%}
+input:focus,textarea:focus{outline:2px solid var(--red)}
+label{display:block;font-size:11.5px;font-weight:700;color:#555;margin:12px 0 4px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.hint{font-size:11.5px;color:#888;margin-top:8px;line-height:1.7}
+.empty{color:#999;text-align:center;padding:30px 10px}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--black);color:#fff;padding:10px 20px;display:none;z-index:200;font-weight:700}
+.qa{border-bottom:1px solid var(--line);padding:12px 4px}
+.qa .q{font-weight:700}.qa .a{margin-top:8px;color:#444;background:#faf9f5;padding:10px;white-space:pre-wrap}
+.mob{display:none}@media(max-width:820px){aside{display:flex;flex-wrap:wrap;gap:4px 14px}aside .grp,aside hr{display:none}aside a{padding:6px 8px;background:#fff;border:1px solid var(--line)}}
+</style></head><body>
+<header><a class="logo" href="/">MAPDAL<span>SEOUL</span></a>
+<div class="r"><a href="/shop.html">SHOP</a><a href="/cart.html">장바구니</a><a href="#" onclick="logout()">로그아웃</a></div></header>
+<main>
+<aside>
+ <h1>마이페이지</h1>
+ <div class="grp">쇼핑 활동</div>
+ <a data-p="orders" class="on" href="#orders">주문/배송 조회</a>
+ <a data-p="requests" href="#requests">취소/반품/교환 내역</a>
+ <a data-p="receipts" href="#receipts">거래증빙서류 확인</a>
+ <a href="/cart.html">장바구니</a>
+ <a data-p="likes" href="#likes">좋아요</a>
+ <a data-p="restock" href="#restock">재입고 알림</a>
+ <hr><div class="grp">마이 정보</div>
+ <a data-p="profile" href="#profile">회원정보 수정</a>
+ <a data-p="addr" href="#addr">배송지/환불계좌 관리</a>
+ <a data-p="store" href="#store">관심 매장 관리</a>
+ <a data-p="withdraw" href="#withdraw">회원탈퇴</a>
+ <hr><div class="grp">문의</div>
+ <a data-p="inq" href="#inq">1:1 문의내역</a>
+ <a data-p="pqna" href="#pqna">상품 Q&amp;A 내역</a>
+</aside>
+<section>
+ <div class="banner"><span class="hi" id="hi"></span><span class="gr" id="gr"></span>
+  <div class="sp"><span>포인트<b id="pt">0P</b></span><span>쿠폰<b>0개 <small style="color:#888;font-size:10px">(준비 중)</small></b></span>
+  <span><a href="#profile" data-p="profile" style="color:var(--amber);font-size:12px;font-weight:700;text-decoration:none">나의 프로필 ›</a></span></div></div>
+ <div class="steps" id="steps"></div>
+ <div id="pane"></div>
+</section></main>
+<div id="toast"></div>
+<script>
+const MD = __MDATA__;
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const won=n=>'₩'+Number(n||0).toLocaleString('ko-KR');
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2400)}
+async function api(u,opt){const r=await fetch(u,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
+async function post(u,b){return api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
+async function logout(){await fetch('/api/member/logout',{method:'POST'});location.href='/'}
+let OV=null;
+async function boot(){OV=await api('/api/member/overview');
+ $('#hi').textContent=OV.name+'님, 환영합니다';$('#gr').textContent=OV.grade;$('#pt').textContent=OV.points.toLocaleString()+'P';
+ const names=['주문접수','결제완료','배송준비중','배송중','배송완료'];
+ $('#steps').innerHTML=names.map((n,i)=>{const c=OV.counters[String(i+1)]||0;
+  return '<div class="st'+(c?' on':'')+'"><b>'+c+'</b><span>'+n+'</span></div>'}).join('');
+ route()}
+const PANES={orders,requests:reqPane,receipts,likes:likesPane,restock:restockPane,profile,addr:addrPane,store:storePane,withdraw:withdrawPane,inq:inqPane,pqna:pqnaPane};
+function route(){const p=(location.hash||'#orders').slice(1);
+ document.querySelectorAll('aside a[data-p]').forEach(a=>a.className=a.dataset.p===p?'on':'');
+ (PANES[p]||orders)()}
+window.addEventListener('hashchange',route);
+function needPhone(){return '<div class="panel"><h3>휴대폰 인증이 필요합니다</h3><div class="hint">주문은 비회원으로도 가능해서, <b>인증된 휴대폰 번호</b>로 회원님의 주문을 안전하게 연결합니다.<br>[회원정보 수정]에서 휴대폰 인증을 완료하면 해당 번호로 주문한 내역이 모두 표시됩니다.</div><div style="margin-top:12px"><a class="b" href="#profile">휴대폰 인증하러 가기</a></div></div>'}
+
+async function orders(){if(!OV.linked){$('#pane').innerHTML=needPhone();return}
+ const d=await api('/api/member/orders?range=3m');
+ $('#pane').innerHTML='<div class="panel"><h3>주문/배송 조회 <small style="color:#888;font-weight:400">(최근 3개월)</small></h3>'+
+ (d.rows.length?'<table><tr><th>주문번호/일시</th><th>상품</th><th class="r">금액</th><th>상태</th><th></th></tr>'+
+ d.rows.map(o=>'<tr><td class="mono" style="font-size:11.5px">'+esc(o.order_id)+'<br><span style="color:#999">'+esc(o.created)+'</span></td>'+
+ '<td>'+esc(o.label)+'</td><td class="r mono">'+won(o.amount)+'</td>'+
+ '<td><span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span>'+(o.tracking?'<br><span class="mono" style="font-size:11px;color:#1a5fb4">'+esc(o.tracking)+'</span>':'')+'</td>'+
+ '<td><button class="b ghost" onclick="orderDetail(\''+esc(o.order_id)+'\')">상세</button></td></tr>').join('')+'</table>':'<div class="empty">최근 3개월 주문이 없습니다</div>')+'</div><div id="odetail"></div>'}
+async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeURIComponent(oid));
+ $('#odetail').innerHTML='<div class="panel"><h3>주문 상세 — '+esc(oid)+' <span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span></h3>'+
+ '<table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th></tr>'+
+ o.items.map(i=>'<tr><td>'+esc(i.name)+'</td><td class="r mono">'+won(i.price)+'</td><td class="r mono">'+i.qty+'</td></tr>').join('')+'</table>'+
+ '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+(o.tracking?' · 송장 '+esc(o.tracking):'')+'</div>'+
+ (o.open_request?'<div class="hint" style="color:var(--red)">'+({cancel:'취소',return:'반품',exchange:'교환'}[o.open_request.rtype]||'')+' 요청이 '+esc(o.open_request.status)+' 상태입니다.</div>':'')+
+ '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
+ (o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a>':'')+
+ '<a class="b ghost" target="_blank" href="/api/member/receipt/'+encodeURIComponent(oid)+'">거래명세서</a>'+
+ (!o.open_request&&o.can_cancel?'<button class="b red" onclick="reqOrder(\''+esc(oid)+'\',\'cancel\')">취소 요청</button>':'')+
+ (!o.open_request&&o.can_return?'<button class="b" onclick="reqOrder(\''+esc(oid)+'\',\'return\')">반품 요청</button><button class="b ghost" onclick="reqOrder(\''+esc(oid)+'\',\'exchange\')">교환 요청</button>':'')+
+ '</div></div>';$('#odetail').scrollIntoView({behavior:'smooth'})}
+async function reqOrder(oid,t){const kr={cancel:'취소',return:'반품',exchange:'교환'}[t];
+ const reason=prompt(kr+' 사유를 입력해 주세요');if(!reason)return;
+ try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/request',{rtype:t,reason});
+ toast(kr+' 요청이 접수되었습니다');location.hash='#requests'}catch(e){alert(e.message)}}
+
+async function reqPane(){const d=await api('/api/member/requests');
+ $('#pane').innerHTML='<div class="panel"><h3>취소/반품/교환 요청</h3>'+
+ (d.requests.length?'<table><tr><th>일시</th><th>주문번호</th><th>유형</th><th>사유</th><th>상태</th></tr>'+
+ d.requests.map(r=>'<tr><td class="mono">'+esc(r.created)+'</td><td class="mono" style="font-size:11.5px">'+esc(r.order_id)+'</td><td><b>'+esc(r.rtype)+'</b></td><td>'+esc(r.reason)+(r.memo?'<br><span class="hint">답변: '+esc(r.memo)+'</span>':'')+'</td><td><span class="tagst '+(r.status==='완료'?'s2':r.status==='거절'?'s0':'s1')+'">'+esc(r.status)+'</span></td></tr>').join('')+'</table>':'<div class="empty">요청 내역이 없습니다</div>')+'</div>'+
+ '<div class="panel"><h3>취소 완료된 주문</h3>'+(d.cancelled_orders.length?'<table><tr><th>주문번호</th><th>일자</th><th class="r">금액</th></tr>'+d.cancelled_orders.map(c=>'<tr><td class="mono">'+esc(c.order_id)+'</td><td class="mono">'+esc(c.created)+'</td><td class="r mono">'+won(c.amount)+'</td></tr>').join('')+'</table>':'<div class="empty">없음</div>')+'</div>'}
+
+async function receipts(){if(!OV.linked){$('#pane').innerHTML=needPhone();return}
+ const d=await api('/api/member/orders?range=all');const rs=d.rows.filter(o=>o.paid||o.receipt);
+ $('#pane').innerHTML='<div class="panel"><h3>거래증빙서류</h3>'+
+ (rs.length?'<table><tr><th>주문번호</th><th>일시</th><th class="r">금액</th><th>증빙</th></tr>'+
+ rs.map(o=>'<tr><td class="mono" style="font-size:11.5px">'+esc(o.order_id)+'</td><td class="mono">'+esc(o.created)+'</td><td class="r mono">'+won(o.amount)+'</td>'+
+ '<td>'+(o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a> ':'')+
+ '<a class="b ghost" target="_blank" href="/api/member/receipt/'+encodeURIComponent(o.order_id)+'">거래명세서</a></td></tr>').join('')+'</table>':'<div class="empty">결제 완료된 주문이 없습니다</div>')+
+ '<div class="hint">세금계산서·현금영수증은 결제 시 신청 내역에 따라 토스 영수증에서 확인됩니다.</div></div>'}
+
+async function likesPane(){const d=await api('/api/member/likes');
+ $('#pane').innerHTML='<div class="panel"><h3>좋아요 <small style="color:#888;font-weight:400">'+d.rows.length+'개</small></h3>'+
+ (d.rows.length?'<table>'+d.rows.map(p=>'<tr><td><a href="/p/'+encodeURIComponent(p.id)+'" style="color:inherit">'+esc(p.name)+'</a></td><td class="r mono">'+won(p.price)+'</td><td>'+(p.soldout?'<span class="tagst s3">품절</span>':'<span class="tagst s2">구매가능</span>')+'</td>'+
+ '<td class="r"><button class="b ghost" onclick="unlike(\''+esc(p.id).replace(/'/g,"\\'")+'\')">해제</button></td></tr>').join('')+'</table>':'<div class="empty">상품 페이지의 ♥ 버튼으로 담아보세요</div>')+'</div>'}
+async function unlike(id){await post('/api/member/likes',{product_id:id,on:false});likesPane()}
+
+async function restockPane(){const d=await api('/api/member/restock');
+ $('#pane').innerHTML='<div class="panel"><h3>재입고 알림</h3>'+
+ (d.rows.length?'<table><tr><th>상품</th><th>신청일</th><th>상태</th><th></th></tr>'+
+ d.rows.map(r=>'<tr><td><a href="/p/'+encodeURIComponent(r.id)+'" style="color:inherit">'+esc(r.name)+'</a></td><td class="mono">'+esc(r.created)+'</td>'+
+ '<td>'+(r.notified?'<span class="tagst s2">알림 발송됨</span>':r.soldout?'<span class="tagst s1">입고 대기</span>':'<span class="tagst s2">재입고됨</span>')+'</td>'+
+ '<td class="r">'+(!r.notified?'<button class="b ghost" onclick="restockOff(\''+esc(r.id).replace(/'/g,"\\'")+'\')">해제</button>':'')+'</td></tr>').join('')+'</table>':'<div class="empty">품절 상품 페이지에서 [재입고 알림]을 신청하세요</div>')+
+ '<div class="hint">재입고 시 인증된 휴대폰으로 문자를 보내드립니다.</div></div>'}
+async function restockOff(id){await post('/api/member/restock',{product_id:id,off:true});restockPane()}
+
+async function profile(){const m=OV;
+ $('#pane').innerHTML='<div class="panel"><h3>회원정보 수정</h3>'+
+ '<label>이름</label><input id="pfn" value="'+esc(m.name)+'">'+
+ '<label>이메일 ('+esc(m.provider)+' 가입)</label><input value="'+esc(m.email)+'" disabled style="background:#f4f3ef">'+
+ '<div style="margin-top:14px"><button class="b" onclick="saveName()">이름 저장</button></div>'+
+ (m.has_pw?'<hr style="border:0;border-top:1px solid var(--line);margin:18px 0"><h3>비밀번호 변경</h3>'+
+ '<div class="row2"><div><label>현재 비밀번호</label><input id="pw0" type="password"></div><div></div>'+
+ '<div><label>새 비밀번호 (8자 이상)</label><input id="pw1" type="password"></div><div><label>새 비밀번호 확인</label><input id="pw2" type="password"></div></div>'+
+ '<div style="margin-top:12px"><button class="b" onclick="savePw()">비밀번호 변경</button></div>':'')+
+ '</div><div class="panel"><h3>휴대폰 인증 '+(m.phone_verified?'<span class="tagst s2">인증됨 · '+esc(m.phone)+'</span>':'<span class="tagst s3">미인증</span>')+'</h3>'+
+ '<div class="hint">인증된 번호로 주문내역이 연동되고, 재입고·배송 알림을 받습니다.</div>'+
+ '<div class="row2" style="margin-top:10px"><div><label>휴대폰 번호</label><input id="phn" placeholder="010-0000-0000" value="'+esc(m.phone)+'"></div>'+
+ '<div><label>&nbsp;</label><button class="b" style="width:100%;padding:10px" onclick="sendCode()">인증번호 발송</button></div></div>'+
+ '<div class="row2" id="vrow" style="display:none;margin-top:4px"><div><label>인증번호 6자리</label><input id="vcd" maxlength="6"></div>'+
+ '<div><label>&nbsp;</label><button class="b red" style="width:100%;padding:10px" onclick="verifyCode()">확인</button></div></div></div>'}
+async function saveName(){try{await post('/api/member/profile',{name:$('#pfn').value});toast('저장되었습니다');OV=await api('/api/member/overview');boot()}catch(e){toast(e.message)}}
+async function savePw(){if($('#pw1').value!==$('#pw2').value)return toast('새 비밀번호가 서로 다릅니다');
+ try{await post('/api/member/password',{old:$('#pw0').value,new:$('#pw1').value});toast('변경되었습니다')}catch(e){toast(e.message)}}
+async function sendCode(){try{const r=await post('/api/member/phone/send',{phone:$('#phn').value});
+ $('#vrow').style.display='grid';toast(r.dry?'테스트 모드: 인증번호가 관리자 알림 로그에 기록되었습니다':'인증번호를 발송했습니다')}catch(e){toast(e.message)}}
+async function verifyCode(){try{await post('/api/member/phone/verify',{code:$('#vcd').value});
+ toast('인증 완료! 주문내역이 연동됩니다');OV=await api('/api/member/overview');boot();location.hash='#orders'}catch(e){toast(e.message)}}
+
+async function addrPane(){const d=await api('/api/member/addresses');const m=OV;
+ $('#pane').innerHTML='<div class="panel"><h3>배송지 관리</h3>'+
+ (d.rows.length?'<table><tr><th>배송지명</th><th>받는분</th><th>주소</th><th></th></tr>'+
+ d.rows.map(a=>'<tr><td><b>'+esc(a.label)+'</b>'+(a.is_default?' <span class="tagst s5">기본</span>':'')+'</td><td>'+esc(a.rname)+'<br><span class="mono" style="font-size:11px">'+esc(a.phone)+'</span></td>'+
+ '<td style="font-size:12.5px">['+esc(a.zip)+'] '+esc(a.addr1)+' '+esc(a.addr2)+'</td>'+
+ '<td class="r" style="white-space:nowrap">'+(!a.is_default?'<button class="b ghost" onclick="addrAct(\''+a.id+'\',\'default\')">기본설정</button> ':'')+'<button class="b ghost" onclick="addrAct(\''+a.id+'\',\'delete\')">삭제</button></td></tr>').join('')+'</table>':'<div class="empty">등록된 배송지가 없습니다</div>')+
+ '<h3 style="margin-top:18px">새 배송지 추가</h3>'+
+ '<div class="row2"><div><label>배송지명</label><input id="al" placeholder="집 / 회사"></div><div><label>받는분 *</label><input id="an"></div>'+
+ '<div><label>연락처 *</label><input id="ap" placeholder="010-0000-0000"></div><div><label>우편번호 *</label><input id="az"></div></div>'+
+ '<label>주소 *</label><input id="a1"><label>상세주소</label><input id="a2">'+
+ '<div style="margin-top:12px"><button class="b" onclick="addrAdd()">배송지 추가</button></div></div>'+
+ '<div class="panel"><h3>환불계좌 관리</h3><div class="hint">가상계좌·현금성 결제 환불 시 사용됩니다.</div>'+
+ '<div class="row2" style="margin-top:8px"><div><label>은행명</label><input id="rb" value="'+esc(m.bank)+'"></div><div><label>예금주</label><input id="rn" value="'+esc(m.acct_name)+'"></div></div>'+
+ '<label>계좌번호</label><input id="ra" value="'+esc(m.acct)+'">'+
+ '<div style="margin-top:12px"><button class="b" onclick="saveAcct()">환불계좌 저장</button></div></div>'}
+async function addrAdd(){try{await post('/api/member/addresses',{label:$('#al').value,rname:$('#an').value,phone:$('#ap').value,zip:$('#az').value,addr1:$('#a1').value,addr2:$('#a2').value});toast('추가되었습니다');addrPane()}catch(e){toast(e.message)}}
+async function addrAct(id,act){if(act==='delete'&&!confirm('이 배송지를 삭제할까요?'))return;
+ await post('/api/member/addresses',{act,id});addrPane()}
+async function saveAcct(){try{await post('/api/member/profile',{bank:$('#rb').value,acct:$('#ra').value,acct_name:$('#rn').value});toast('저장되었습니다');OV=await api('/api/member/overview')}catch(e){toast(e.message)}}
+
+async function storePane(){const on=OV.fav_store;
+ $('#pane').innerHTML='<div class="panel"><h3>관심 매장 관리</h3>'+
+ '<table><tr><td><b>맵달SEOUL 성수 플래그십</b><br><span class="hint">서울 성동구 성수이로16길 5 · 매일 11:00–21:00 · 825평 K-컬처 복합공간</span></td>'+
+ '<td class="r" style="white-space:nowrap">'+(on?'<span class="tagst s2">관심 매장</span> <button class="b ghost" onclick="favStore(0)">해제</button>':'<button class="b red" onclick="favStore(1)">관심 매장 등록</button>')+'</td></tr></table>'+
+ '<div class="hint">관심 매장으로 등록하면 오프라인 드롭·팬미팅·시식 이벤트 소식을 우선 안내해 드립니다.</div></div>'}
+async function favStore(v){await post('/api/member/profile',{fav_store:v});OV.fav_store=v;toast(v?'관심 매장으로 등록했습니다':'해제되었습니다');storePane()}
+
+async function withdrawPane(){const m=OV;
+ $('#pane').innerHTML='<div class="panel"><h3>회원탈퇴</h3>'+
+ '<div class="hint">탈퇴 시 좋아요·재입고 알림·배송지·문의 내역 등 회원 데이터가 즉시 삭제되며 복구할 수 없습니다.<br>주문·결제 기록은 전자상거래법에 따라 별도 보관됩니다.</div>'+
+ (m.has_pw?'<label>비밀번호 확인</label><input id="wpw" type="password" style="max-width:320px">':'<label>아래 입력란에 <b>탈퇴</b> 를 입력해 주세요</label><input id="wcf" style="max-width:320px" placeholder="탈퇴">')+
+ '<div style="margin-top:14px"><button class="b red" onclick="doWithdraw('+(m.has_pw?1:0)+')">탈퇴하기</button></div></div>'}
+async function doWithdraw(pw){if(!confirm('정말 탈퇴하시겠습니까?'))return;
+ try{await post('/api/member/withdraw',pw?{password:$('#wpw').value}:{confirm:$('#wcf').value});
+ alert('탈퇴가 완료되었습니다. 이용해 주셔서 감사합니다.');location.href='/'}catch(e){toast(e.message)}}
+
+async function inqPane(){const d=await api('/api/member/inquiries');
+ $('#pane').innerHTML='<div class="panel"><h3>1:1 문의하기</h3>'+
+ '<label>제목</label><input id="iqt"><label>내용</label><textarea id="iqb" rows="4"></textarea>'+
+ '<label>관련 주문번호 (선택)</label><input id="iqo" placeholder="MPD...">'+
+ '<div style="margin-top:12px"><button class="b" onclick="inqAdd()">문의 등록</button></div></div>'+
+ '<div class="panel"><h3>1:1 문의내역</h3>'+
+ (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q">'+esc(q.title)+' <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+(q.order_id?' · '+esc(q.order_id):'')+'</span></div>'+
+ '<div style="margin-top:6px;white-space:pre-wrap;font-size:13px">'+esc(q.body)+'</div>'+
+ (q.answer?'<div class="a"><b>맵달SEOUL 답변</b> <span class="hint" style="display:inline">'+esc(q.answered_at)+'</span><br>'+esc(q.answer)+'</div>':'')+'</div>').join(''):'<div class="empty">문의 내역이 없습니다</div>')+'</div>'}
+async function inqAdd(){try{await post('/api/member/inquiries',{title:$('#iqt').value,body:$('#iqb').value,order_id:$('#iqo').value});toast('문의가 접수되었습니다');inqPane()}catch(e){toast(e.message)}}
+
+async function pqnaPane(){const d=await api('/api/member/pqna');
+ $('#pane').innerHTML='<div class="panel"><h3>상품 Q&amp;A 내역</h3>'+
+ (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q"><a href="/p/'+encodeURIComponent(q.product_id)+'" style="color:inherit">'+esc(q.product)+'</a> <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+'</span></div>'+
+ '<div style="margin-top:6px;font-size:13px">'+esc(q.question)+'</div>'+
+ (q.answer?'<div class="a"><b>맵달SEOUL 답변</b><br>'+esc(q.answer)+'</div>':'')+'</div>').join(''):'<div class="empty">상품 페이지에서 문의를 남겨보세요</div>')+'</div>'}
+boot();
+</script></body></html>'''
+
 _ACCOUNT_FORM_CSS = '''<style>
 .div{display:flex;align-items:center;gap:10px;margin:20px 0 12px;color:#aaa;font-size:11px}
 .div:before,.div:after{content:'';flex:1;height:1px;background:#ddd}
@@ -1594,14 +1936,8 @@ def account_page(request: Request):
     m = member_of(request)
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     if m:
-        pv = {'google': 'Google', 'apple': 'Apple', 'email': '이메일'}.get(m.get('provider'), m.get('provider'))
-        return HTMLResponse('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>내 계정 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS +
-            '</head><body><div class="box"><h1>MAPDAL<span>SEOUL</span></h1><div class="sub">MY ACCOUNT</div>'
-            '<div class="kv"><b>이름</b><span>%s</span><b>이메일</b><span>%s</span><b>가입방법</b><span>%s 계정</span><b>가입일</b><span>%s</span></div>'
-            '<a class="sbtn" href="/shop.html">SHOP 바로가기</a><a class="sbtn" href="/">홈으로</a>'
-            '<a class="out" href="/auth/logout">로그아웃</a>'
-            '<div class="foot">SHOP SEONGSU, FROM ANYWHERE</div></div></body></html>'
-            % (h(m.get('name')) or '회원', h(m.get('email')) or '-', pv, h((m.get('created') or '')[:10])))
+        mdata = {'ok': True}
+        return HTMLResponse(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False)))
     g_on = bool(os.environ.get('GOOGLE_CLIENT_ID'))
     a_on = all(_apple_conf().values())
     social = ('<a class="sbtn%s" href="/auth/google">G · Google 계정으로 계속하기%s</a>'
@@ -1642,7 +1978,9 @@ def api_members(request: Request):
     rs = rows('SELECT * FROM members ORDER BY created DESC LIMIT 300')
     total = num((one('SELECT COUNT(*) AS c FROM members') or {}).get('c'))
     return {'total': total, 'rows': [{'id': r['id'], 'provider': r.get('provider'), 'email': r.get('email') or '',
-            'name': r.get('name') or '', 'created': (r.get('created') or '')[:16].replace('T', ' ')} for r in rs]}
+            'name': r.get('name') or '', 'created': (r.get('created') or '')[:16].replace('T', ' '),
+            'phone': r.get('phone') or '', 'verified': num(r.get('phone_verified')),
+            'points': num(r.get('points'))} for r in rs]}
 
 # ═══════════════ 이메일 회원가입/로그인 + 헤더 로그인 버튼 ═══════════════
 _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
@@ -1724,6 +2062,443 @@ def _inject_auth(html):
     if 'mpAuthJs' in html: return html
     i = html.lower().rfind('</body>')
     return (html[:i] + AUTH_SNIPPET + html[i:]) if i >= 0 else (html + AUTH_SNIPPET)
+
+# ── 관리자: 문의/상품Q&A/취소·반품·교환 요청 처리 + 포인트 ──
+@admin_router.get('/admin/api/cs')
+def api_cs(request: Request):
+    a = get_actor(request); need(a, 0)
+    inq = rows('SELECT q.*, m.name AS mname, m.email FROM member_inquiries q LEFT JOIN members m ON m.id=q.member_id ORDER BY q.created DESC LIMIT 100')
+    nm = _state['pname'] or 'id'
+    pq = rows('SELECT q.*, m.name AS mname, p.%s AS pname FROM member_pqna q LEFT JOIN members m ON m.id=q.member_id LEFT JOIN products p ON p.id=q.product_id ORDER BY q.created DESC LIMIT 100' % nm)
+    rq = rows('SELECT r.*, m.name AS mname, m.phone AS mphone FROM member_requests r LEFT JOIN members m ON m.id=r.member_id ORDER BY r.created DESC LIMIT 100')
+    krt = {'cancel': '취소', 'return': '반품', 'exchange': '교환'}
+    return {'inq': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
+                     'mname': r.get('mname') or '', 'email': r.get('email') or '',
+                     'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
+                     'answer': r.get('answer') or ''} for r in inq],
+            'pqna': [{'id': r['id'], 'pname': r.get('pname') or r.get('product_id'), 'question': r['question'],
+                      'mname': r.get('mname') or '', 'created': (r['created'] or '')[:16].replace('T', ' '),
+                      'status': r['status'], 'answer': r.get('answer') or ''} for r in pq],
+            'reqs': [{'id': r['id'], 'order_id': r['order_id'], 'rtype': krt.get(r['rtype'], r['rtype']),
+                      'reason': r['reason'], 'mname': r.get('mname') or '', 'mphone': r.get('mphone') or '',
+                      'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
+                      'memo': r.get('admin_memo') or ''} for r in rq]}
+
+@admin_router.post('/admin/api/cs/answer')
+def api_cs_answer(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 1, '문의 답변')
+    kind = body.get('kind'); ans = (body.get('answer') or '').strip()[:2000]
+    if kind not in ('inq', 'pqna') or not ans: raise HTTPException(400, '답변 내용을 입력하세요')
+    t = 'member_inquiries' if kind == 'inq' else 'member_pqna'
+    n = run("UPDATE %s SET answer=?, status='답변완료', answered_at=?, answered_by=? WHERE id=?" % t,
+            (ans, now_iso(), a['name'], body.get('id')))
+    if not n: raise HTTPException(404, 'not found')
+    audit(a, '문의답변', body.get('id'), ('1:1' if kind == 'inq' else '상품Q&A'))
+    return {'ok': True}
+
+@admin_router.post('/admin/api/cs/req-update')
+def api_cs_req(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 1, '요청 처리')
+    st = body.get('status')
+    if st not in ('접수', '처리중', '완료', '거절'): raise HTTPException(400, 'bad status')
+    n = run('UPDATE member_requests SET status=?, admin_memo=?, updated=? WHERE id=?',
+            (st, (body.get('memo') or '').strip()[:300], now_iso(), body.get('id')))
+    if not n: raise HTTPException(404, 'not found')
+    audit(a, '요청처리', body.get('id'), st)
+    return {'ok': True}
+
+@admin_router.post('/admin/api/members/points')
+def api_member_points(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '포인트 지급')
+    m = one('SELECT * FROM members WHERE id=?', (body.get('id'),))
+    if not m: raise HTTPException(404, 'not found')
+    delta = num(body.get('delta'))
+    if not delta: raise HTTPException(400, '지급/차감 포인트를 입력하세요')
+    nv = max(0, num(m.get('points')) + delta)
+    run('UPDATE members SET points=? WHERE id=?', (nv, m['id']))
+    audit(a, '포인트지급', m.get('email') or m['id'], '%+d → %d (%s)' % (delta, nv, (body.get('reason') or '')[:60]))
+    return {'ok': True, 'points': nv}
+
+# ═══════════════════ 마이페이지 회원 API (주문연동·요청·찜·문의) ═══════════
+def member_required(request: Request):
+    m = member_of(request)
+    if not m: raise HTTPException(401, '로그인이 필요합니다')
+    return m
+
+def phone_variants(d):
+    v = {d}
+    if len(d) == 11: v.add(d[:3] + '-' + d[3:7] + '-' + d[7:])
+    if len(d) == 10:
+        v.add(d[:3] + '-' + d[3:6] + '-' + d[6:]); v.add(d[:2] + '-' + d[2:6] + '-' + d[6:])
+    return [x for x in v if x]
+
+def member_orders_where(m):
+    d = digits(m.get('phone') or '')
+    if not (num(m.get('phone_verified')) and len(d) >= 9): return None, ()
+    conds, args = [], []
+    for p in phone_variants(d):
+        conds.append('buyer LIKE ?'); args.append('%' + p + '%')
+    return '(' + ' OR '.join(conds) + ')', tuple(args)
+
+def order_step(status, fulfill):
+    if status == 'CANCELLED' or (fulfill or '') == 'CANCELLED': return 0, '취소됨'
+    if status == 'FAILED': return 0, '결제실패'
+    if status == 'PENDING': return 1, '주문접수'
+    return {'NEW': (2, '결제완료'), 'PREPARING': (3, '배송준비중'),
+            'SHIPPED': (4, '배송중'), 'DONE': (5, '배송완료')}.get(fulfill or 'NEW', (2, '결제완료'))
+
+def _own_order(m, oid):
+    w, args = member_orders_where(m)
+    if not w: raise HTTPException(403, '휴대폰 인증 후 이용할 수 있습니다')
+    r = one('SELECT * FROM orders WHERE order_id=? AND ' + w, (oid,) + args)
+    if not r: raise HTTPException(404, '내 주문이 아니거나 찾을 수 없습니다')
+    return r
+
+def system_sms(phone, text, tag, order_id=''):
+    cf = solapi_conf()
+    if not (cf['key'] and cf['sec'] and cf['sender']):
+        run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
+            (uid(), now_iso(), order_id, phone, 'sms', tag, 'DRY', '발송사 미설정 — ' + text[:150], '시스템'))
+        return True, True
+    try:
+        blen = len(text.encode('euc-kr', errors='replace'))
+    except Exception:
+        blen = len(text) * 2
+    msg = {'to': phone, 'from': digits(cf['sender']), 'text': text,
+           'type': 'LMS' if blen > 90 else 'SMS'}
+    if msg['type'] == 'LMS': msg['subject'] = '맵달SEOUL 안내'
+    try:
+        res = solapi_send(msg)
+        ok = not (res.get('failedMessageList') or [])
+        run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
+            (uid(), now_iso(), order_id, phone, 'sms', tag, 'SENT' if ok else 'FAILED', text[:150], '시스템'))
+        return ok, False
+    except Exception as e:
+        run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
+            (uid(), now_iso(), order_id, phone, 'sms', tag, 'FAILED', str(e)[:150], '시스템'))
+        return False, False
+
+@admin_router.get('/api/member/overview')
+def api_m_overview(request: Request):
+    m = member_required(request)
+    grade = 'WELCOME'
+    d = digits(m.get('phone') or '')
+    if num(m.get('phone_verified')) and d:
+        c = one('SELECT grade FROM customers WHERE phone=?', (d,))
+        if c: grade = c.get('grade') or 'WELCOME'
+    counters = {str(i): 0 for i in range(1, 6)}
+    w, args = member_orders_where(m)
+    linked = bool(w)
+    if w:
+        d30 = (kst_today() - datetime.timedelta(days=30)).isoformat()
+        for r in rows('SELECT status, fulfill FROM orders WHERE created>=? AND ' + w, (d30,) + args):
+            st, _ = order_step(r.get('status'), r.get('fulfill'))
+            if st: counters[str(st)] += 1
+    likes = num((one('SELECT COUNT(*) AS c FROM member_likes WHERE member_id=?', (m['id'],)) or {}).get('c'))
+    return {'name': m.get('name') or '회원', 'email': m.get('email') or '',
+            'provider': {'google': 'Google', 'apple': 'Apple', 'email': '이메일'}.get(m.get('provider'), m.get('provider')),
+            'has_pw': m.get('provider') == 'email', 'phone': m.get('phone') or '',
+            'phone_verified': num(m.get('phone_verified')), 'points': num(m.get('points')),
+            'grade': grade, 'linked': linked, 'counters': counters, 'likes': likes,
+            'bank': m.get('bank') or '', 'acct': m.get('acct') or '', 'acct_name': m.get('acct_name') or '',
+            'fav_store': num(m.get('fav_store'))}
+
+@admin_router.get('/api/member/orders')
+def api_m_orders(request: Request):
+    m = member_required(request)
+    w, args = member_orders_where(m)
+    if not w: return {'linked': False, 'rows': []}
+    rng = request.query_params.get('range', '1m')
+    extra, eargs = '', ()
+    if rng in ('1m', '3m'):
+        d = (kst_today() - datetime.timedelta(days=30 if rng == '1m' else 90)).isoformat()
+        extra, eargs = ' AND created>=?', (d,)
+    rs = rows('SELECT order_id, created, status, fulfill, amount, items, tracking, receipt_url FROM orders WHERE '
+              + w + extra + ' ORDER BY created DESC LIMIT 100', args + eargs)
+    out = []
+    for r in rs:
+        its = jload(r.get('items'), [])
+        first = (its[0].get('n') or its[0].get('name') or '') if its else ''
+        st, kr = order_step(r.get('status'), r.get('fulfill'))
+        out.append({'order_id': r['order_id'], 'created': (r.get('created') or '')[:16].replace('T', ' '),
+                    'step': st, 'status_kr': kr, 'amount': num(r.get('amount')),
+                    'label': first[:24] + (' 외 %d' % (len(its) - 1) if len(its) > 1 else ''),
+                    'tracking': r.get('tracking') or '', 'receipt': r.get('receipt_url') or '',
+                    'paid': r.get('status') == 'PAID'})
+    return {'linked': True, 'rows': out}
+
+@admin_router.get('/api/member/orders/{oid}')
+def api_m_order_detail(oid: str, request: Request):
+    m = member_required(request)
+    r = _own_order(m, oid)
+    b = jload(r.get('buyer'), {})
+    st, kr = order_step(r.get('status'), r.get('fulfill'))
+    open_req = one("SELECT rtype, status FROM member_requests WHERE order_id=? AND member_id=? AND status IN ('접수','처리중')", (oid, m['id']))
+    return {'order_id': oid, 'created': (r.get('created') or '')[:19].replace('T', ' '), 'step': st, 'status_kr': kr,
+            'amount': num(r.get('amount')), 'ship_method': r.get('ship_method') or '',
+            'tracking': r.get('tracking') or '', 'receipt': r.get('receipt_url') or '',
+            'addr': '[%s] %s %s' % (b.get('zip', ''), b.get('addr1', ''), b.get('addr2', '')),
+            'items': [{'name': it.get('n') or it.get('name') or it.get('id', ''), 'qty': num(it.get('q') or 1),
+                       'price': num(it.get('p') or it.get('price') or 0)} for it in jload(r.get('items'), [])],
+            'can_cancel': (r.get('status') == 'PENDING') or (r.get('status') == 'PAID' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING')),
+            'can_return': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE'),
+            'open_request': dict(open_req) if open_req else None}
+
+@admin_router.post('/api/member/orders/{oid}/request')
+def api_m_order_request(oid: str, request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    r = _own_order(m, oid)
+    rtype = body.get('rtype')
+    reason = (body.get('reason') or '').strip()[:300]
+    if rtype not in ('cancel', 'return', 'exchange'): raise HTTPException(400, '요청 유형 오류')
+    if not reason: raise HTTPException(400, '사유를 입력해 주세요')
+    f = r.get('fulfill') or 'NEW'
+    if rtype == 'cancel':
+        if not ((r.get('status') == 'PENDING') or (r.get('status') == 'PAID' and f in ('NEW', 'PREPARING'))):
+            raise HTTPException(400, '발송 전 주문만 취소 요청이 가능합니다')
+    else:
+        if not (r.get('status') == 'PAID' and f in ('SHIPPED', 'DONE')):
+            raise HTTPException(400, '배송된 주문만 반품/교환 요청이 가능합니다')
+    if one("SELECT id FROM member_requests WHERE order_id=? AND member_id=? AND status IN ('접수','처리중')", (oid, m['id'])):
+        raise HTTPException(400, '이미 처리 중인 요청이 있습니다')
+    run('INSERT INTO member_requests(id,member_id,order_id,rtype,reason,created,status,admin_memo,updated) VALUES(?,?,?,?,?,?,?,?,?)',
+        (uid(), m['id'], oid, rtype, reason, now_iso(), '접수', '', now_iso()))
+    return {'ok': True}
+
+@admin_router.get('/api/member/requests')
+def api_m_requests(request: Request):
+    m = member_required(request)
+    kr = {'cancel': '취소', 'return': '반품', 'exchange': '교환'}
+    canc = []
+    w, args = member_orders_where(m)
+    if w:
+        canc = rows("SELECT order_id, created, amount FROM orders WHERE status='CANCELLED' AND " + w + ' ORDER BY created DESC LIMIT 30', args)
+    return {'requests': [{'id': r['id'], 'order_id': r['order_id'], 'rtype': kr.get(r['rtype'], r['rtype']),
+                          'reason': r['reason'], 'created': (r['created'] or '')[:16].replace('T', ' '),
+                          'status': r['status'], 'memo': r.get('admin_memo') or ''}
+                         for r in rows('SELECT * FROM member_requests WHERE member_id=? ORDER BY created DESC LIMIT 50', (m['id'],))],
+            'cancelled_orders': [{'order_id': c['order_id'], 'created': (c['created'] or '')[:10], 'amount': num(c['amount'])} for c in canc]}
+
+@admin_router.get('/api/member/receipt/{oid}', response_class=HTMLResponse)
+def api_m_receipt(oid: str, request: Request):
+    m = member_required(request)
+    r = _own_order(m, oid)
+    b = jload(r.get('buyer'), {}); its = jload(r.get('items'), [])
+    def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    tr = ''.join('<tr><td>%s</td><td class="r">%s</td><td class="r">%d</td><td class="r">%s</td></tr>'
+                 % (h(it.get('n') or it.get('name') or ''), format(num(it.get('p') or 0), ','),
+                    num(it.get('q') or 1), format(num(it.get('p') or 0) * num(it.get('q') or 1), ','))
+                 for it in its)
+    return HTMLResponse('''<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>거래명세서 — %s</title>
+<style>body{font-family:'Malgun Gothic',sans-serif;max-width:720px;margin:30px auto;padding:0 20px;color:#141414}
+h1{font-size:20px;border-bottom:3px solid #E8332A;padding-bottom:10px}
+table{width:100%%;border-collapse:collapse;margin:14px 0;font-size:13px}
+th,td{border:1px solid #ccc;padding:7px 9px}th{background:#141414;color:#fff;font-size:12px}
+.r{text-align:right}.meta{font-size:12.5px;line-height:1.9;margin:12px 0}
+.tot{font-size:15px;font-weight:700;text-align:right;margin-top:6px}
+.btn{background:#141414;color:#fff;border:0;padding:10px 18px;font-weight:700;cursor:pointer}
+@media print{.btn{display:none}}</style></head><body>
+<h1>거래명세서 <small style="font-weight:400;font-size:12px">MAPDAL SEOUL</small></h1>
+<div class="meta"><b>공급자</b> 주식회사 밀집 · 대표 황인범 · 서울특별시 성동구 성수이로16길 5 (맵달SEOUL)<br>
+<b>주문번호</b> %s &nbsp;·&nbsp; <b>거래일시</b> %s<br>
+<b>받는분</b> %s (%s) · %s</div>
+<table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th><th class="r">금액</th></tr>%s</table>
+<div class="tot">합계 (부가세 포함) &nbsp; ₩ %s</div>
+<div class="meta" style="color:#888;font-size:11.5px">본 명세서는 전자상거래 주문내역 확인용입니다. 세금계산서/현금영수증은 결제수단 및 신청에 따라 별도 발급됩니다.</div>
+<button class="btn" onclick="window.print()">인쇄하기</button></body></html>'''
+        % (h(oid), h(oid), h((r.get('created') or '')[:19].replace('T', ' ')),
+           h(b.get('name', '')), h(b.get('phone', '')),
+           h(('[%s] %s %s' % (b.get('zip', ''), b.get('addr1', ''), b.get('addr2', ''))).strip()),
+           tr, format(num(r.get('amount')), ',')))
+
+@admin_router.post('/api/member/phone/send')
+def api_m_phone_send(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    d = digits(body.get('phone'))
+    if len(d) < 10: raise HTTPException(400, '휴대폰 번호를 확인해 주세요')
+    ip = (request.client.host if request.client else '') or '-'
+    key = 'pv:' + m['id'] + ':' + ip; guard(key); fail_hit(key)
+    code = str(secrets.randbelow(900000) + 100000)
+    exp = (datetime.datetime.utcnow() + datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
+    run('INSERT INTO phone_verifications VALUES(?,?,?,?,?,?,0)', (uid(), m['id'], d, code, now_iso(), exp))
+    ok, dry = system_sms(d, '[맵달SEOUL] 휴대폰 인증번호는 [%s] 입니다. 5분 내에 입력해 주세요.' % code, '휴대폰인증')
+    if not ok: raise HTTPException(400, '문자 발송에 실패했습니다. 잠시 후 다시 시도해 주세요.')
+    return {'ok': True, 'dry': dry}
+
+@admin_router.post('/api/member/phone/verify')
+def api_m_phone_verify(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    code = (body.get('code') or '').strip()
+    v = one('SELECT * FROM phone_verifications WHERE member_id=? AND used=0 ORDER BY created DESC LIMIT 1', (m['id'],))
+    if not v or v.get('code') != code or (v.get('expires') or '') <= now_iso():
+        raise HTTPException(400, '인증번호가 올바르지 않거나 만료되었습니다')
+    run('UPDATE phone_verifications SET used=1 WHERE id=?', (v['id'],))
+    run('UPDATE members SET phone=?, phone_verified=1 WHERE id=?', (v['phone'], m['id']))
+    return {'ok': True, 'phone': v['phone']}
+
+@admin_router.post('/api/member/profile')
+def api_m_profile(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    sets, args = [], []
+    if body.get('name') is not None:
+        nm = (body.get('name') or '').strip()[:40]
+        if not nm: raise HTTPException(400, '이름을 입력하세요')
+        sets.append('name=?'); args.append(nm)
+    for k in ('bank', 'acct', 'acct_name'):
+        if k in body: sets.append('%s=?' % k); args.append((body.get(k) or '').strip()[:60])
+    if 'fav_store' in body: sets.append('fav_store=?'); args.append(1 if body['fav_store'] else 0)
+    if not sets: raise HTTPException(400, '변경할 값 없음')
+    run('UPDATE members SET %s WHERE id=?' % ', '.join(sets), tuple(args + [m['id']]))
+    return {'ok': True}
+
+@admin_router.post('/api/member/password')
+def api_m_password(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    if m.get('provider') != 'email': raise HTTPException(400, '소셜 가입 계정은 비밀번호가 없습니다')
+    old, new = body.get('old') or '', body.get('new') or ''
+    if len(new) < 8: raise HTTPException(400, '새 비밀번호는 8자 이상')
+    if not pw_verify(old, m.get('pw') or ''): raise HTTPException(403, '현재 비밀번호가 올바르지 않습니다')
+    run('UPDATE members SET pw=? WHERE id=?', (pw_hash(new), m['id']))
+    return {'ok': True}
+
+@admin_router.get('/api/member/addresses')
+def api_m_addr_list(request: Request):
+    m = member_required(request)
+    return {'rows': rows('SELECT * FROM member_addresses WHERE member_id=? ORDER BY is_default DESC, created DESC', (m['id'],))}
+
+@admin_router.post('/api/member/addresses')
+def api_m_addr_save(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    act = body.get('act', 'add')
+    if act == 'delete':
+        run('DELETE FROM member_addresses WHERE id=? AND member_id=?', (body.get('id'), m['id'])); return {'ok': True}
+    if act == 'default':
+        run('UPDATE member_addresses SET is_default=0 WHERE member_id=?', (m['id'],))
+        run('UPDATE member_addresses SET is_default=1 WHERE id=? AND member_id=?', (body.get('id'), m['id'])); return {'ok': True}
+    for k in ('rname', 'phone', 'zip', 'addr1'):
+        if not (body.get(k) or '').strip(): raise HTTPException(400, '받는분/연락처/우편번호/주소를 입력하세요')
+    first = not one('SELECT id FROM member_addresses WHERE member_id=? LIMIT 1', (m['id'],))
+    run('INSERT INTO member_addresses VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (uid(), m['id'], (body.get('label') or '기본')[:20], body['rname'][:30], digits(body['phone']),
+         body['zip'][:10], body['addr1'][:120], (body.get('addr2') or '')[:80], 1 if first else 0, now_iso()))
+    return {'ok': True}
+
+@admin_router.post('/api/member/likes')
+def api_m_like(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    pid = body.get('product_id') or ''
+    if not one('SELECT id FROM products WHERE id=?', (pid,)): raise HTTPException(404, '상품 없음')
+    ex = one('SELECT id FROM member_likes WHERE member_id=? AND product_id=?', (m['id'], pid))
+    if body.get('on'):
+        if not ex: run('INSERT INTO member_likes VALUES(?,?,?,?)', (uid(), m['id'], pid, now_iso()))
+    elif ex:
+        run('DELETE FROM member_likes WHERE id=?', (ex['id'],))
+    return {'ok': True, 'liked': bool(body.get('on'))}
+
+@admin_router.get('/api/member/likes')
+def api_m_likes(request: Request):
+    m = member_required(request)
+    nm = _state['pname'] or 'id'; pr = _state['pprice']
+    sel = 'p.id, p.%s AS name, p.stock, p.soldout' % nm + ((', p.%s AS price' % pr) if pr else '')
+    rs = rows('SELECT %s, l.created FROM member_likes l JOIN products p ON p.id=l.product_id WHERE l.member_id=? ORDER BY l.created DESC LIMIT 100' % sel, (m['id'],))
+    return {'rows': [{'id': r['id'], 'name': r.get('name') or r['id'], 'price': num(r.get('price')),
+                      'soldout': num(r.get('soldout')) or num(r.get('stock')) <= 0} for r in rs]}
+
+@admin_router.post('/api/member/restock')
+def api_m_restock(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    if not num(m.get('phone_verified')): raise HTTPException(400, '휴대폰 인증 후 신청할 수 있습니다 (마이페이지 > 회원정보 수정)')
+    pid = body.get('product_id') or ''
+    if not one('SELECT id FROM products WHERE id=?', (pid,)): raise HTTPException(404, '상품 없음')
+    if body.get('off'):
+        run('DELETE FROM member_restock WHERE member_id=? AND product_id=? AND notified=0', (m['id'], pid)); return {'ok': True, 'on': False}
+    if one('SELECT id FROM member_restock WHERE member_id=? AND product_id=? AND notified=0', (m['id'], pid)):
+        return {'ok': True, 'on': True}
+    run('INSERT INTO member_restock VALUES(?,?,?,?,?,0)', (uid(), m['id'], pid, digits(m.get('phone')), now_iso()))
+    return {'ok': True, 'on': True}
+
+@admin_router.get('/api/member/restock')
+def api_m_restock_list(request: Request):
+    m = member_required(request)
+    nm = _state['pname'] or 'id'
+    rs = rows('SELECT r.id AS rid, r.notified, r.created, p.id, p.%s AS name, p.soldout, p.stock FROM member_restock r JOIN products p ON p.id=r.product_id WHERE r.member_id=? ORDER BY r.created DESC LIMIT 100' % nm, (m['id'],))
+    return {'rows': [{'rid': r['rid'], 'id': r['id'], 'name': r.get('name') or r['id'],
+                      'notified': num(r['notified']), 'soldout': num(r.get('soldout')) or num(r.get('stock')) <= 0,
+                      'created': (r['created'] or '')[:10]} for r in rs]}
+
+@admin_router.post('/api/member/inquiries')
+def api_m_inq_create(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    title = (body.get('title') or '').strip()[:80]; bd = (body.get('body') or '').strip()[:2000]
+    if not title or not bd: raise HTTPException(400, '제목과 내용을 입력하세요')
+    run('INSERT INTO member_inquiries(id,member_id,order_id,title,body,created,status,answer,answered_at,answered_by) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (uid(), m['id'], (body.get('order_id') or '')[:40], title, bd, now_iso(), '접수', '', '', ''))
+    return {'ok': True}
+
+@admin_router.get('/api/member/inquiries')
+def api_m_inq_list(request: Request):
+    m = member_required(request)
+    return {'rows': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
+                      'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
+                      'answer': r.get('answer') or '', 'answered_at': (r.get('answered_at') or '')[:16].replace('T', ' ')}
+                     for r in rows('SELECT * FROM member_inquiries WHERE member_id=? ORDER BY created DESC LIMIT 50', (m['id'],))]}
+
+@admin_router.post('/api/member/pqna')
+def api_m_pqna_create(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    pid = body.get('product_id') or ''; q = (body.get('question') or '').strip()[:1000]
+    if not q: raise HTTPException(400, '문의 내용을 입력하세요')
+    if not one('SELECT id FROM products WHERE id=?', (pid,)): raise HTTPException(404, '상품 없음')
+    run('INSERT INTO member_pqna(id,member_id,product_id,question,created,status,answer,answered_at,answered_by) VALUES(?,?,?,?,?,?,?,?,?)',
+        (uid(), m['id'], pid, q, now_iso(), '접수', '', '', ''))
+    return {'ok': True}
+
+@admin_router.get('/api/member/pqna')
+def api_m_pqna_list(request: Request):
+    m = member_required(request)
+    nm = _state['pname'] or 'id'
+    rs = rows('SELECT q.*, p.%s AS pname FROM member_pqna q LEFT JOIN products p ON p.id=q.product_id WHERE q.member_id=? ORDER BY q.created DESC LIMIT 50' % nm, (m['id'],))
+    return {'rows': [{'id': r['id'], 'product': r.get('pname') or r.get('product_id'), 'product_id': r.get('product_id'),
+                      'question': r['question'], 'created': (r['created'] or '')[:16].replace('T', ' '),
+                      'status': r['status'], 'answer': r.get('answer') or ''} for r in rs]}
+
+@admin_router.get('/api/pqna')
+def api_pqna_public(request: Request):
+    try: ensure_ready()
+    except Exception: pass
+    pid = request.query_params.get('product_id', '')
+    rs = rows("SELECT q.question, q.answer, q.answered_at, m.name FROM member_pqna q LEFT JOIN members m ON m.id=q.member_id WHERE q.product_id=? AND q.status='답변완료' ORDER BY q.created DESC LIMIT 20", (pid,))
+    return {'rows': [{'q': r['question'], 'a': r.get('answer') or '',
+                      'name': ((r.get('name') or '고객')[:1] + '**'),
+                      'at': (r.get('answered_at') or '')[:10]} for r in rs]}
+
+@admin_router.get('/api/member/pdp-state')
+def api_m_pdp_state(request: Request):
+    try: ensure_ready()
+    except Exception: pass
+    m = member_of(request)
+    pid = request.query_params.get('product_id', '')
+    if not m: return {'login': False, 'liked': False, 'restock': False, 'verified': False}
+    return {'login': True, 'verified': bool(num(m.get('phone_verified'))),
+            'liked': bool(one('SELECT id FROM member_likes WHERE member_id=? AND product_id=?', (m['id'], pid))),
+            'restock': bool(one('SELECT id FROM member_restock WHERE member_id=? AND product_id=? AND notified=0', (m['id'], pid)))}
+
+@admin_router.post('/api/member/withdraw')
+def api_m_withdraw(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    if m.get('provider') == 'email':
+        if not pw_verify(body.get('password') or '', m.get('pw') or ''):
+            raise HTTPException(403, '비밀번호가 올바르지 않습니다')
+    elif (body.get('confirm') or '') != '탈퇴':
+        raise HTTPException(400, "'탈퇴' 를 정확히 입력해 주세요")
+    for t in ('member_sessions', 'member_likes', 'member_restock', 'member_addresses',
+              'member_requests', 'member_inquiries', 'member_pqna', 'phone_verifications'):
+        try: run('DELETE FROM %s WHERE member_id=?' % t, (m['id'],))
+        except Exception: pass
+    run('DELETE FROM members WHERE id=?', (m['id'],))
+    resp = JSONResponse({'ok': True})
+    resp.delete_cookie('mp_member')
+    return resp
 
 # ═══════ 정적 서빙 대체 (편집본 우선 · 반드시 모듈 마지막 라우트) ═══════
 import mimetypes

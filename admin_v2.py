@@ -1431,7 +1431,8 @@ def member_upsert(provider, sub, email, name):
             (email or '', name or '', row['id']))
         return row['id'], False
     mid = uid()
-    run('INSERT INTO members VALUES(?,?,?,?,?,?)', (mid, provider, sub, email or '', name or '', now_iso()))
+    run('INSERT INTO members(id,provider,sub,email,name,created) VALUES(?,?,?,?,?,?)',
+        (mid, provider, sub, email or '', name or '', now_iso()))
     return mid, True
 
 def _post_form(url, data):
@@ -1474,8 +1475,12 @@ def auth_google_cb(request: Request):
             ui = json.loads(r2.read().decode())
     except Exception:
         return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>Google 인증에 실패했습니다</h3><p>설정(클라이언트 ID/시크릿, 리디렉션 URI)을 확인하세요.</p><a href="/account">다시 시도</a>', status_code=400)
-    mid, is_new = member_upsert('google', str(ui.get('sub', '')), ui.get('email', ''), ui.get('name', ''))
-    sid = member_session_make(mid)
+    try:
+        mid, is_new = member_upsert('google', str(ui.get('sub', '')), ui.get('email', ''), ui.get('name', ''))
+        sid = member_session_make(mid)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>가입 처리 중 오류가 발생했습니다</h3><p>잠시 후 다시 시도해 주세요. 문제가 계속되면 관리자에게 문의하세요.</p><a href="/account">다시 시도</a>', status_code=500)
     from fastapi.responses import RedirectResponse
     resp = RedirectResponse('/account', status_code=302)
     resp.set_cookie('mp_member', sid, httponly=True, secure=True, samesite='lax', max_age=2592000)
@@ -1533,8 +1538,12 @@ async def auth_apple_cb(request: Request):
             u = json.loads(form.get('user'))
             name = ((u.get('name') or {}).get('lastName', '') + (u.get('name') or {}).get('firstName', '')).strip()
         except Exception: pass
-    mid, is_new = member_upsert('apple', str(claims.get('sub', '')), claims.get('email', ''), name)
-    sid = member_session_make(mid)
+    try:
+        mid, is_new = member_upsert('apple', str(claims.get('sub', '')), claims.get('email', ''), name)
+        sid = member_session_make(mid)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>가입 처리 중 오류가 발생했습니다</h3><p>잠시 후 다시 시도해 주세요.</p><a href="/account">다시 시도</a>', status_code=500)
     from fastapi.responses import RedirectResponse
     resp = RedirectResponse('/account', status_code=302)
     resp.set_cookie('mp_member', sid, httponly=True, secure=True, samesite='lax', max_age=2592000)

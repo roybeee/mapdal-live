@@ -150,6 +150,25 @@ def ensure_ready():
             runmany([('INSERT INTO notify_templates VALUES(?,?,?,?,?,?)',
                       (uid(), n, k, t, b, now_iso())) for n, k, t, b in SEED_TPL])
     except Exception: pass
+    try:
+        for pth, doc in (('privacy.html', PRIVACY_HTML), ('terms.html', TERMS_HTML)):
+            if not one('SELECT path FROM page_edits WHERE path=?', (pth,)):
+                run('INSERT INTO page_edits VALUES(?,?,?,?)', (pth, doc, now_iso(), '시스템'))
+        for pth in ('privacy.html', 'terms.html'):
+            row = one('SELECT html FROM page_edits WHERE path=?', (pth,))
+            if row and ('주식회사 밀집' in (row['html'] or '') or '등록 후 표기' in (row['html'] or '')):
+                fixed = (row['html']
+                         .replace('주식회사 밀집(이하 "회사")은', '맵달서울성수(이하 "회사")는')
+                         .replace('주식회사 밀집(이하 "회사")이 운영하는', '맵달서울성수(이하 "회사")가 운영하는')
+                         .replace('주식회사 밀집', '맵달서울성수')
+                         .replace('황인범 (대표이사)', '황인범 (공동대표)')
+                         .replace('(문의 이메일 등록 후 표기)', 'ceo@mealzip.kr')
+                         .replace('(대표번호 등록 후 표기)', '010-8176-8525')
+                         .replace('(사업자등록번호 등록 후 표기)', '394-85-03267')
+                         .replace('(통신판매업 신고 후 표기)', '제2026-서울성동-0426호'))
+                run('UPDATE page_edits SET html=?, updated=? WHERE path=?', (fixed, now_iso(), pth))
+    except Exception:
+        pass
     ac = _cols('admins')
     for col in ('username', 'pw'):
         if ac and col not in ac:
@@ -2211,6 +2230,150 @@ else{a.style.cssText='position:fixed;top:12px;right:14px;z-index:99999;backgroun
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}})();</script>"""
 
 
+# ═══════════════ 법정 고지: 개인정보처리방침·이용약관·푸터 ═══════════════
+def biz_info():
+    return {'reg': _genv('BIZ_REG_NO') or '394-85-03267',
+            'mail_order': _genv('BIZ_ORDER_NO') or '제2026-서울성동-0426호',
+            'phone': _genv('BIZ_PHONE') or '010-8176-8525',
+            'email': _genv('BIZ_EMAIL') or 'ceo@mealzip.kr'}
+
+_POLICY_CSS = '''<style>:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans KR','Malgun Gothic',sans-serif;background:var(--paper);color:var(--black);font-size:14px;line-height:1.8}
+header{background:var(--black);color:#fff;padding:14px 20px}header a{color:#fff;text-decoration:none;font-family:'Black Han Sans',sans-serif;font-size:19px}header a span{color:var(--red)}
+main{max-width:860px;margin:0 auto;padding:30px 20px 90px;background:#fff;border:1px solid #e3e1db;border-top:0}
+h1{font-size:22px;border-bottom:3px solid var(--red);padding-bottom:12px;margin-bottom:8px}
+h2{font-size:15.5px;margin:26px 0 8px;border-left:4px solid var(--red);padding-left:9px}
+p,li{font-size:13.5px;color:#333}ul,ol{padding-left:20px;margin:6px 0}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12.5px}
+th,td{border:1px solid #ddd;padding:7px 9px;text-align:left}th{background:#141414;color:#fff;font-size:11.5px}
+.meta{font-size:12px;color:#888;margin-bottom:18px}.hl{background:#fff2f1;padding:2px 5px}
+</style><link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">'''
+
+PRIVACY_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>개인정보처리방침 — MAPDAL SEOUL</title>''' + _POLICY_CSS + '''</head><body>
+<header><a href="/">MAPDAL<span>SEOUL</span></a></header><main>
+<h1>개인정보처리방침</h1>
+<div class="meta">맵달서울성수(이하 "회사")는 「개인정보 보호법」 제30조에 따라 정보주체의 개인정보를 보호하고 관련 고충을 신속하게 처리하기 위하여 다음과 같이 개인정보처리방침을 수립·공개합니다.<br>공고일: 2026년 7월 7일 · 시행일: 2026년 7월 7일</div>
+
+<h2>제1조 (개인정보의 처리 목적 및 수집 항목)</h2>
+<p>회사는 다음 목적을 위해 개인정보를 처리하며, 목적이 변경되는 경우 별도 동의를 받습니다.</p>
+<table><tr><th>구분</th><th>수집 항목</th><th>처리 목적</th><th>수집 방법</th></tr>
+<tr><td>회원가입(필수)</td><td>이름, 성별, 연령대, 생년월일, 휴대폰 번호, 이메일 주소, 비밀번호(이메일 가입 시, 일방향 암호화 저장)</td><td>회원 식별·관리, 주문내역 연동, 본인 확인, 연령·성별 기반 상품 추천 및 통계, 생일 혜택 제공</td><td>회원가입 화면, 카카오·Google 계정 연동(동의 항목에 한함)</td></tr>
+<tr><td>선택</td><td>배송지 정보(수령인, 주소, 연락처), 환불계좌(은행·계좌번호·예금주), 마케팅 수신 동의 여부</td><td>배송지 자동 입력 편의, 환불 처리, 이벤트·혜택 안내</td><td>마이페이지, 카카오 배송지 연동(동의 시)</td></tr>
+<tr><td>주문/결제</td><td>주문자·수령인 정보(이름, 연락처, 주소), 주문·결제 내역</td><td>계약 이행(상품 배송), 결제·환불 처리, 고객 상담</td><td>주문서 작성 화면</td></tr>
+<tr><td>자동 수집</td><td>접속 기록, 쿠키(로그인 세션 유지 목적)</td><td>서비스 제공 및 부정 이용 방지</td><td>서비스 이용 과정에서 자동 생성</td></tr></table>
+<p>※ 회사는 주민등록번호, CI(연계정보) 등 고유식별정보를 수집하지 않습니다. 만 14세 미만 아동의 회원가입은 받지 않습니다.</p>
+
+<h2>제2조 (개인정보의 보유 및 이용 기간)</h2>
+<ul><li>회원 정보: 회원 탈퇴 시까지 (탈퇴 즉시 파기)</li>
+<li>다만 관계 법령에 따라 다음 기간 동안 보존합니다 — 계약·청약철회 기록 5년, 대금결제·재화공급 기록 5년, 소비자 불만·분쟁처리 기록 3년(전자상거래법), 접속 기록 3개월(통신비밀보호법)</li></ul>
+
+<h2>제3조 (개인정보 처리의 위탁)</h2>
+<table><tr><th>수탁자</th><th>위탁 업무</th></tr>
+<tr><td>토스페이먼츠 주식회사</td><td>전자결제(결제 승인·취소) 처리</td></tr>
+<tr><td>주식회사 솔라피(SOLAPI)</td><td>휴대폰 본인확인·주문/배송 안내 문자 및 알림톡 발송</td></tr>
+<tr><td>지정 택배사</td><td>상품 배송</td></tr></table>
+
+<h2>제4조 (개인정보의 국외 이전)</h2>
+<table><tr><th>이전받는 자</th><th>국가</th><th>이전 항목</th><th>이전 방법·일시</th><th>이용 목적·보유기간</th></tr>
+<tr><td>Render Services, Inc.</td><td>미국</td><td>서비스 운영에 필요한 회원·주문 정보 일체</td><td>서비스 이용 시 정보통신망을 통한 전송</td><td>클라우드 서버 운영 및 데이터 보관 / 위 제2조의 보유기간</td></tr></table>
+<p>정보주체는 국외 이전을 거부할 수 있으나, 이 경우 서비스 이용이 제한될 수 있습니다.</p>
+
+<h2>제5조 (개인정보의 제3자 제공)</h2>
+<p>회사는 정보주체의 동의 또는 법령의 규정에 의한 경우를 제외하고 개인정보를 제3자에게 제공하지 않습니다.</p>
+
+<h2>제6조 (정보주체의 권리·의무 및 행사 방법)</h2>
+<p>정보주체는 언제든지 개인정보 열람·정정·삭제·처리정지를 요구할 수 있습니다. 마이페이지에서 직접 조회·수정·탈퇴할 수 있으며, 아래 개인정보 보호책임자에게 서면·이메일로도 요청할 수 있습니다. 회사는 요청을 받은 날로부터 지체 없이 조치합니다.</p>
+
+<h2>제7조 (개인정보의 파기)</h2>
+<p>보유기간 경과·처리목적 달성 시 지체 없이 파기합니다. 전자적 파일은 복구 불가능한 방법으로 삭제하고, 출력물은 분쇄·소각합니다.</p>
+
+<h2>제8조 (안전성 확보 조치)</h2>
+<ul><li>비밀번호 일방향 암호화(PBKDF2-SHA256) 저장, 전 구간 SSL/TLS 암호화 전송</li>
+<li>관리자 권한 등급 분리 및 접근·처리 기록(감사로그) 보관, 로그인 시도 제한</li>
+<li>개인정보 취급 인원 최소화 및 교육</li></ul>
+
+<h2>제9조 (쿠키의 운용)</h2>
+<p>회사는 로그인 세션 유지를 위한 필수 쿠키만 사용하며, 광고 목적의 추적 쿠키를 사용하지 않습니다. 브라우저 설정에서 쿠키를 거부할 수 있으나 로그인 서비스 이용이 제한됩니다.</p>
+
+<h2>제10조 (개인정보 보호책임자)</h2>
+<table><tr><th>구분</th><th>내용</th></tr>
+<tr><td>개인정보 보호책임자</td><td>황인범 (공동대표)</td></tr>
+<tr><td>연락처</td><td>이메일: ceo@mealzip.kr / 전화: 010-8176-8525</td></tr></table>
+<p>기타 개인정보 침해 신고·상담: 개인정보침해신고센터(privacy.kisa.or.kr, 국번없이 118), 개인정보분쟁조정위원회(kopico.go.kr, 1833-6972)</p>
+
+<h2>제11조 (개인정보처리방침의 변경)</h2>
+<p>본 방침의 내용 추가·삭제·수정 시 시행 7일 전부터 홈페이지 공지사항을 통해 고지합니다.</p>
+</main></body></html>'''
+
+TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>이용약관 — MAPDAL SEOUL</title>''' + _POLICY_CSS + '''</head><body>
+<header><a href="/">MAPDAL<span>SEOUL</span></a></header><main>
+<h1>이용약관</h1>
+<div class="meta">시행일: 2026년 7월 7일</div>
+
+<h2>제1조 (목적)</h2>
+<p>이 약관은 맵달서울성수(이하 "회사")가 운영하는 MAPDAL SEOUL 온라인 몰(mapdal.kr, 이하 "몰")에서 제공하는 전자상거래 서비스의 이용 조건 및 절차, 회사와 이용자의 권리·의무를 규정함을 목적으로 합니다.</p>
+
+<h2>제2조 (정의)</h2>
+<ol><li>"회원"이란 몰에 개인정보를 제공하여 가입한 자로서 몰의 서비스를 계속 이용할 수 있는 자를 말합니다.</li>
+<li>"드롭(DROP)"이란 회사가 지정한 일시에 한정 수량으로 판매를 개시하는 방식을, "래플(RAFFLE)"이란 응모자 중 추첨을 통해 구매 자격을 부여하는 방식을 말합니다.</li></ol>
+
+<h2>제3조 (약관의 명시와 개정)</h2>
+<p>회사는 이 약관과 상호, 대표자, 주소, 사업자등록번호, 통신판매업 신고번호, 연락처 등을 몰의 초기 화면(하단)에 게시합니다. 회사는 관련 법령을 위배하지 않는 범위에서 약관을 개정할 수 있으며, 개정 시 적용일자 7일 전(회원에게 불리한 변경은 30일 전)부터 공지합니다.</p>
+
+<h2>제4조 (회원가입 및 탈퇴)</h2>
+<ol><li>회원가입은 이메일 또는 카카오·Google 계정 연동으로 신청하며, 회사가 승낙함으로써 성립합니다.</li>
+<li>만 14세 미만은 회원으로 가입할 수 없습니다.</li>
+<li>회원은 마이페이지의 회원탈퇴 기능으로 언제든지 탈퇴할 수 있으며, 회사는 관계 법령상 보존 의무가 있는 정보를 제외하고 즉시 회원 정보를 파기합니다.</li>
+<li>타인 정보 도용, 허위 정보 기재, 부정한 방법의 래플 응모(다계정·매크로 등)의 경우 회사는 이용을 제한하거나 자격을 상실시킬 수 있습니다.</li></ol>
+
+<h2>제5조 (구매신청 및 계약의 성립)</h2>
+<p>이용자는 몰에서 상품 선택, 주문자·배송지 정보 입력, 결제의 절차로 구매를 신청합니다. 계약은 회사의 주문 확인(결제 승인) 통지가 이용자에게 도달한 때 성립합니다. 재고 소진, 정보 오기재, 부정 주문의 경우 회사는 주문을 취소할 수 있으며 이 경우 결제 금액 전액을 환불합니다.</p>
+
+<h2>제6조 (드롭·래플에 관한 특칙)</h2>
+<ol><li>래플 응모 자격, 응모 기간, 당첨자 수, 결제 기한은 각 상품 페이지에 공지하며, 추첨은 공정한 방식으로 진행합니다.</li>
+<li>당첨자가 결제 기한 내 결제하지 않으면 당첨은 자동 취소되며, 회사는 예비 당첨자에게 기회를 부여할 수 있습니다.</li>
+<li>부정 응모가 확인되면 당첨 취소 및 향후 응모가 제한될 수 있습니다.</li></ol>
+
+<h2>제7조 (결제)</h2>
+<p>대금 결제는 토스페이먼츠를 통한 신용·체크카드, 계좌이체, 간편결제 등 몰이 제공하는 방법으로 할 수 있습니다. 회사는 결제 정보를 직접 저장하지 않으며, 결제 금액은 서버에서 재검증됩니다.</p>
+
+<h2>제8조 (배송)</h2>
+<p>회사는 결제 확인 후 영업일 기준 통상 2~5일 이내 상품을 발송합니다(냉장·냉동 식품은 콜드체인 배송). 천재지변, 물류 사정 등 불가항력 사유가 있는 경우 그 기간은 배송 기간에서 제외됩니다.</p>
+
+<h2>제9조 (청약철회 및 반품·교환)</h2>
+<ol><li>이용자는 상품을 공급받은 날부터 7일 이내에 청약철회를 할 수 있습니다.</li>
+<li>다만 「전자상거래 등에서의 소비자보호에 관한 법률」 제17조 제2항에 따라 다음의 경우 청약철회가 제한됩니다.
+<ul><li>이용자의 책임 있는 사유로 상품이 멸실·훼손된 경우</li>
+<li><span class="hl">신선·냉장·냉동식품 등 시간이 지나 다시 판매하기 곤란할 정도로 가치가 현저히 감소한 경우(개봉·해동 포함)</span></li>
+<li>이용자의 사용 또는 일부 소비로 가치가 현저히 감소한 경우</li></ul></li>
+<li>상품이 표시·광고 내용과 다르거나 계약 내용과 다르게 이행된 경우, 공급받은 날부터 3개월 이내 또는 그 사실을 안 날부터 30일 이내에 청약철회를 할 수 있습니다.</li>
+<li>청약철회 시 회사는 상품 반환을 받은 날부터 3영업일 이내에 대금을 환급합니다. 단순 변심에 의한 반품 배송비는 이용자가 부담합니다.</li></ol>
+
+<h2>제10조 (포인트)</h2>
+<p>회사는 회원에게 포인트를 부여할 수 있습니다. 포인트의 적립 기준, 사용 방법, 유효기간은 별도 공지하며, 현재 결제 시 사용 기능은 준비 중입니다. 포인트는 현금으로 환급되지 않으며 회원 탈퇴 시 소멸합니다.</p>
+
+<h2>제11조 (회사와 이용자의 의무)</h2>
+<p>회사는 법령과 이 약관에 따라 지속적이고 안정적으로 서비스를 제공하며, 이용자의 개인정보를 개인정보처리방침에 따라 보호합니다. 이용자는 타인의 정보 도용, 몰 운영 방해, 지식재산권 침해 행위를 하여서는 안 됩니다.</p>
+
+<h2>제12조 (면책 및 분쟁 해결)</h2>
+<p>회사는 천재지변 등 불가항력으로 인한 서비스 장애에 대해 책임을 지지 않습니다. 회사는 이용자의 불만 및 분쟁을 신속히 처리하며, 처리가 곤란한 경우 공정거래위원회 또는 시·도 소비자분쟁조정기구의 조정에 따를 수 있습니다. 회사와 이용자 간 소송은 민사소송법상의 관할법원에 제기합니다.</p>
+
+<h2>부칙</h2>
+<p>이 약관은 2026년 7월 7일부터 시행합니다.</p>
+</main></body></html>'''
+
+FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#9a9a9a;font:12px/1.9 'IBM Plex Sans KR',sans-serif;padding:26px 20px 34px;margin-top:50px">
+<div style="max-width:1180px;margin:0 auto">
+<div style="margin-bottom:10px"><a href="/terms.html" style="color:#e6e6e6;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a></div>
+<div><span style="color:#ddd;font-weight:700">맵달서울성수</span> · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 (성수동2가)<br>
+사업자등록번호 {reg} · 통신판매업신고 {mail_order} · 전화 {phone} · 이메일 {email}<br>
+호스팅서비스 제공: Render Services, Inc.<br>
+<span style="font-size:11px;color:#777">MAPDAL SEOUL — SHOP SEONGSU, FROM ANYWHERE.</span></div>
+</div></footer>'''
+
+def footer_snippet():
+    return FOOTER_SNIPPET_TPL.format(**biz_info())
+
 LIKE_SNIPPET = r"""<script id="mpLikeJs">(function(){
 var RX=/(^|\/)(product-[A-Za-z0-9._-]+\.html|album-detail\.html\?uid=[A-Za-z0-9_-]+)([?#]|$)/;
 var ST={login:false,liked:{}},seen={};
@@ -2250,6 +2413,7 @@ def _inject_auth(html):
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
+    if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
     return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
@@ -2491,7 +2655,7 @@ th,td{border:1px solid #ccc;padding:7px 9px}th{background:#141414;color:#fff;fon
 .btn{background:#141414;color:#fff;border:0;padding:10px 18px;font-weight:700;cursor:pointer}
 @media print{.btn{display:none}}</style></head><body>
 <h1>거래명세서 <small style="font-weight:400;font-size:12px">MAPDAL SEOUL</small></h1>
-<div class="meta"><b>공급자</b> 주식회사 밀집 · 대표 황인범 · 서울특별시 성동구 성수이로16길 5 (맵달SEOUL)<br>
+<div class="meta"><b>공급자</b> 맵달서울성수 · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 · 사업자등록번호 394-85-03267<br>
 <b>주문번호</b> %s &nbsp;·&nbsp; <b>거래일시</b> %s<br>
 <b>받는분</b> %s (%s) · %s</div>
 <table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th><th class="r">금액</th></tr>%s</table>

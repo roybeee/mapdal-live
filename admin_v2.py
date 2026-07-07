@@ -29,9 +29,12 @@ def _from_app(name, default=''):
 
 def admin_token():  return os.environ.get('ADMIN_TOKEN') or _from_app('ADMIN_TOKEN', '')
 def toss_secret():  return os.environ.get('TOSS_SECRET_KEY') or _from_app('TOSS_SECRET_KEY', '')
+def _genv(k):
+    return (os.environ.get(k) or '').strip()
+
 def solapi_conf():
-    return {'key': os.environ.get('SOLAPI_API_KEY', ''), 'sec': os.environ.get('SOLAPI_API_SECRET', ''),
-            'sender': os.environ.get('SOLAPI_SENDER', ''), 'pf': os.environ.get('SOLAPI_PF_ID', '')}
+    return {'key': _genv('SOLAPI_API_KEY'), 'sec': _genv('SOLAPI_API_SECRET'),
+            'sender': _genv('SOLAPI_SENDER'), 'pf': _genv('SOLAPI_PF_ID')}
 
 # ── DB 어댑터 ───────────────────────────────────────────────────────────
 def _conn():
@@ -171,6 +174,11 @@ def ensure_ready():
                      ('acct_name','TEXT'),('fav_store','INTEGER DEFAULT 0')):
         if mcx and col not in mcx:
             try: run("ALTER TABLE members ADD COLUMN %s %s" % (col, typ))
+            except Exception: pass
+    lcx = _cols('member_likes')
+    for col, typ in (('page', 'TEXT'), ('pname', 'TEXT'), ('pprice', 'INTEGER')):
+        if lcx and col not in lcx:
+            try: run("ALTER TABLE member_likes ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr'):
@@ -844,7 +852,7 @@ def api_system(request: Request):
         oc = pc = cc = 0; db_ok = False
     return {'db': 'PostgreSQL' if IS_PG else 'SQLite', 'db_ok': db_ok, 'orders': oc, 'products': pc,
             'customers': cc, 'toss_mode': mode,
-            'google_oauth': bool(os.environ.get('GOOGLE_CLIENT_ID')),
+            'google_oauth': bool(_genv('GOOGLE_CLIENT_ID')),
             'apple_oauth': bool(os.environ.get('APPLE_CLIENT_ID')),
             'solapi': '설정됨 (발신 %s%s)' % (cf['sender'], ' · 알림톡 연동' if cf['pf'] else ' · SMS만') if cf['key'] else '미설정 (기록 모드)',
             'paykey_col': _state['paykey'] or '(감지 안 됨)', 'time_kst': kst_now().strftime('%Y-%m-%d %H:%M')}
@@ -1550,7 +1558,7 @@ import urllib.parse
 
 @admin_router.get('/auth/google')
 def auth_google(request: Request):
-    cid = os.environ.get('GOOGLE_CLIENT_ID', '')
+    cid = _genv('GOOGLE_CLIENT_ID')
     if not cid:
         return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>Google 로그인 준비 중</h3><p>관리자가 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 환경변수를 설정하면 활성화됩니다.</p><a href="/account">돌아가기</a>')
     state = secrets.token_urlsafe(16)
@@ -1571,15 +1579,26 @@ def auth_google_cb(request: Request):
         return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>인증 세션이 만료되었습니다</h3><a href="/account">다시 시도</a>', status_code=400)
     try:
         tok = _post_form('https://oauth2.googleapis.com/token', {
-            'code': p['code'], 'client_id': os.environ.get('GOOGLE_CLIENT_ID', ''),
-            'client_secret': os.environ.get('GOOGLE_CLIENT_SECRET', ''),
+            'code': p['code'], 'client_id': _genv('GOOGLE_CLIENT_ID'),
+            'client_secret': _genv('GOOGLE_CLIENT_SECRET'),
             'redirect_uri': _burl(request) + '/auth/google/callback', 'grant_type': 'authorization_code'})
         req = urllib.request.Request('https://openidconnect.googleapis.com/v1/userinfo',
                                      headers={'Authorization': 'Bearer ' + tok.get('access_token', '')})
         with urllib.request.urlopen(req, timeout=15) as r2:
             ui = json.loads(r2.read().decode())
+    except urllib.error.HTTPError as e:
+        try: err = json.loads(e.read().decode())
+        except Exception: err = {}
+        print('GOOGLE TOKEN ERROR:', err)
+        code = err.get('error', 'unknown')
+        hint = {'invalid_client': 'Render 환경변수 GOOGLE_CLIENT_SECRET 값이 콘솔의 클라이언트 보안 비밀과 다릅니다. 앞뒤 공백 없이 다시 붙여넣으세요.',
+                'redirect_uri_mismatch': 'Google 콘솔 > 사용자 인증 정보 > 승인된 리디렉션 URI에 https://mapdal.kr/auth/google/callback 를 한 글자도 다르지 않게 등록하세요.',
+                'invalid_grant': '인증 코드가 만료되었습니다. 아래 [다시 시도]를 눌러 처음부터 진행하세요.',
+                'unauthorized_client': 'OAuth 클라이언트 유형이 웹 애플리케이션인지 확인하세요.'}.get(code, '클라이언트 ID/시크릿과 리디렉션 URI 설정을 확인하세요.')
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px;max-width:560px"><h3>Google 인증에 실패했습니다 <small style="color:#c0392b">(%s)</small></h3><p style="line-height:1.7">%s</p><a href="/account">다시 시도</a>' % (code, hint), status_code=400)
     except Exception:
-        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>Google 인증에 실패했습니다</h3><p>설정(클라이언트 ID/시크릿, 리디렉션 URI)을 확인하세요.</p><a href="/account">다시 시도</a>', status_code=400)
+        import traceback; traceback.print_exc()
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px"><h3>Google 인증에 실패했습니다</h3><p>일시적 통신 오류일 수 있습니다. 다시 시도해 주세요.</p><a href="/account">다시 시도</a>', status_code=400)
     try:
         mid, is_new = member_upsert('google', str(ui.get('sub', '')), ui.get('email', ''), ui.get('name', ''))
         sid = member_session_make(mid)
@@ -1593,7 +1612,7 @@ def auth_google_cb(request: Request):
     return resp
 
 def _apple_conf():
-    return {k: os.environ.get(k, '') for k in ('APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY')}
+    return {k: _genv(k) for k in ('APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY')}
 
 @admin_router.get('/auth/apple')
 def auth_apple(request: Request):
@@ -1825,9 +1844,9 @@ async function receipts(){if(!OV.linked){$('#pane').innerHTML=needPhone();return
 
 async function likesPane(){const d=await api('/api/member/likes');
  $('#pane').innerHTML='<div class="panel"><h3>좋아요 <small style="color:#888;font-weight:400">'+d.rows.length+'개</small></h3>'+
- (d.rows.length?'<table>'+d.rows.map(p=>'<tr><td><a href="/p/'+encodeURIComponent(p.id)+'" style="color:inherit">'+esc(p.name)+'</a></td><td class="r mono">'+won(p.price)+'</td><td>'+(p.soldout?'<span class="tagst s3">품절</span>':'<span class="tagst s2">구매가능</span>')+'</td>'+
- '<td class="r"><button class="b ghost" onclick="unlike(\''+esc(p.id).replace(/'/g,"\\'")+'\')">해제</button></td></tr>').join('')+'</table>':'<div class="empty">상품 페이지의 ♥ 버튼으로 담아보세요</div>')+'</div>'}
-async function unlike(id){await post('/api/member/likes',{product_id:id,on:false});likesPane()}
+ (d.rows.length?'<table>'+d.rows.map(p=>'<tr><td><a href="'+esc(p.link)+'" style="color:inherit">'+esc(p.name)+'</a></td><td class="r mono">'+(p.price?won(p.price):'-')+'</td><td>'+(p.soldout?'<span class="tagst s3">품절</span>':'<span class="tagst s2">구매가능</span>')+'</td>'+
+ '<td class="r"><button class="b ghost" onclick="unlike(\''+p.rid+'\')">해제</button></td></tr>').join('')+'</table>':'<div class="empty">SHOP과 상품 페이지의 ♥ 버튼으로 담아보세요</div>')+'</div>'}
+async function unlike(rid){await post('/api/member/likes/remove',{rid});likesPane()}
 
 async function restockPane(){const d=await api('/api/member/restock');
  $('#pane').innerHTML='<div class="panel"><h3>재입고 알림</h3>'+
@@ -1938,7 +1957,7 @@ def account_page(request: Request):
     if m:
         mdata = {'ok': True}
         return HTMLResponse(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False)))
-    g_on = bool(os.environ.get('GOOGLE_CLIENT_ID'))
+    g_on = bool(_genv('GOOGLE_CLIENT_ID'))
     a_on = all(_apple_conf().values())
     social = ('<a class="sbtn%s" href="/auth/google">G · Google 계정으로 계속하기%s</a>'
               '<a class="sbtn apple%s" href="/auth/apple">&#63743; · Apple 계정으로 계속하기%s</a>'
@@ -2058,10 +2077,48 @@ else{a.style.cssText='position:fixed;top:12px;right:14px;z-index:99999;backgroun
 }catch(e){}})}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}})();</script>"""
 
+
+LIKE_SNIPPET = r"""<script id="mpLikeJs">(function(){
+var RX=/(^|\/)(product-[A-Za-z0-9._-]+\.html|album-detail\.html\?uid=[A-Za-z0-9_-]+)([?#]|$)/;
+var ST={login:false,liked:{}},seen={};
+function hrefOf(a){try{return a.getAttribute('href')||''}catch(e){return ''}}
+function key(h){return h.split('#')[0]}
+function nameOf(a){var t=(a.textContent||'').replace(/\s+/g,' ').trim();var i=t.indexOf('\u20A9');if(i>0)t=t.slice(0,i);return t.trim().slice(0,60)}
+function priceOf(a){var m=(a.textContent||'').match(/\u20A9\s*([\d,]+)/);return m?Number(m[1].replace(/,/g,'')):0}
+function mkBtn(a,h){var b=document.createElement('button');b.className='mpLike';b.type='button';
+ b.style.cssText='position:absolute;top:8px;right:8px;z-index:5;width:32px;height:32px;border:0;border-radius:50%;background:rgba(255,255,255,.92);color:#E8332A;font-size:16px;line-height:32px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.18);padding:0';
+ paint(b,!!ST.liked[h]);
+ b.onclick=function(ev){ev.preventDefault();ev.stopPropagation();
+  if(!ST.login){if(confirm('로그인이 필요합니다. 로그인 페이지로 이동할까요?'))location.href='/account';return}
+  var on=!ST.liked[h];
+  fetch('/api/member/likes/page',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({href:h,name:nameOf(a),price:priceOf(a),on:on})})
+  .then(function(r){if(!r.ok)throw 0;ST.liked[h]=on?1:0;paint(b,on)})
+  .catch(function(){alert('잠시 후 다시 시도해 주세요')})};
+ var st=getComputedStyle(a).position;if(st==='static'||!st)a.style.position='relative';
+ a.appendChild(b)}
+function paint(b,on){b.innerHTML=on?'\u2665':'\u2661';b.style.color=on?'#E8332A':'#141414';b.title=on?'\uC88B\uC544\uC694 \uCDE8\uC18C':'\uC88B\uC544\uC694'}
+function scan(){var as=document.querySelectorAll('a[href]'),fresh=[];
+ for(var i=0;i<as.length;i++){var a=as[i],h=key(hrefOf(a));
+  if(!RX.test(h))continue;if(!a.querySelector('img'))continue;if(seen[h])continue;
+  seen[h]=1;fresh.push([a,h])}
+ if(!fresh.length)return;
+ var pages=fresh.map(function(x){return x[1]});
+ fetch('/api/member/likes/state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pages:pages})})
+ .then(function(r){return r.json()}).catch(function(){return{login:false,liked:[]}})
+ .then(function(d){ST.login=!!d.login;(d.liked||[]).forEach(function(h){ST.liked[h]=1});
+  fresh.forEach(function(x){mkBtn(x[0],x[1])})})}
+function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go._t=setTimeout(scan,400)}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
+})();</script>"""
+
 def _inject_auth(html):
-    if 'mpAuthJs' in html: return html
+    add = ''
+    if 'mpAuthJs' not in html: add += AUTH_SNIPPET
+    if 'mpLikeJs' not in html: add += LIKE_SNIPPET
+    if not add: return html
     i = html.lower().rfind('</body>')
-    return (html[:i] + AUTH_SNIPPET + html[i:]) if i >= 0 else (html + AUTH_SNIPPET)
+    return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
 
 # ── 관리자: 문의/상품Q&A/취소·반품·교환 요청 처리 + 포인트 ──
 @admin_router.get('/admin/api/cs')
@@ -2390,7 +2447,7 @@ def api_m_like(request: Request, body: dict = Body(...)):
     if not one('SELECT id FROM products WHERE id=?', (pid,)): raise HTTPException(404, '상품 없음')
     ex = one('SELECT id FROM member_likes WHERE member_id=? AND product_id=?', (m['id'], pid))
     if body.get('on'):
-        if not ex: run('INSERT INTO member_likes VALUES(?,?,?,?)', (uid(), m['id'], pid, now_iso()))
+        if not ex: run('INSERT INTO member_likes(id,member_id,product_id,created) VALUES(?,?,?,?)', (uid(), m['id'], pid, now_iso()))
     elif ex:
         run('DELETE FROM member_likes WHERE id=?', (ex['id'],))
     return {'ok': True, 'liked': bool(body.get('on'))}
@@ -2399,10 +2456,18 @@ def api_m_like(request: Request, body: dict = Body(...)):
 def api_m_likes(request: Request):
     m = member_required(request)
     nm = _state['pname'] or 'id'; pr = _state['pprice']
-    sel = 'p.id, p.%s AS name, p.stock, p.soldout' % nm + ((', p.%s AS price' % pr) if pr else '')
-    rs = rows('SELECT %s, l.created FROM member_likes l JOIN products p ON p.id=l.product_id WHERE l.member_id=? ORDER BY l.created DESC LIMIT 100' % sel, (m['id'],))
-    return {'rows': [{'id': r['id'], 'name': r.get('name') or r['id'], 'price': num(r.get('price')),
-                      'soldout': num(r.get('soldout')) or num(r.get('stock')) <= 0} for r in rs]}
+    sel = 'l.id AS rid, l.product_id, l.page, l.pname, l.pprice, p.%s AS jname, p.stock, p.soldout' % nm
+    if pr: sel += ', p.%s AS jprice' % pr
+    rs = rows('SELECT %s FROM member_likes l LEFT JOIN products p ON p.id=l.product_id WHERE l.member_id=? ORDER BY l.created DESC LIMIT 200' % sel, (m['id'],))
+    out = []
+    for r in rs:
+        pid = r.get('product_id')
+        out.append({'rid': r['rid'],
+                    'name': r.get('jname') or r.get('pname') or pid or r.get('page') or '',
+                    'price': num(r.get('jprice')) if r.get('jprice') is not None else num(r.get('pprice')),
+                    'link': ('/p/' + pid) if pid else ('/' + (r.get('page') or '').lstrip('/')),
+                    'soldout': (num(r.get('soldout')) or num(r.get('stock')) <= 0) if pid else False})
+    return {'rows': out}
 
 @admin_router.post('/api/member/restock')
 def api_m_restock(request: Request, body: dict = Body(...)):
@@ -2416,6 +2481,70 @@ def api_m_restock(request: Request, body: dict = Body(...)):
         return {'ok': True, 'on': True}
     run('INSERT INTO member_restock VALUES(?,?,?,?,?,0)', (uid(), m['id'], pid, digits(m.get('phone')), now_iso()))
     return {'ok': True, 'on': True}
+
+def resolve_page_pid(href):
+    """카드 링크(href) → 대표 상품 DB id 매칭. 실패 시 None."""
+    try:
+        href = (href or '').split('#')[0]
+        mu = re.search(r'uid=([A-Za-z0-9_-]{3,})', href)
+        if mu:
+            r = one('SELECT id FROM products WHERE id LIKE ? ORDER BY id LIMIT 1', ('%' + mu.group(1) + '%',))
+            return r['id'] if r else None
+        page = os.path.basename(href.split('?')[0])
+        if page.endswith('.html'):
+            r = one('SELECT id FROM products WHERE id LIKE ? ORDER BY id LIMIT 1', (page + '::%',))
+            if r: return r['id']
+            r = one('SELECT id FROM products WHERE id = ?', (page,))
+            return r['id'] if r else None
+    except Exception:
+        pass
+    return None
+
+@admin_router.post('/api/member/likes/remove')
+def api_m_like_remove(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    n = run('DELETE FROM member_likes WHERE id=? AND member_id=?', (body.get('rid'), m['id']))
+    if not n: raise HTTPException(404, 'not found')
+    return {'ok': True}
+
+@admin_router.post('/api/member/likes/page')
+def api_m_like_page(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    href = (body.get('href') or '').strip()[:200]
+    if not href or ('..' in href): raise HTTPException(400, '잘못된 링크')
+    on = bool(body.get('on'))
+    pname = (body.get('name') or '').strip()[:80] or href
+    pprice = num(body.get('price'))
+    pid = resolve_page_pid(href)
+    if pid:
+        ex = one('SELECT id FROM member_likes WHERE member_id=? AND product_id=?', (m['id'], pid))
+        if on and not ex:
+            run('INSERT INTO member_likes(id,member_id,product_id,created,page,pname,pprice) VALUES(?,?,?,?,?,?,?)',
+                (uid(), m['id'], pid, now_iso(), href, pname, pprice))
+        elif not on and ex:
+            run('DELETE FROM member_likes WHERE id=?', (ex['id'],))
+    else:
+        ex = one('SELECT id FROM member_likes WHERE member_id=? AND page=?', (m['id'], href))
+        if on and not ex:
+            run('INSERT INTO member_likes(id,member_id,product_id,created,page,pname,pprice) VALUES(?,?,?,?,?,?,?)',
+                (uid(), m['id'], None, now_iso(), href, pname, pprice))
+        elif not on and ex:
+            run('DELETE FROM member_likes WHERE id=?', (ex['id'],))
+    return {'ok': True, 'liked': on}
+
+@admin_router.post('/api/member/likes/state')
+def api_m_like_state(request: Request, body: dict = Body(...)):
+    try: ensure_ready()
+    except Exception: pass
+    m = member_of(request)
+    pages = [str(x)[:200] for x in (body.get('pages') or [])][:300]
+    if not m or not pages: return {'login': bool(m), 'liked': []}
+    liked = set()
+    mine = rows('SELECT page FROM member_likes WHERE member_id=? AND page IS NOT NULL', (m['id'],))
+    have = {r['page'] for r in mine if r.get('page')}
+    for p in pages:
+        if p in have: liked.add(p)
+    return {'login': True, 'liked': sorted(liked)}
 
 @admin_router.get('/api/member/restock')
 def api_m_restock_list(request: Request):

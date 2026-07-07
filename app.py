@@ -259,6 +259,6 @@ def healthz():
     return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite'}
 
 @app.get('/')
-def root(): return RedirectResponse('/new-drops.html')
+def root(): return RedirectResponse('/mapdal_home_mockup_v1.html')
 
 app.mount('/', StaticFiles(directory=os.path.join(BASE, 'static'), html=True), name='static')

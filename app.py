@@ -260,5 +260,9 @@ def healthz():
 
 @app.get('/')
 def root(): return RedirectResponse('/mapdal_home_mockup_v1.html')
-
+try:
+    from admin_v2 import admin_router
+    app.include_router(admin_router)
+except Exception as _e:
+    print('admin load skipped:', _e)
 app.mount('/', StaticFiles(directory=os.path.join(BASE, 'static'), html=True), name='static')

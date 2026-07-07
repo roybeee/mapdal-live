@@ -201,7 +201,7 @@ def ensure_ready():
             try: run("ALTER TABLE member_likes ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
     pcx = _cols('products')
-    for col in ('img', 'descr'):
+    for col in ('img', 'descr', 'category', 'detail_html', 'gallery'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -1153,7 +1153,7 @@ async function loadProducts(p){ppage=p;const q=new URLSearchParams({page:p});
  <td class="right">${r.price==null?'-':(can(2)?`<input class="stockin" style="width:88px" id="pr${k}" type="number" min="0" value="${r.price}">`:won(r.price))}</td>
  <td class="right">${can(1)?`<input class="stockin" id="st${k}" type="number" min="0" value="${r.stock}">`:r.stock}</td>
  <td><input type="checkbox" id="so${k}" ${r.soldout?'checked':''} ${can(1)?`onchange="saveProd('${k}',true)"`:'disabled'}></td>
- <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a></td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
+ <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a></td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadProducts')}`;}catch(e){$('#plist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function saveProd(k,tg){const body={id:window._pk[k],soldout:document.getElementById('so'+k).checked?1:0};
  if(!tg){body.stock=Number(document.getElementById('st'+k).value);const pr=document.getElementById('pr'+k);if(pr)body.price=Number(pr.value)}
@@ -1272,20 +1272,41 @@ function pwModal(){$('#mbox').innerHTML=`<h3>비밀번호 변경</h3>
 async function savePw(){if($('#pw1').value!==$('#pw2').value)return toast('새 비밀번호가 서로 다릅니다');
  try{await api('/admin/api/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old:$('#pw0').value,new:$('#pw1').value})});
  toast('변경되었습니다');closeM()}catch(e){toast(e.message)}}
+const PCATS=[['','— 카테고리 선택 —'],['album','앨범 / 음반'],['md','굿즈 / MD'],['kfood','K-FOOD'],['apparel','어패럴'],['living','리빙 / 홈']];
+function catOptions(sel){return PCATS.map(c=>`<option value="${c[0]}"${c[0]===(sel||'')?' selected':''}>${c[1]}</option>`).join('')}
 function newProduct(){$('#mbox').innerHTML=`<h3>신규 상품 등록</h3>
  <div class="kv"><b>상품명 *</b><span><input id="npn" style="width:100%" placeholder="예: 맵달 굿즈 키링"></span>
+ <b>카테고리 *</b><span><select id="npc" style="width:100%">${catOptions('')}</select></span>
  <b>가격(원) *</b><span><input id="npp" type="number" min="0" style="width:100%" placeholder="12900"></span>
  <b>초기 재고 *</b><span><input id="nps" type="number" min="0" style="width:100%" placeholder="100"></span>
- <b>이미지 URL</b><span><input id="npi" style="width:100%" placeholder="https:// 로 시작하는 이미지 주소 (선택)"></span>
- <b>상품 설명</b><span><textarea id="npd" rows="4" style="width:100%" placeholder="상세 설명 (선택)"></textarea></span></div>
+ <b>대표 이미지 URL</b><span><input id="npi" style="width:100%" placeholder="https:// 로 시작하는 이미지 주소 (선택)"></span>
+ <b>추가 이미지</b><span><textarea id="npg" rows="3" style="width:100%" placeholder="갤러리 이미지 URL — 한 줄에 하나씩 (선택, 최대 12장)"></textarea></span>
+ <b>짧은 설명</b><span><textarea id="npd" rows="3" style="width:100%" placeholder="목록·상단 요약 설명 (선택)"></textarea></span>
+ <b>상세 페이지 내용</b><span><textarea id="nph" rows="6" style="width:100%" placeholder="상세페이지 본문 — 일반 텍스트 또는 HTML 사용 가능 (선택). 등록 후 [상세편집]에서 언제든 수정할 수 있습니다."></textarea></span></div>
  <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" onclick="saveNewProduct()">등록</button><button class="btn ghost" onclick="closeM()">닫기</button></div>
- <div class="hint">등록 즉시 결제 검증 대상이 되며 전용 페이지가 만들어집니다. SHOP 목록 노출은 [페이지] 탭에서 shop.html에 추가하거나 별도로 요청하세요.</div>`;
+ <div class="hint">카테고리를 지정하면 SHOP 목록의 해당 필터(앨범/음반 · 굿즈/MD · K-FOOD · 어패럴 · 리빙/홈)에 자동 연동됩니다. 등록 즉시 전용 페이지가 만들어지며, 상세 내용은 목록의 [상세편집] 버튼으로 수정할 수 있습니다.</div>`;
  $('#mbg').style.display='flex'}
-async function saveNewProduct(){try{const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
- body:JSON.stringify({name:$('#npn').value,price:Number($('#npp').value||0),stock:Number($('#nps').value||0),img:$('#npi').value,descr:$('#npd').value})});
+async function saveNewProduct(){if(!$('#npc').value)return toast('카테고리를 선택하세요');
+ try{const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({name:$('#npn').value,category:$('#npc').value,price:Number($('#npp').value||0),stock:Number($('#nps').value||0),img:$('#npi').value,gallery:$('#npg').value,descr:$('#npd').value,detail_html:$('#nph').value})});
  $('#mbox').innerHTML=`<h3>등록 완료</h3><p>상품 페이지가 생성되었습니다.</p><div class="tokenbox">https://mapdal.kr${r.url}</div>
- <div style="display:flex;gap:8px;justify-content:flex-end"><a class="btn" style="text-decoration:none" href="${r.url}" target="_blank">페이지 열기</a><button class="btn ghost" onclick="closeM();loadProducts(1)">닫기</button></div>`;
+ <div style="display:flex;gap:8px;justify-content:flex-end"><a class="btn" style="text-decoration:none" href="${r.url}" target="_blank">페이지 열기</a><button class="btn" onclick="editDetail('${r.id.replace(/'/g,"\\'")}')">상세 편집</button><button class="btn ghost" onclick="closeM();loadProducts(1)">닫기</button></div>`;
  }catch(e){toast(e.message)}}
+
+async function editDetail(id){try{const d=await api('/admin/api/products/detail?id='+encodeURIComponent(id));
+ $('#mbox').innerHTML=`<h3>상세페이지 편집</h3>
+ <div class="hint" style="margin-bottom:8px">${esc(d.name)} · <a href="${d.url}" target="_blank">페이지 보기 ↗</a></div>
+ <div class="kv"><b>상품명</b><span><input id="edn" style="width:100%" value="${esc(d.name)}"></span>
+ <b>카테고리</b><span><select id="edc" style="width:100%">${catOptions(d.category)}</select></span>
+ <b>대표 이미지 URL</b><span><input id="edi" style="width:100%" value="${esc(d.img)}" placeholder="https://"></span>
+ <b>추가 이미지</b><span><textarea id="edg" rows="3" style="width:100%" placeholder="갤러리 URL — 한 줄에 하나씩">${esc(d.gallery)}</textarea></span>
+ <b>짧은 설명</b><span><textarea id="edd" rows="3" style="width:100%">${esc(d.descr)}</textarea></span>
+ <b>상세 페이지 내용</b><span><textarea id="edh" rows="8" style="width:100%" placeholder="일반 텍스트 또는 HTML">${esc(d.detail_html)}</textarea></span></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" onclick="saveDetail('${id.replace(/'/g,"\\'")}')">저장</button><a class="btn ghost" style="text-decoration:none" href="${d.url}" target="_blank">미리보기</a><button class="btn ghost" onclick="closeM()">닫기</button></div>`;
+ $('#mbg').style.display='flex'}catch(e){toast(e.message)}}
+async function saveDetail(id){try{await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({id:id,name:$('#edn').value,category:$('#edc').value,img:$('#edi').value,gallery:$('#edg').value,descr:$('#edd').value,detail_html:$('#edh').value})});
+ toast('상세페이지가 저장되었습니다');closeM();loadProducts(ppage)}catch(e){toast(e.message)}}
 
 async function loadPages(){try{const d=await api('/admin/api/pages');
  $('#pglist').innerHTML=`<table><tr><th>페이지</th><th>상태</th><th>마지막 수정</th><th></th></tr>
@@ -1448,6 +1469,26 @@ def api_page_restore(request: Request, body: dict = Body(...)):
     return {'ok': True}
 
 # ═══════════════════ ⑤ 신규 상품 등록 + 자동 상품페이지(/p/ID) ═══════════
+# shop.html 필터 탭과 1:1로 매칭되는 카테고리 (value → 표기 라벨)
+PRODUCT_CATEGORIES = [
+    ('album',   '앨범 / 음반'),
+    ('md',      '굿즈 / MD'),
+    ('kfood',   'K-FOOD'),
+    ('apparel', '어패럴'),
+    ('living',  '리빙 / 홈'),
+]
+_CAT_KEYS = {k for k, _ in PRODUCT_CATEGORIES}
+_CAT_LABEL = dict(PRODUCT_CATEGORIES)
+
+def norm_cat(v):
+    v = (v or '').strip().lower()
+    return v if v in _CAT_KEYS else ''
+
+@admin_router.get('/admin/api/products/categories')
+def api_product_categories(request: Request):
+    a = get_actor(request); need(a, 0)
+    return {'categories': [{'value': k, 'label': l} for k, l in PRODUCT_CATEGORIES]}
+
 @admin_router.post('/admin/api/products/create')
 def api_product_create(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 2, '상품 등록')
@@ -1462,8 +1503,86 @@ def api_product_create(request: Request, body: dict = Body(...)):
     if _state['pprice']: cols.append(_state['pprice']); vals.append(price)
     for c, k in (('img', 'img'), ('descr', 'descr')):
         if c in _state['pcols']: cols.append(c); vals.append((body.get(k) or '').strip()[:4000])
+    if 'category' in _state['pcols']:
+        cols.append('category'); vals.append(norm_cat(body.get('category')))
+    if 'detail_html' in _state['pcols']:
+        cols.append('detail_html'); vals.append((body.get('detail_html') or '').strip()[:100000])
+    if 'gallery' in _state['pcols']:
+        cols.append('gallery'); vals.append(_clean_gallery(body.get('gallery')))
     run('INSERT INTO products(%s) VALUES(%s)' % (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals))
-    audit(a, '상품등록', pid, '%s / %s원 / 재고 %d' % (name, format(price, ','), stock))
+    audit(a, '상품등록', pid, '%s / %s원 / 재고 %d / %s' % (name, format(price, ','), stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류')))
+    return {'ok': True, 'id': pid, 'url': '/p/' + pid}
+
+def _clean_gallery(v):
+    """줄바꿈으로 구분된 이미지 URL 목록을 정리해 개행 문자열로 저장 (최대 12장)."""
+    if isinstance(v, list):
+        items = v
+    else:
+        items = re.split(r'[\r\n]+', str(v or ''))
+    out = []
+    for u in items:
+        u = (u or '').strip()
+        if u.startswith('http') and u not in out:
+            out.append(u)
+        if len(out) >= 12:
+            break
+    return '\n'.join(out)
+
+# ── 상품 상세페이지 내용 편집 (admin) ─────────────────────────────
+@admin_router.get('/admin/api/products/detail')
+def api_product_detail_get(request: Request):
+    """상세페이지 편집 화면용: 한 상품의 모든 편집 가능 필드를 반환."""
+    a = get_actor(request); need(a, 1, '상품 상세 조회')
+    pid = request.query_params.get('id')
+    if not pid: raise HTTPException(400, 'id required')
+    sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
+    if _state['pprice']: sel += ', %s AS price' % _state['pprice']
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery'):
+        if c in _state['pcols']: sel += ', ' + c
+    r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
+    if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
+    return {
+        'id': r['id'], 'name': r.get('name') or r['id'],
+        'price': num(r.get('price')) if _state['pprice'] else None,
+        'stock': num(r.get('stock')), 'soldout': num(r.get('soldout')),
+        'img': r.get('img') or '', 'descr': r.get('descr') or '',
+        'category': norm_cat(r.get('category')),
+        'detail_html': r.get('detail_html') or '',
+        'gallery': r.get('gallery') or '',
+        'categories': [{'value': k, 'label': l} for k, l in PRODUCT_CATEGORIES],
+        'url': '/p/' + r['id'],
+    }
+
+@admin_router.post('/admin/api/products/detail/update')
+def api_product_detail_update(request: Request, body: dict = Body(...)):
+    """상세페이지 내용(카테고리/설명/이미지/갤러리/상세 HTML)을 수정."""
+    a = get_actor(request); need(a, 2, '상품 상세 수정')
+    pid = body.get('id')
+    if not pid: raise HTTPException(400, 'id required')
+    if not one('SELECT id FROM products WHERE id=?', (pid,)):
+        raise HTTPException(404, '상품을 찾을 수 없습니다')
+    sets, args, log = [], [], []
+    field_map = {
+        'name': (_state['pname'], 300, None),
+        'img': ('img', 4000, None),
+        'descr': ('descr', 4000, None),
+        'detail_html': ('detail_html', 100000, None),
+        'category': ('category', 40, norm_cat),
+        'gallery': ('gallery', None, _clean_gallery),
+    }
+    for k, (col, limit, fn) in field_map.items():
+        if k not in body or not col or (col not in _state['pcols'] and col != _state['pname']):
+            continue
+        val = body.get(k)
+        if fn is not None:
+            val = fn(val)
+        else:
+            val = (val or '').strip()
+            if limit: val = val[:limit]
+        sets.append('%s=?' % col); args.append(val); log.append(k)
+    if not sets: raise HTTPException(400, '변경할 값 없음')
+    run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
+    audit(a, '상품상세수정', pid, '수정 항목: ' + ', '.join(log))
     return {'ok': True, 'id': pid, 'url': '/p/' + pid}
 
 _PDP_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -1486,9 +1605,17 @@ h1{font-size:22px;line-height:1.35;margin-bottom:10px}
 .ok{background:#e9f7ee;color:#0a7d38}.no{background:#fff2f1;color:#c0392b}
 .desc{font-size:14px;line-height:1.8;color:#444;white-space:pre-wrap;border-top:1px solid #eee;margin-top:16px;padding-top:16px}
 .cta{display:block;text-align:center;background:var(--black);color:var(--amber);font-weight:700;padding:14px;margin-top:20px;text-decoration:none}
+.cat{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;color:#141414;background:#f0efe9;border:1px solid #e0ded7;padding:3px 10px;margin-bottom:10px;text-decoration:none}
+.cat:hover{background:#141414;color:#fff}
+.gal{display:flex;gap:8px;overflow-x:auto;margin-top:10px;padding-bottom:4px}
+.gal img{width:84px;height:84px;object-fit:cover;border:1px solid #e3e1db;cursor:pointer;flex:0 0 auto}
+.detail{max-width:860px;margin:22px auto 0;background:#fff;border:1px solid #e3e1db;padding:26px;font-size:14.5px;line-height:1.85;color:#333}
+.detail h2{font-size:16px;border-left:4px solid #E8332A;padding-left:8px;margin:0 0 14px}
+.detail img{max-width:100%%;height:auto;display:block;margin:14px 0}
 .foot{font-family:'IBM Plex Mono';font-size:10px;color:#aaa;text-align:center;margin-top:26px}</style></head><body>
 <header><a href="/">MAPDAL<span>SEOUL</span></a><a class="shop" href="/shop.html">SHOP 전체보기</a></header>
-<main><div class="wrap"><div class="ph">%(imgtag)s</div><div>
+<main><div class="wrap"><div><div class="ph" id="mainPh">%(imgtag)s</div>%(galhtml)s</div><div>
+%(cathtml)s
 <h1>%(name)s</h1><div class="price">₩%(price)s</div>
 <span class="badge %(bcls)s">%(bmsg)s</span>
 <div class="desc">%(descr)s</div>
@@ -1497,6 +1624,7 @@ h1{font-size:22px;line-height:1.35;margin-bottom:10px}
 <button id="rsBtn" onclick="toggleRestock()" style="flex:1;display:none;font:700 14px 'IBM Plex Sans KR';padding:13px;border:0;background:#FFB000;color:#141414;cursor:pointer">재입고 알림 신청</button>
 </div>
 <a class="cta" href="/shop.html">SHOP에서 주문하기</a></div></div>
+%(detailhtml)s
 <div style="max-width:860px;margin:22px auto 0;background:#fff;border:1px solid #e3e1db;padding:22px">
 <h2 style="font-size:15px;border-left:4px solid #E8332A;padding-left:8px;margin-bottom:6px">상품 Q&amp;A</h2>
 <div id="qnaList" style="font-size:13px;color:#999;padding:10px 4px">불러오는 중…</div>
@@ -1506,6 +1634,7 @@ h1{font-size:22px;line-height:1.35;margin-bottom:10px}
 <script>
 var PID=%(pidjs)s, SOLD=%(soldjs)s, ST={login:false,liked:false,restock:false};
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function swapMain(src){var ph=document.getElementById('mainPh');if(ph)ph.innerHTML='<img src="'+esc(src)+'" alt="">';}
 function paint(){var lb=document.getElementById('likeBtn');
  lb.innerHTML=(ST.liked?'&#9829; 좋아요 취소':'&#9825; 좋아요');
  lb.style.background=ST.liked?'#141414':'#fff';lb.style.color=ST.liked?'#FFB000':'#141414';
@@ -1538,7 +1667,7 @@ def pdp(pid: str):
     if not _state['pcols']: raise HTTPException(404)
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr'):
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r:
@@ -1546,6 +1675,25 @@ def pdp(pid: str):
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
     soldout = num(r.get('soldout')) or num(r.get('stock')) <= 0
     img = (r.get('img') or '').strip()
+    # 카테고리 칩 → shop.html 해당 필터로 이동
+    cat = norm_cat(r.get('category'))
+    cathtml = ('<a class="cat" href="/shop.html?cat=%s">%s</a>' % (cat, h(_CAT_LABEL.get(cat, '')))) if cat else ''
+    # 갤러리(추가 이미지) — 클릭 시 메인 이미지 교체
+    gal = [u.strip() for u in re.split(r'[\r\n]+', r.get('gallery') or '') if u.strip().startswith('http')]
+    galhtml = ''
+    if gal:
+        thumbs = ''.join('<img src="%s" alt="" onclick="swapMain(this.src)">' % h(u) for u in ([img] + gal if img else gal))
+        galhtml = '<div class="gal">%s</div>' % thumbs
+    # 상세 설명 HTML (admin 작성) — 스크립트/이벤트 핸들러 제거 후 렌더
+    detailhtml = ''
+    raw = (r.get('detail_html') or '').strip()
+    if raw:
+        safe = re.sub(r'(?is)<\s*script.*?<\s*/\s*script\s*>', '', raw)
+        safe = re.sub(r'(?is)<\s*script[^>]*>', '', safe)
+        safe = re.sub(r'(?i)\son\w+\s*=\s*"[^"]*"', '', safe)
+        safe = re.sub(r"(?i)\son\w+\s*=\s*'[^']*'", '', safe)
+        safe = re.sub(r'(?i)javascript:', '', safe)
+        detailhtml = '<div class="detail"><h2>상세 정보</h2>%s</div>' % safe
     return HTMLResponse(_PDP_HTML % {
         'name': h(r.get('name')), 'price': format(num(r.get('price')), ','),
         'bcls': 'no' if soldout else 'ok',
@@ -1553,6 +1701,7 @@ def pdp(pid: str):
         'descr': h(r.get('descr')) or 'MAPDAL SEOUL 상품입니다.',
         'imgtag': ('<img src="%s" alt="">' % h(img)) if img else 'MAPDAL SEOUL',
         'og': ('<meta property="og:image" content="%s">' % h(img)) if img else '',
+        'cathtml': cathtml, 'galhtml': galhtml, 'detailhtml': detailhtml,
         'pid': h(pid), 'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false'})
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════

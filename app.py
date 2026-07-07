@@ -22,14 +22,37 @@ ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', 'mapdal-admin-2026')
 FREE_SHIP_OVER, SHIP_FEE = 30000, 3000
 
 # ── DB 계층 (PG/SQLite 이중 지원) ───────────────────────────────
+POOL = None
+DB_READY = False
 if IS_PG:
+    import psycopg
     from psycopg_pool import ConnectionPool
     from psycopg.rows import dict_row
-    POOL = ConnectionPool(DATABASE_URL, min_size=1, max_size=10,
-                          kwargs={'row_factory': dict_row}, open=True)
 else:
     import sqlite3
     SQLITE_PATH = os.path.join(BASE, 'mapdal.db')
+
+def _connect_pg_with_retry(max_attempts=30, delay=5):
+    """DB 기동 지연·SSL 요구를 모두 커버: 변형 DSN을 교차 시도하며 실제 오류를 로그로 남김"""
+    global POOL
+    base = DATABASE_URL
+    variants = [base]
+    if 'sslmode=' not in base:
+        variants.append(base + ('&' if '?' in base else '?') + 'sslmode=require')
+    import time
+    for attempt in range(1, max_attempts + 1):
+        dsn = variants[(attempt - 1) % len(variants)]
+        try:
+            conn = psycopg.connect(dsn, connect_timeout=8)
+            conn.close()
+            POOL = ConnectionPool(dsn, min_size=1, max_size=10,
+                                  kwargs={'row_factory': dict_row}, open=True)
+            print(f'[db] PostgreSQL 연결 성공 (attempt {attempt}, sslmode={"require" if "sslmode=require" in dsn else "default"})', flush=True)
+            return
+        except Exception as e:
+            print(f'[db] 연결 시도 {attempt}/{max_attempts} 실패: {type(e).__name__}: {e}', flush=True)
+            time.sleep(delay)
+    raise RuntimeError('PostgreSQL 연결 실패 — 위 로그의 오류를 확인하세요')
 
 def _adapt(sql: str) -> str:
     return sql.replace('?', '%s') if IS_PG else sql
@@ -51,6 +74,8 @@ class Cx:
 @contextmanager
 def db():
     if IS_PG:
+        if POOL is None:
+            raise HTTPException(503, '데이터베이스 연결 준비중입니다')
         with POOL.connection() as conn:   # 블록 정상 종료 시 commit, 예외 시 rollback
             yield Cx(conn)
     else:
@@ -96,8 +121,26 @@ def seed():
         for r in rows: c.exec(ins, r)
         print(f'[seed] products: {len(rows)} ({"PostgreSQL" if IS_PG else "SQLite"})')
 
-app = FastAPI(title='MAPDAL SEOUL API v2')
-seed()
+from contextlib import asynccontextmanager
+import threading
+
+def _init_db():
+    global DB_READY
+    try:
+        if IS_PG:
+            _connect_pg_with_retry()
+        seed()
+        DB_READY = True
+        print('[db] 준비 완료', flush=True)
+    except Exception as e:
+        print(f'[db] 초기화 실패: {e}', flush=True)
+
+@asynccontextmanager
+async def lifespan(app):
+    threading.Thread(target=_init_db, daemon=True).start()  # 포트 바인딩을 막지 않음
+    yield
+
+app = FastAPI(title='MAPDAL SEOUL API v2', lifespan=lifespan)
 
 # ── API ─────────────────────────────────────────────────────────
 @app.get('/api/config')
@@ -210,6 +253,8 @@ th,td{{border:1px solid #ddd;padding:8px 10px}}th{{background:#141414;color:#fff
 
 @app.get('/healthz')
 def healthz():
+    if not DB_READY:
+        raise HTTPException(503, 'db connecting')
     with db() as c: c.one('SELECT 1 AS ok')
     return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite'}
 

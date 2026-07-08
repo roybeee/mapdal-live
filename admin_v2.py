@@ -2827,89 +2827,60 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 })();</script>"""
 
 MOBNAV_SNIPPET = r"""<style id="mpMobNav">
-#mpNavBtn{display:none;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:40px;height:40px;border:0;background:transparent;cursor:pointer;padding:0;margin-left:2px}
-#mpNavBtn span{display:block;width:20px;height:2px;background:var(--ink,#141414);border-radius:2px}
-@media(max-width:1024px){#mpNavBtn{display:inline-flex}}
-#mpNavDim{position:fixed;inset:0;background:rgba(20,20,20,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:100000}
-#mpNavDim.show{opacity:1;pointer-events:auto}
-#mpNavDrawer{position:fixed;top:0;right:0;height:100dvh;width:min(84vw,340px);background:#141414;color:#fff;z-index:100001;transform:translateX(105%);transition:transform .28s cubic-bezier(.22,.61,.36,1);display:flex;flex-direction:column;box-shadow:-18px 0 48px rgba(0,0,0,.35);overflow-y:auto;-webkit-overflow-scrolling:touch}
-#mpNavDrawer.show{transform:translateX(0)}
-#mpNavDrawer .mpNavHead{display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;border-bottom:1px solid rgba(255,255,255,.12);flex:0 0 auto}
-#mpNavDrawer .mpNavTt{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.22em;color:var(--amber,#FFB000)}
-#mpNavDrawer .mpNavX{border:0;background:transparent;color:#fff;font-size:18px;line-height:1;cursor:pointer;padding:6px 4px}
-#mpNavDrawer .mpNavList{padding:8px 20px 20px;flex:1 1 auto}
-#mpNavDrawer .mpNavTop{display:block;padding:15px 2px;font-size:16px;font-weight:800;letter-spacing:.07em;color:#fff;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.08)}
-#mpNavDrawer .mpNavTop.red,#mpNavDrawer .mpNavTop.on{color:var(--red,#E8332A)}
-#mpNavDrawer .mpNavGrp{padding:12px 2px 6px;border-bottom:1px solid rgba(255,255,255,.08)}
-#mpNavDrawer .mpNavGrp h6{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.18em;color:var(--amber,#FFB000);margin:6px 0 8px;font-weight:500}
-#mpNavDrawer .mpNavSub{display:block;padding:8px 0;font-size:13.5px;color:#D6D4CE;text-decoration:none}
-#mpNavDrawer .mpNavSub.on{color:var(--red,#E8332A)}
-#mpNavDrawer .mpNavFt{padding:16px 20px 28px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:#6F6E69;line-height:1.8;flex:0 0 auto}
-@media(min-width:1025px){#mpNavBtn,#mpNavDrawer,#mpNavDim{display:none!important}}
+/* ── 모바일 상시 카테고리 바 ── */
+#mpCatBar{display:none;align-items:stretch;gap:2px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;background:var(--paper,#F7F6F2);border-top:1px solid var(--line,#E3E1DB);padding:0 8px}
+#mpCatBar::-webkit-scrollbar{display:none}
+#mpCatBar a{flex:0 0 auto;display:flex;align-items:center;padding:11px 9px 9px;font-size:12.5px;font-weight:700;letter-spacing:.06em;color:var(--ink,#141414);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}
+#mpCatBar a.red{color:var(--red,#E8332A)}
+#mpCatBar a.on{color:var(--red,#E8332A);border-bottom-color:var(--red,#E8332A)}
+@media(max-width:1024px){
+ html,body{overflow-x:clip}
+ #mpCatBar{display:flex}
+ .header-inner{padding:0 12px;height:54px}
+ .logo{font-size:21px;white-space:nowrap}
+ .util{gap:10px;min-width:0}
+ .util a{white-space:nowrap;font-size:12px}
+ .util a.cart{padding:5px 10px;font-size:11px}
+ .global-bar{flex-wrap:wrap;row-gap:2px;padding:5px 12px;font-size:10px;line-height:1.5}
+ .global-bar>*:first-child{white-space:nowrap}
+ .global-bar .right{margin-left:auto;gap:10px}
+}
+@media(max-width:400px){
+ .logo{font-size:18px}
+ .util{gap:8px}
+ .util a{font-size:11px}
+ .util a.cart{padding:4px 8px}
+ .header-inner{padding:0 10px}
+ #mpCatBar a{font-size:12px;letter-spacing:.04em}
+}
+@media(min-width:1025px){#mpCatBar{display:none!important}}
 </style><script>(function(){
 if(window.__mpMobNav)return;window.__mpMobNav=1;
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function ready(f){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',f);else f()}
 ready(function(){
  var header=document.querySelector('header');
- if(!header||document.getElementById('mpNavBtn'))return;
- /* 1) 페이지의 데스크톱 네비에서 링크 수확 (페이지별 활성 상태·경로 그대로 유지) */
+ if(!header||document.getElementById('mpCatBar'))return;
+ /* 데스크톱 네비에서 상위 카테고리 수확 → 페이지별 링크·활성 상태 자동 동기화 */
  var items=[],nav=document.querySelector('nav.main');
  if(nav){var ds=nav.children;
-  for(var i=0;i<ds.length;i++){var d=ds[i];var a=d.querySelector('a.top')||d.querySelector('a');if(!a)continue;
-   var it={label:(a.textContent||'').replace(/\s+/g,' ').trim(),href:a.getAttribute('href')||'#',
-           red:(a.className||'').indexOf('drops')>=0,groups:[]};
-   var megs=d.querySelectorAll('.mega>div');
-   for(var g=0;g<megs.length;g++){var h=megs[g].querySelector('h5'),ls=megs[g].querySelectorAll('ul a');
-    if(!h||!ls.length)continue;
-    var grp={h:(h.textContent||'').trim(),links:[]};
-    for(var k=0;k<ls.length;k++)grp.links.push({label:(ls[k].textContent||'').trim(),href:ls[k].getAttribute('href')||'#'});
-    it.groups.push(grp)}
-   items.push(it)}}
- /* 2) 네비 마크업이 없는 페이지용 기본 카테고리 */
+  for(var i=0;i<ds.length;i++){var a=ds[i].querySelector('a.top')||ds[i].querySelector('a');if(!a)continue;
+   items.push({label:(a.textContent||'').replace(/\s+/g,' ').trim(),href:a.getAttribute('href')||'#',
+               red:(a.className||'').indexOf('drops')>=0})}}
  if(!items.length)items=[
-  {label:'NEW / DROPS',href:'/new-drops.html',red:true,groups:[]},
-  {label:'SHOP',href:'/shop.html',red:false,groups:[]},
-  {label:'MAPDAL SEOUL',href:'/mapdal-seoul.html',red:false,groups:[]},
-  {label:'SUPPORT',href:'/support.html',red:false,groups:[
-   {h:'GUIDE',links:[{label:'\ubc30\uc1a1 \uc548\ub0b4',href:'/shipping.html'},{label:'\uad50\ud658/\ubc18\ud488',href:'/returns.html'}]},
-   {h:'COMPANY',links:[{label:'\ud30c\ud2b8\ub108\uc2ed \ubb38\uc758',href:'/partnership.html'},{label:'IR \u00b7 \ub274\uc2a4\ub8f8',href:'/ir.html'}]}]}];
- /* 3) 햄버거 버튼 — util 우측 끝에 삽입해 기존 레이아웃 불변 */
- var btn=document.createElement('button');btn.id='mpNavBtn';btn.type='button';
- btn.setAttribute('aria-label','\uba54\ub274 \uc5f4\uae30');btn.setAttribute('aria-controls','mpNavDrawer');btn.setAttribute('aria-expanded','false');
- btn.innerHTML='<span></span><span></span><span></span>';
- var util=header.querySelector('.util');
- if(util)util.appendChild(btn);else (header.querySelector('.header-inner')||header).appendChild(btn);
- /* 4) 딤 + 드로어 */
- var dim=document.createElement('div');dim.id='mpNavDim';
- var dw=document.createElement('aside');dw.id='mpNavDrawer';
- dw.setAttribute('role','dialog');dw.setAttribute('aria-modal','true');dw.setAttribute('aria-label','\ubaa8\ubc14\uc77c \uba54\ub274');
+  {label:'NEW / DROPS',href:'/new-drops.html',red:true},
+  {label:'SHOP',href:'/shop.html',red:false},
+  {label:'MAPDAL SEOUL',href:'/mapdal-seoul.html',red:false},
+  {label:'SUPPORT',href:'/support.html',red:false}];
  var cur=(location.pathname.split('/').pop()||'').toLowerCase();
  function base(h){return (h||'').split(/[?#]/)[0].split('/').pop().toLowerCase()}
- var htm='<div class="mpNavHead"><span class="mpNavTt">MENU</span><button type="button" class="mpNavX" aria-label="\uba54\ub274 \ub2eb\uae30">&#10005;</button></div><nav class="mpNavList">';
- for(var i2=0;i2<items.length;i2++){var t=items[i2],on=cur&&base(t.href)===cur;
-  htm+='<a class="mpNavTop'+(t.red?' red':'')+(on?' on':'')+'" href="'+esc(t.href)+'">'+esc(t.label)+'</a>';
-  for(var g2=0;g2<t.groups.length;g2++){var gr=t.groups[g2];
-   htm+='<div class="mpNavGrp"><h6>'+esc(gr.h)+'</h6>';
-   for(var k2=0;k2<gr.links.length;k2++){var L=gr.links[k2];
-    htm+='<a class="mpNavSub'+(cur&&base(L.href)===cur?' on':'')+'" href="'+esc(L.href)+'">'+esc(L.label)+'</a>'}
-   htm+='</div>'}}
- htm+='</nav><div class="mpNavFt">MAPDAL SEOUL \u00b7 SEONGSU<br>SHOP SEONGSU, FROM ANYWHERE.</div>';
- dw.innerHTML=htm;
- document.body.appendChild(dim);document.body.appendChild(dw);
- /* 5) 열기/닫기 */
- var open=false;
- function setOpen(v){open=v;btn.setAttribute('aria-expanded',v?'true':'false');
-  if(v){dw.classList.add('show');dim.classList.add('show');document.body.style.overflow='hidden';
-   var x=dw.querySelector('.mpNavX');if(x)try{x.focus()}catch(e){}}
-  else{dw.classList.remove('show');dim.classList.remove('show');document.body.style.overflow=''}}
- btn.onclick=function(){setOpen(!open)};
- dim.onclick=function(){setOpen(false)};
- dw.querySelector('.mpNavX').onclick=function(){setOpen(false)};
- dw.addEventListener('click',function(e){var el=e.target;
-  while(el&&el!==dw){if(el.tagName==='A'){setOpen(false);break}el=el.parentNode}});
- document.addEventListener('keydown',function(e){if(e.key==='Escape'&&open)setOpen(false)});
- window.addEventListener('resize',function(){if(open&&window.innerWidth>1024)setOpen(false)});
+ var h='';
+ for(var j=0;j<items.length;j++){var t=items[j],on=cur&&base(t.href)===cur;
+  h+='<a class="'+(t.red?'red ':'')+(on?'on':'')+'" href="'+esc(t.href)+'">'+esc(t.label)+'</a>'}
+ var bar=document.createElement('nav');bar.id='mpCatBar';
+ bar.setAttribute('aria-label','\uce74\ud14c\uace0\ub9ac');
+ bar.innerHTML=h;
+ header.appendChild(bar);
 });})();</script>"""
 
 def _patch_legacy_footer(html):
@@ -3522,7 +3493,7 @@ def serve_site(spath: str):
         try:
             ensure_ready()
             ov = one('SELECT html FROM page_edits WHERE path=?', (name,))
-            if ov: return HTMLResponse(_inject_auth(ov['html']))
+            if ov: return HTMLResponse(_inject_auth(ov['html']), headers={'Cache-Control': 'no-cache'})
         except Exception:
             pass
     fp = os.path.realpath(os.path.join(STATIC_DIR, spath))
@@ -3532,5 +3503,5 @@ def serve_site(spath: str):
     mt = mimetypes.guess_type(fp)[0] or 'application/octet-stream'
     data = open(fp, 'rb').read()
     if mt == 'text/html':
-        return HTMLResponse(_inject_auth(data.decode('utf-8', errors='replace')))
+        return HTMLResponse(_inject_auth(data.decode('utf-8', errors='replace')), headers={'Cache-Control': 'no-cache'})
     return Response(data, media_type=mt)

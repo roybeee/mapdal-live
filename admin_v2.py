@@ -230,6 +230,8 @@ def ensure_ready():
            data TEXT, created TEXT)""",
         """CREATE TABLE IF NOT EXISTS k2g_removed(uid TEXT PRIMARY KEY, name TEXT,
            created TEXT, by_admin TEXT)""",
+        """CREATE TABLE IF NOT EXISTS site_settings(key TEXT PRIMARY KEY, value TEXT,
+           updated TEXT, by_admin TEXT)""",
     ):
         try: run(ddl)
         except Exception: pass
@@ -1124,6 +1126,11 @@ button.btn.sm{padding:4px 9px;font-size:12px}button.btn:disabled{opacity:.4;curs
   <div class="panel"><h3>페이지 콘텐츠 관리 <span class="tag">저장 즉시 사이트 반영 · 재배포에도 유지</span></h3>
   <div class="hint" style="margin-bottom:10px">편집 내용은 데이터베이스에 저장되어 원본 파일과 별도로 보존됩니다. [원본 복원]으로 언제든 되돌릴 수 있고, 저장할 때마다 직전 버전이 이력(최근 10개)에 남습니다.</div>
   <div id="pglist" class="loading">불러오는 중…</div></div></section>
+<section id="t-ticker" style="display:none">
+  <style>@keyframes tkmq{from{transform:translateX(0)}to{transform:translateX(-50%)}}</style>
+  <div class="panel"><h3>LED 드롭 티커 <span class="tag">저장 즉시 전 페이지 반영</span></h3>
+  <div class="hint" style="margin-bottom:10px">한 줄에 한 항목 · <b>**별표 두 개**</b>로 감싸면 흰색 강조 · 항목을 전부 지우고 저장하면 사이트에서 티커가 숨겨집니다. 항목 수가 바뀌어도 흐르는 속도는 일정하게 자동 조절됩니다.</div>
+  <div id="tkbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-cust" style="display:none">
   <div class="toolbar"><button class="btn sm" id="cm1" onclick="custMode('buyers')">구매 고객</button>
   <button class="btn sm ghost" id="cm2" onclick="custMode('members')">가입 회원</button></div>
@@ -1170,8 +1177,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,ticker:loadTicker,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -1426,6 +1433,43 @@ async function histPage(path){try{const d=await api('/admin/api/pages/history?pa
  $('#mbg').style.display='flex'}catch(e){toast(e.message)}}
 async function restorePage(id){try{await api('/admin/api/pages/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
  toast('해당 버전으로 복원되었습니다');closeM();loadPages()}catch(e){toast(e.message)}}
+
+async function loadTicker(){try{const d=await api('/admin/api/ticker');
+ $('#tkbox').innerHTML=`
+ <textarea id="tkitems" rows="7" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.8" placeholder="예) NEXT DROP **07.18 SAT 12:00 KST** — SUMMER DROP 08"></textarea>
+ <div class="toolbar" style="margin-top:10px;align-items:center">속도
+  <label><input type="radio" name="tkspd" value="slow"> 느림</label>
+  <label><input type="radio" name="tkspd" value="normal"> 보통</label>
+  <label><input type="radio" name="tkspd" value="fast"> 빠름</label>
+  ${can(2)?'<button class="btn" onclick="saveTicker()" style="margin-left:auto">저장 (사이트 즉시 반영)</button>':''}
+  <a class="btn ghost" href="/" target="_blank" style="text-decoration:none${can(2)?'':';margin-left:auto'}">사이트에서 확인</a></div>
+ <div class="hint" style="margin:14px 0 6px">미리보기 — 실제 사이트와 동일하게 흐릅니다</div>
+ <div id="tkprev" style="background:#141414;overflow:hidden;padding:9px 0;border-bottom:3px solid #E8332A;border-radius:3px">
+  <div id="tkprevtrack" style="display:flex;gap:56px;white-space:nowrap;width:max-content"></div></div>
+ ${d.is_default?'<div class="hint" style="margin-top:8px">아직 저장 이력 없음 — 현재 사이트의 기본 문구를 표시 중입니다.</div>'
+  :`<div class="hint" style="margin-top:8px">마지막 저장 ${esc((d.updated||'').slice(0,16).replace('T',' '))} UTC · ${esc(d.by_admin||'')}</div>`}`;
+ document.getElementById('tkitems').value=(d.items||[]).join('\n');
+ document.querySelectorAll('input[name=tkspd]').forEach(r=>{r.checked=(r.value===(d.speed||'normal'));r.onchange=tkPrev});
+ document.getElementById('tkitems').oninput=tkPrev;tkPrev();
+}catch(e){$('#tkbox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function tkItems(){return document.getElementById('tkitems').value.split('\n').map(s=>s.trim()).filter(Boolean)}
+function tkSpd(){const r=document.querySelector('input[name=tkspd]:checked');return r?r.value:'normal'}
+function tkPrev(){const t=document.getElementById('tkprevtrack');if(!t)return;
+ const items=tkItems(),box=document.getElementById('tkprev');
+ if(!items.length){box.style.opacity=.4;t.style.animation='none';
+  t.innerHTML='<span style="font:12px \'IBM Plex Mono\',monospace;color:#888;padding-left:16px">항목 없음 — 저장하면 사이트에서 티커가 숨겨집니다</span>';return}
+ box.style.opacity=1;
+ const unit=items.map(s=>'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:12px;letter-spacing:.08em;color:#FFB000">'
+  +esc(s).replace(/\*\*([^*]+)\*\*/g,'<b style="color:#fff;font-weight:500">$1</b>')+'</span>').join('');
+ t.innerHTML=unit+unit+unit+unit;
+ const px={slow:38,normal:55,fast:80}[tkSpd()]||55;
+ requestAnimationFrame(()=>{const half=t.scrollWidth/2;if(half>0){
+  t.style.animation='none';void t.offsetWidth;
+  t.style.animation='tkmq '+Math.max(10,Math.round(half/px))+'s linear infinite'}})}
+async function saveTicker(){try{
+ const d=await api('/admin/api/ticker/save',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({items:tkItems(),speed:tkSpd()})});
+ toast('저장 완료 — 전 페이지 즉시 반영 ('+d.items.length+'개 항목)');loadTicker()}catch(e){toast(e.message)}}
 
 async function loadCS(){try{const d=await api('/admin/api/cs');
  const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':v==='거절'?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
@@ -3069,6 +3113,98 @@ ready(function(){
  header.appendChild(bar);
 });})();</script>"""
 
+# ── LED 드롭 티커: DB 저장 → 전 페이지 동적 반영 ──────────────────────
+#    관리자 대시보드 [티커] 탭에서 문구·속도 수정. 저장 즉시 모든 페이지의
+#    .ticker-track이 DB 내용으로 교체된다(정적 HTML 53개는 수정 불필요).
+#    저장 이력이 없으면 아래 기본값(현재 하드코딩과 동일)을 반환한다.
+TICKER_DEFAULT = {
+    'items': ['NEXT DROP **07.11 SAT 12:00 KST** — SUMMER DROP 07',
+              '팬사인회 응모 **07.09 마감** — 네온서울 성수 팬미팅',
+              'LIVE **매주 금 20:00** — 맵달APP · TikTok Shop · YouTube',
+              'NEW **ONLINE NOW** — 맵달 KIMBAP 6종 · 맵달 BOWL 6종'],
+    'speed': 'normal'}
+
+def _setting_put(key, value, by=''):
+    v = json.dumps(value, ensure_ascii=False)
+    if run('UPDATE site_settings SET value=?, updated=?, by_admin=? WHERE key=?',
+           (v, now_iso(), by, key)) == 0:
+        run('INSERT INTO site_settings VALUES(?,?,?,?)', (key, v, now_iso(), by))
+
+def ticker_conf():
+    """저장값 없으면 기본값. 저장값이 있으면(빈 목록 포함) 그대로 — 빈 목록 = 티커 숨김."""
+    try:
+        r = one('SELECT value, updated, by_admin FROM site_settings WHERE key=?', ('ticker',))
+    except Exception:
+        r = None
+    if not r:
+        return dict(TICKER_DEFAULT, updated='', by_admin='', is_default=True)
+    d = jload(r.get('value'), {}) or {}
+    items = [str(x).strip() for x in (d.get('items') or []) if str(x or '').strip()]
+    speed = d.get('speed') if d.get('speed') in ('slow', 'normal', 'fast') else 'normal'
+    return {'items': items, 'speed': speed, 'updated': r.get('updated') or '',
+            'by_admin': r.get('by_admin') or '', 'is_default': False}
+
+@admin_router.get('/api/ticker')
+def api_ticker_public():
+    try: ensure_ready()
+    except Exception: pass
+    c = ticker_conf()
+    return JSONResponse({'items': c['items'], 'speed': c['speed']},
+                        headers={'Cache-Control': 'no-store'})
+
+@admin_router.get('/admin/api/ticker')
+def api_ticker_get(request: Request):
+    get_actor(request)
+    return ticker_conf()
+
+@admin_router.post('/admin/api/ticker/save')
+def api_ticker_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '티커 관리')
+    raw = body.get('items')
+    if not isinstance(raw, list): raise HTTPException(400, 'items는 목록이어야 합니다')
+    items = []
+    for x in raw:
+        s = re.sub(r'\s+', ' ', str(x or '')).strip()
+        if s: items.append(s[:200])
+    if len(items) > 12: raise HTTPException(400, '티커 항목은 최대 12개까지 가능합니다')
+    speed = body.get('speed') if body.get('speed') in ('slow', 'normal', 'fast') else 'normal'
+    _setting_put('ticker', {'items': items, 'speed': speed}, a['name'])
+    audit(a, '티커저장', '', '%d개 항목 · %s' % (len(items), speed))
+    return {'ok': True, 'items': items, 'speed': speed}
+
+# 전 페이지 주입 스크립트: .ticker-track을 /api/ticker 내용으로 교체.
+# **문구** → <b>흰색 강조</b> · 항목 0개면 티커 숨김 · API 이상 시 기존 문구 유지(fail-open)
+# 항목이 짧아도 화면 폭을 채울 때까지 반복(-50% 루프 이음새 방지) · 체감 속도 일정하게 duration 자동 계산
+TICKER_SNIPPET = r"""<script id="mpTickerJs">(function(){
+if(window.__mpTicker)return;window.__mpTicker=1;
+function ready(f){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',f);else f()}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function toHTML(t){return esc(t).replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')}
+ready(function(){
+ var tk=document.querySelector('.ticker-track');if(!tk)return;
+ fetch('/api/ticker',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(d){
+  if(!d||!Array.isArray(d.items))return;
+  var box=tk.closest('.ticker')||tk.parentElement;
+  var items=[],i;
+  for(i=0;i<d.items.length;i++){var s=String(d.items[i]==null?'':d.items[i]).trim();if(s)items.push(s)}
+  if(!items.length){if(box)box.style.display='none';return}
+  if(box)box.style.display='';
+  var unit0='';
+  for(i=0;i<items.length;i++)unit0+='<span>'+toHTML(items[i])+'</span>';
+  function render(rep){var u='';for(var k=0;k<rep;k++)u+=unit0;tk.innerHTML=u+u}
+  render(1);
+  var px={slow:38,normal:55,fast:80}[d.speed]||55;
+  (window.requestAnimationFrame||function(f){setTimeout(f,16)})(function(){
+   var half=tk.scrollWidth/2,vw=window.innerWidth||1280;
+   if(half>0){
+    var rep=Math.min(6,Math.max(1,Math.ceil(vw/half)));
+    if(rep>1){render(rep);half=tk.scrollWidth/2}
+    tk.style.animationDuration=Math.max(10,Math.round(half/px))+'s';
+   }
+  });
+ }).catch(function(){});
+});})();</script>"""
+
 def _patch_legacy_footer(html):
     """목업 원본 푸터의 구형 법적표기 블록(.foot-base)을 통째로 제거.
     법정 표기는 표준 푸터(mpFooter) 단일 출처로 일원화한다."""
@@ -3314,6 +3450,7 @@ def _inject_auth(html):
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
     if 'mpMobNav' not in html: add += MOBNAV_SNIPPET
+    if 'mpTickerJs' not in html: add += TICKER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')

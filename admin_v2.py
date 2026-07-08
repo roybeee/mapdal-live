@@ -2853,6 +2853,23 @@ MOBNAV_SNIPPET = r"""<style id="mpMobNav">
  .header-inner{padding:0 10px}
  #mpCatBar a{font-size:12px;letter-spacing:.04em}
 }
+/* ── 모바일 상품 그리드 (SHOP) ── */
+@media(min-width:641px) and (max-width:1024px){
+ #shopGrid{grid-template-columns:repeat(3,1fr)!important;gap:14px!important}
+}
+@media(max-width:640px){
+ #shopGrid{grid-template-columns:repeat(2,1fr)!important;gap:10px!important}
+ #shopGrid .col-cover{height:190px;padding:14px}
+ #shopGrid .col-cover .big{font-size:30px}
+ #shopGrid .col-cover .tag{top:10px;left:10px;font-size:8.5px;padding:4px 7px}
+ #shopGrid .col-body{padding:12px 12px 14px}
+ #shopGrid .col-body h3{font-size:13.5px;margin-bottom:4px}
+ #shopGrid .col-body p{font-size:11.5px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+ #shopGrid .col-body .meta{font-size:9.5px;margin-top:10px}
+ .k2g-body{padding:10px 10px 12px}
+ .k2g-price .amt{font-size:12.5px}
+ .k2g-price .pct{font-size:13.5px}
+}
 @media(min-width:1025px){#mpCatBar{display:none!important}}
 </style><script>(function(){
 if(window.__mpMobNav)return;window.__mpMobNav=1;
@@ -2884,30 +2901,11 @@ ready(function(){
 });})();</script>"""
 
 def _patch_legacy_footer(html):
-    """목업 원본 푸터의 구형 회사정보 줄을 법정 실값으로 현장 대체."""
-    info = biz_info()
-    total = 0
-    html, n = re.subn(r'주식회사\s*밀집', '맵달서울성수', html); total += n
-    html, n = re.subn(r'사업자등록번호\s*:?\s*\[\s*기입\s*필요\s*\]',
-                      '사업자등록번호: ' + info['reg'], html); total += n
-    html, n = re.subn(r'통신판매업신고\s*:?\s*\[\s*기입\s*필요\s*\]',
-                      '통신판매업신고: ' + info['mail_order'] + ' · 호스팅서비스 제공: Render Services, Inc.', html); total += n
-    html, n = re.subn(r'help@mealzip\.kr', info['email'], html); total += n
-    if total:
-        links = ('<a href="/terms.html" style="color:#fff;text-decoration:none">이용약관</a>'
-                 '&nbsp;·&nbsp;<a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a>'
-                 '&nbsp;&nbsp;&nbsp;')
-        html, n2 = re.subn(r'(©\s*2026\s*MEAL\s*ZIP)', links + r'\1', html, count=1)
-        if not n2:
-            html = html.replace('맵달서울성수', links + '<br>맵달서울성수', 1)
-        if 'mpFootWhite' not in html:
-            html += ('<script id="mpFootWhite">(function(){try{'
-                     'var els=document.querySelectorAll("footer *,footer");'
-                     'for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";'
-                     'if(/\uc0ac\uc5c5\uc790\ub4f1\ub85d\ubc88\ud638|\ud1b5\uc2e0\ud310\ub9e4\uc5c5\uc2e0\uace0|\ub9f5\ub2ec\uc11c\uc6b8\uc131\uc218|MEAL ZIP/.test(t)'
-                     '&&t.length<420&&e.children.length<10){e.style.color="#fff";}}'
-                     '}catch(e){}})();</script>')
-    return html, total
+    """목업 원본 푸터의 구형 법적표기 블록(.foot-base)을 통째로 제거.
+    법정 표기는 표준 푸터(mpFooter) 단일 출처로 일원화한다."""
+    html, n1 = re.subn(r'<div class="foot-base">.*?</div>\s*', '', html, flags=re.S)
+    html, n2 = re.subn(r'<script id="mpFootWhite">.*?</script>\s*', '', html, flags=re.S)
+    return html, n1 + n2
 
 def _inject_auth(html):
     html, patched = _patch_legacy_footer(html)
@@ -2915,7 +2913,7 @@ def _inject_auth(html):
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
     if 'mpMobNav' not in html: add += MOBNAV_SNIPPET
-    if (not patched) and ('mpFooter' not in html): add += footer_snippet()
+    if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
     return (html[:i] + add + html[i:]) if i >= 0 else (html + add)

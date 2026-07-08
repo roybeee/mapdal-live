@@ -1107,7 +1107,7 @@ button.btn.sm{padding:4px 9px;font-size:12px}button.btn:disabled{opacity:.4;curs
   <div class="toolbar"><input id="pq" placeholder="상품명 · ID" style="width:220px">
   <select id="pf"><option value="">전체</option><option value="low">저재고(≤5)</option><option value="soldout">품절</option></select>
   <button class="btn" onclick="loadProducts(1)">검색</button>
-  <button class="btn red" id="pnew" onclick="location.href='/admin/products/new'">+ 상품 등록</button>
+  <button class="btn red" id="pnew" onclick="newProduct()">+ 상품 등록</button>
   <span class="hint">가격 변경·상품 등록은 매니저 이상. 등록 상품은 /p/상품ID 페이지가 자동 생성됩니다.</span></div>
   <div id="plist" class="loading">불러오는 중…</div></section>
 <section id="t-pages" style="display:none">
@@ -1368,8 +1368,123 @@ function pwModal(){$('#mbox').innerHTML=`<h3>비밀번호 변경</h3>
 async function savePw(){if($('#pw1').value!==$('#pw2').value)return toast('새 비밀번호가 서로 다릅니다');
  try{await api('/admin/api/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old:$('#pw0').value,new:$('#pw1').value})});
  toast('변경되었습니다');closeM()}catch(e){toast(e.message)}}
-// 상품 등록·상세편집은 별도 페이지(/admin/products/new, /admin/products/edit)로 이동합니다.
-function editDetail(id){location.href='/admin/products/edit?id='+encodeURIComponent(id)}
+const PCATS=[['','— 카테고리 선택 —'],['album','앨범 / 음반'],['md','굿즈 / MD'],['kfood','K-FOOD'],['apparel','어패럴'],['living','리빙 / 홈']];
+function catOptions(sel){return PCATS.map(c=>`<option value="${c[0]}"${c[0]===(sel||'')?' selected':''}>${c[1]}</option>`).join('')}
+
+// ── 이미지 업로드 공용: 파일 → 서버(/admin/api/upload) → 공개 URL ──────
+// 업로드 전 브라우저에서 리사이즈/압축(최대 1600px, JPEG 0.85)해 용량을 줄인다.
+function shrinkImage(file, maxDim=1600, quality=0.85){
+ return new Promise((resolve)=>{
+  if(!/^image\//.test(file.type)||file.type==='image/gif'){resolve(file);return;} // gif는 원본 유지
+  const img=new Image();const url=URL.createObjectURL(file);
+  img.onload=()=>{URL.revokeObjectURL(url);
+   let{width:w,height:h}=img;
+   if(w<=maxDim&&h<=maxDim&&file.size<600*1024){resolve(file);return;} // 이미 충분히 작음
+   const s=Math.min(1,maxDim/Math.max(w,h));const cw=Math.round(w*s),ch=Math.round(h*s);
+   const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
+   cv.getContext('2d').drawImage(img,0,0,cw,ch);
+   cv.toBlob(b=>resolve(b&&b.size<file.size?new File([b],file.name.replace(/\.\w+$/,'')+'.jpg',{type:'image/jpeg'}):file),'image/jpeg',quality);
+  };
+  img.onerror=()=>{URL.revokeObjectURL(url);resolve(file);};
+  img.src=url;
+ });
+}
+async function uploadFile(file){
+ const small=await shrinkImage(file);
+ const fd=new FormData();fd.append('file',small,small.name||'image.jpg');
+ const r=await api('/admin/api/upload',{method:'POST',body:fd});
+ return r.url;
+}
+// 드롭존 UI: 대표 이미지 1장 미리보기 + 파일선택/드래그
+function mountDropzone(zoneId,inputId,previewId,hiddenId){
+ const zone=$('#'+zoneId),inp=$('#'+inputId),pv=$('#'+previewId),dz=zone.querySelector('.dz-in');
+ const EMPTY=dz?dz.getAttribute('data-empty'):'';
+ if(dz&&!dz.textContent)dz.textContent=EMPTY;
+ function setUrl(u){$('#'+hiddenId).value=u||'';
+  pv.innerHTML=u?`<img src="${esc(u)}" style="max-width:100%;max-height:180px;border:1px solid #e3e1db">
+   <div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('${hiddenId}').value='';document.getElementById('${previewId}').innerHTML='';">이미지 제거</button></div>`:'';}
+ async function handle(file){if(!file)return;zone.classList.add('busy');if(dz)dz.textContent='업로드 중…';
+  try{setUrl(await uploadFile(file));}catch(e){toast(e.message);}zone.classList.remove('busy');if(dz)dz.textContent=EMPTY;}
+ zone.onclick=()=>inp.click();
+ inp.onchange=e=>handle(e.target.files[0]);
+ ['dragover','dragenter'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('over');}));
+ ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('over');}));
+ zone.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)handle(f);});
+}
+
+// ── 상세페이지 블록 에디터 (게시판 글쓰기 방식: 이미지/글 블록을 쌓음) ──
+let _blocks=[];  // [{type:'text',text} | {type:'image',url,caption}]
+function renderBlocks(){
+ const host=$('#blkList');if(!host)return;
+ if(!_blocks.length){host.innerHTML='<div class="hint" style="padding:16px;text-align:center">아래 버튼으로 이미지나 글을 추가하세요. 순서는 ↑↓로 바꿀 수 있습니다.</div>';return;}
+ host.innerHTML=_blocks.map((b,i)=>{
+  const ctrl=`<div class="blk-ctrl">
+    <button class="btn sm ghost" type="button" onclick="moveBlk(${i},-1)" ${i===0?'disabled':''}>↑</button>
+    <button class="btn sm ghost" type="button" onclick="moveBlk(${i},1)" ${i===_blocks.length-1?'disabled':''}>↓</button>
+    <button class="btn sm ghost" type="button" onclick="delBlk(${i})">삭제</button></div>`;
+  if(b.type==='image'){return `<div class="blk"><div class="blk-h"><b>🖼 이미지</b>${ctrl}</div>
+    <img src="${esc(b.url)}" style="max-width:100%;max-height:220px;border:1px solid #e3e1db;display:block;margin:6px 0">
+    <input placeholder="이미지 설명 (선택)" value="${esc(b.caption||'')}" oninput="_blocks[${i}].caption=this.value" style="width:100%"></div>`;}
+  return `<div class="blk"><div class="blk-h"><b>📝 글</b>${ctrl}</div>
+    <textarea rows="4" placeholder="내용을 입력하세요" oninput="_blocks[${i}].text=this.value" style="width:100%">${esc(b.text||'')}</textarea></div>`;
+ }).join('');
+}
+function moveBlk(i,d){const j=i+d;if(j<0||j>=_blocks.length)return;const t=_blocks[i];_blocks[i]=_blocks[j];_blocks[j]=t;renderBlocks();}
+function delBlk(i){_blocks.splice(i,1);renderBlocks();}
+function addTextBlk(){_blocks.push({type:'text',text:''});renderBlocks();}
+function addImgBlk(){const inp=$('#blkImgInput');inp.value='';inp.click();}
+async function onBlkImg(files){for(const f of files){try{const u=await uploadFile(f);_blocks.push({type:'image',url:u,caption:''});renderBlocks();}catch(e){toast(e.message);}}}
+
+function newProduct(){_blocks=[];$('#mbox').innerHTML=`<h3>신규 상품 등록</h3>
+ <div class="kv"><b>상품명 *</b><span><input id="npn" style="width:100%" placeholder="예: 맵달 굿즈 키링"></span>
+ <b>카테고리 *</b><span><select id="npc" style="width:100%">${catOptions('')}</select></span>
+ <b>가격(원) *</b><span><input id="npp" type="number" min="0" style="width:100%" placeholder="12900"></span>
+ <b>초기 재고 *</b><span><input id="nps" type="number" min="0" style="width:100%" placeholder="100"></span>
+ <b>대표 이미지</b><span>
+   <div id="npzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
+   <input id="npfile" type="file" accept="image/*" style="display:none"><input id="npi" type="hidden">
+   <div id="nppv" style="margin-top:8px"></div></span>
+ <b>짧은 설명</b><span><textarea id="npd" rows="3" style="width:100%" placeholder="목록·상단 요약 설명 (선택)"></textarea></span></div>
+ <div style="margin:14px 0 6px;font-weight:700">상세 페이지 (이미지 + 글)</div>
+ <div id="blkList" class="blk-list"></div>
+ <input id="blkImgInput" type="file" accept="image/*" multiple style="display:none" onchange="onBlkImg(this.files)">
+ <div style="display:flex;gap:8px;margin:10px 0"><button class="btn sm" type="button" onclick="addImgBlk()">＋ 이미지 추가</button><button class="btn sm" type="button" onclick="addTextBlk()">＋ 글 추가</button></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="saveNewProduct()">등록</button><button class="btn ghost" onclick="closeM()">닫기</button></div>
+ <div class="hint">카테고리를 지정하면 SHOP 목록의 해당 필터에 자동 연동됩니다. 상세 페이지는 이미지와 글을 원하는 순서로 쌓아 게시판 글처럼 구성할 수 있고, 등록 후 [상세편집]에서 언제든 수정됩니다.</div>`;
+ $('#mbg').style.display='flex';mountDropzone('npzone','npfile','nppv','npi');renderBlocks();}
+
+async function saveNewProduct(){if(!$('#npc').value)return toast('카테고리를 선택하세요');
+ try{const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({name:$('#npn').value,category:$('#npc').value,price:Number($('#npp').value||0),stock:Number($('#nps').value||0),img:$('#npi').value,descr:$('#npd').value,detail_blocks:_blocks})});
+ $('#mbox').innerHTML=`<h3>등록 완료</h3><p>상품 페이지가 생성되었습니다.</p><div class="tokenbox">https://mapdal.kr${r.url}</div>
+ <div style="display:flex;gap:8px;justify-content:flex-end"><a class="btn" style="text-decoration:none" href="${r.url}" target="_blank">페이지 열기</a><button class="btn" onclick="editDetail('${r.id.replace(/'/g,"\\'")}')">상세 편집</button><button class="btn ghost" onclick="closeM();loadProducts(1)">닫기</button></div>`;
+ }catch(e){toast(e.message)}}
+
+async function editDetail(id){try{const d=await api('/admin/api/products/detail?id='+encodeURIComponent(id));
+ _blocks=Array.isArray(d.detail_blocks)?JSON.parse(JSON.stringify(d.detail_blocks)):[];
+ $('#mbox').innerHTML=`<h3>상세페이지 편집</h3>
+ <div class="hint" style="margin-bottom:8px">${esc(d.name)} · <a href="${d.url}" target="_blank">페이지 보기 ↗</a></div>
+ <div class="kv"><b>상품명</b><span><input id="edn" style="width:100%" value="${esc(d.name)}"></span>
+ <b>카테고리</b><span><select id="edc" style="width:100%">${catOptions(d.category)}</select></span>
+ <b>대표 이미지</b><span>
+   <div id="edzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
+   <input id="edfile" type="file" accept="image/*" style="display:none"><input id="edi" type="hidden" value="${esc(d.img)}">
+   <div id="edpv" style="margin-top:8px"></div></span>
+ <b>짧은 설명</b><span><textarea id="edd" rows="3" style="width:100%">${esc(d.descr)}</textarea></span></div>
+ <div style="margin:14px 0 6px;font-weight:700">상세 페이지 (이미지 + 글)</div>
+ <div id="blkList" class="blk-list"></div>
+ <input id="blkImgInput" type="file" accept="image/*" multiple style="display:none" onchange="onBlkImg(this.files)">
+ <div style="display:flex;gap:8px;margin:10px 0"><button class="btn sm" type="button" onclick="addImgBlk()">＋ 이미지 추가</button><button class="btn sm" type="button" onclick="addTextBlk()">＋ 글 추가</button></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="saveDetail('${id.replace(/'/g,"\\'")}')">저장</button><a class="btn ghost" style="text-decoration:none" href="${d.url}" target="_blank">미리보기</a><button class="btn ghost" onclick="closeM()">닫기</button></div>`;
+ $('#mbg').style.display='flex';
+ // 대표 이미지 미리보기 초기화
+ if(d.img){$('#edpv').innerHTML=`<img src="${esc(d.img)}" style="max-width:100%;max-height:180px;border:1px solid #e3e1db">
+   <div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('edi').value='';document.getElementById('edpv').innerHTML='';">이미지 제거</button></div>`;}
+ mountDropzone('edzone','edfile','edpv','edi');renderBlocks();
+ }catch(e){toast(e.message)}}
+async function saveDetail(id){try{await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({id:id,name:$('#edn').value,category:$('#edc').value,img:$('#edi').value,descr:$('#edd').value,detail_blocks:_blocks})});
+ toast('상세페이지가 저장되었습니다');closeM();loadProducts(ppage)}catch(e){toast(e.message)}}
 
 async function loadPages(){try{const d=await api('/admin/api/pages');
  $('#pglist').innerHTML=`<table><tr><th>페이지</th><th>상태</th><th>마지막 수정</th><th></th></tr>
@@ -1735,243 +1850,10 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
             val = (val or '').strip()
             if limit: val = val[:limit]
         sets.append('%s=?' % col); args.append(val); log.append(k)
-    # 가격 · 재고 (별도 페이지 편집 화면에서 한 번에 저장)
-    if body.get('price') is not None and _state['pprice']:
-        v = num(body['price'])
-        if v < 0: raise HTTPException(400, '가격은 0 이상')
-        sets.append('%s=?' % _state['pprice']); args.append(v); log.append('price')
-    if body.get('stock') is not None:
-        s = num(body['stock'])
-        if s < 0: raise HTTPException(400, '재고는 0 이상')
-        sets.append('stock=?'); args.append(s)
-        sets.append('soldout=?'); args.append(1 if s == 0 else 0)
-        log.append('stock')
     if not sets: raise HTTPException(400, '변경할 값 없음')
     run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
     audit(a, '상품상세수정', pid, '수정 항목: ' + ', '.join(log))
     return {'ok': True, 'id': pid, 'url': '/p/' + pid}
-
-# ═══════════════ 상품 등록/편집 — 별도 페이지 (모달 아님) ═══════════════
-def _page_guard(request, what):
-    """페이지용 인증 가드: 미로그인 → 로그인 화면 / 권한부족 → 안내 페이지 / 통과 → None."""
-    try:
-        actor = get_actor(request); need(actor, 2, what)
-        return None
-    except HTTPException as e:
-        if e.status_code == 403 and 'forbidden' in str(e.detail):
-            return HTMLResponse(LOGIN_HTML)          # 미로그인/세션만료 → 로그인 화면
-        if e.status_code == 403:
-            return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center">'
-                                '<h3>%s</h3><a href="/admin/dashboard">대시보드로 돌아가기</a>' % e.detail, status_code=403)
-        raise
-
-@admin_router.get('/admin/products/new', response_class=HTMLResponse)
-def product_new_page(request: Request):
-    blocked = _page_guard(request, '상품 등록')
-    if blocked is not None: return blocked
-    return HTMLResponse(_PRODUCT_FORM_HTML.replace('__PAGE__',
-        json.dumps({'mode': 'new', 'id': ''}, ensure_ascii=False)))
-
-@admin_router.get('/admin/products/edit', response_class=HTMLResponse)
-def product_edit_page(request: Request):
-    blocked = _page_guard(request, '상품 상세 수정')
-    if blocked is not None: return blocked
-    pid = (request.query_params.get('id') or '').strip()
-    if not pid:
-        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center"><h3>상품 ID가 없습니다</h3><a href="/admin/dashboard">대시보드로</a>', status_code=400)
-    return HTMLResponse(_PRODUCT_FORM_HTML.replace('__PAGE__',
-        json.dumps({'mode': 'edit', 'id': pid}, ensure_ascii=False)))
-
-_PRODUCT_FORM_HTML = r'''<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>상품 등록 · 편집 — MAPDAL SEOUL</title>
-<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
-<style>:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2;--amber:#FFB000}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'IBM Plex Sans KR',sans-serif;background:var(--paper);color:var(--black);padding-bottom:96px}
-header{background:var(--black);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:16px}
-header h1{font-family:'Black Han Sans';font-size:19px;font-weight:400}header h1 span{color:var(--red)}
-header a.back{color:#bbb;text-decoration:none;font-size:13px}header a.back:hover{color:#fff}
-main{max-width:820px;margin:26px auto;padding:0 18px}
-h2{font-size:19px;margin-bottom:18px}
-.card{background:#fff;border:1px solid #e3e1db;padding:24px;margin-bottom:18px}
-.card h3{font-size:14px;border-left:4px solid var(--red);padding-left:9px;margin-bottom:16px}
-.f{margin-bottom:15px}
-.f label{display:block;font-size:12px;font-weight:700;color:#777;margin-bottom:6px}
-.f input[type=text],.f input[type=number],.f select,.f textarea{width:100%;font:inherit;font-size:14px;padding:10px 12px;border:1px solid #ccc;background:#fff}
-.f input:focus,.f select:focus,.f textarea:focus{outline:2px solid var(--black)}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-@media(max-width:640px){.row2{grid-template-columns:1fr}}
-.btn{font:inherit;font-weight:700;font-size:14px;border:0;padding:11px 20px;cursor:pointer;background:var(--black);color:#fff}
-.btn.ghost{background:#fff;color:var(--black);border:1px solid #999}
-.btn.sm{padding:5px 10px;font-size:12px}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.dropzone{border:2px dashed #bbb;background:#fafafa;padding:26px;text-align:center;color:#999;cursor:pointer;font-size:13px;transition:.15s}
-.dropzone:hover{border-color:var(--black);color:#555}
-.dropzone.over{border-color:var(--red);background:#fff5f4;color:var(--red)}
-.dropzone.busy{opacity:.6;pointer-events:none}
-.dz-in{pointer-events:none}
-.blk-list{border:1px solid #eee;background:#fff;min-height:64px}
-.blk{border-bottom:1px solid #f0f0f0;padding:13px}
-.blk:last-child{border-bottom:0}
-.blk-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;font-size:12px;color:#555}
-.blk-ctrl{display:flex;gap:4px}
-.blk textarea,.blk input{width:100%;font:inherit;font-size:14px;padding:8px 10px;border:1px solid #ddd}
-.hint{font-size:11.5px;color:#888;line-height:1.7;margin-top:8px}
-.savebar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #ddd;padding:12px 18px;display:flex;gap:10px;justify-content:center;z-index:50}
-.savebar .in{width:100%;max-width:820px;display:flex;gap:10px;justify-content:flex-end;align-items:center}
-.savebar .stat{margin-right:auto;font-size:12px;color:#888}
-#toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--black);color:#fff;padding:10px 20px;display:none;z-index:200;font-weight:700}
-</style></head><body>
-<header><a class="back" href="/admin/dashboard">← 대시보드</a><h1>MAPDAL<span>SEOUL</span></h1><span id="ptitle" style="font-size:13px;color:#bbb"></span></header>
-<main>
-<h2 id="h2title"></h2>
-<div class="card"><h3>기본 정보</h3>
- <div class="f"><label>상품명 *</label><input type="text" id="fn" placeholder="예: 맵달 굿즈 키링"></div>
- <div class="row2">
-  <div class="f"><label>카테고리 *</label><select id="fc"></select></div>
-  <div class="f"><label>가격(원) *</label><input type="number" id="fp" min="0" placeholder="12900"></div>
- </div>
- <div class="row2">
-  <div class="f"><label id="fslabel">초기 재고 *</label><input type="number" id="fs" min="0" placeholder="100"></div>
-  <div></div>
- </div>
- <div class="f"><label>짧은 설명</label><textarea id="fd" rows="3" placeholder="목록·상단 요약 설명 (선택)"></textarea></div>
-</div>
-<div class="card"><h3>대표 이미지</h3>
- <div id="fzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
- <input id="ffile" type="file" accept="image/*" style="display:none"><input id="fi" type="hidden">
- <div id="fpv" style="margin-top:10px"></div>
- <div class="hint">업로드 시 자동으로 리사이즈·압축됩니다 (최대 1600px).</div>
-</div>
-<div class="card"><h3>상세 페이지 (이미지 + 글)</h3>
- <div id="blkList" class="blk-list"></div>
- <input id="blkImgInput" type="file" accept="image/*" multiple style="display:none" onchange="onBlkImg(this.files)">
- <div style="display:flex;gap:8px;margin-top:12px"><button class="btn sm" type="button" onclick="addImgBlk()">＋ 이미지 추가</button><button class="btn sm" type="button" onclick="addTextBlk()">＋ 글 추가</button></div>
- <div class="hint">이미지와 글을 원하는 순서로 쌓아 게시판 글처럼 구성하세요. ↑↓로 순서 변경, 이미지는 여러 장 한꺼번에 선택할 수 있습니다.</div>
-</div>
-</main>
-<div class="savebar"><div class="in">
- <span class="stat" id="stat"></span>
- <a class="btn ghost" id="viewBtn" style="text-decoration:none;display:none" target="_blank">상품 페이지 ↗</a>
- <a class="btn ghost" href="/admin/dashboard" style="text-decoration:none">취소</a>
- <button class="btn" id="saveBtn" onclick="save()">저장</button>
-</div></div>
-<div id="toast"></div>
-<script>
-const PAGE=__PAGE__;
-const $=s=>document.querySelector(s);
-const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600)}
-async function api(p,opt){const r=await fetch(p,opt);
- if(r.status===403){alert('세션이 만료되었거나 로그인이 필요합니다. 로그인 화면으로 이동합니다.');location.href='/admin/dashboard';throw new Error('세션 만료')}
- if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
-const PCATS=[['','— 카테고리 선택 —'],['album','앨범 / 음반'],['md','굿즈 / MD'],['kfood','K-FOOD'],['apparel','어패럴'],['living','리빙 / 홈']];
-function catOptions(sel){return PCATS.map(c=>`<option value="${c[0]}"${c[0]===(sel||'')?' selected':''}>${c[1]}</option>`).join('')}
-
-function shrinkImage(file,maxDim=1600,quality=0.85){
- return new Promise((resolve)=>{
-  if(!/^image\//.test(file.type)||file.type==='image/gif'){resolve(file);return;}
-  const img=new Image();const url=URL.createObjectURL(file);
-  img.onload=()=>{URL.revokeObjectURL(url);
-   let{width:w,height:h}=img;
-   if(w<=maxDim&&h<=maxDim&&file.size<600*1024){resolve(file);return;}
-   const s=Math.min(1,maxDim/Math.max(w,h));const cw=Math.round(w*s),ch=Math.round(h*s);
-   const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
-   cv.getContext('2d').drawImage(img,0,0,cw,ch);
-   cv.toBlob(b=>resolve(b&&b.size<file.size?new File([b],file.name.replace(/\.\w+$/,'')+'.jpg',{type:'image/jpeg'}):file),'image/jpeg',quality);
-  };
-  img.onerror=()=>{URL.revokeObjectURL(url);resolve(file);};
-  img.src=url;
- });
-}
-async function uploadFile(file){
- const small=await shrinkImage(file);
- const fd=new FormData();fd.append('file',small,small.name||'image.jpg');
- const r=await api('/admin/api/upload',{method:'POST',body:fd});
- return r.url;
-}
-function setMainImg(u){$('#fi').value=u||'';
- $('#fpv').innerHTML=u?`<img src="${esc(u)}" style="max-width:100%;max-height:220px;border:1px solid #e3e1db">
-  <div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="setMainImg('')">이미지 제거</button></div>`:'';}
-(function mountZone(){
- const zone=$('#fzone'),inp=$('#ffile'),dz=zone.querySelector('.dz-in');
- const EMPTY=dz.getAttribute('data-empty');dz.textContent=EMPTY;
- async function handle(file){if(!file)return;zone.classList.add('busy');dz.textContent='업로드 중…';
-  try{setMainImg(await uploadFile(file));}catch(e){if(e.message!=='세션 만료')toast(e.message);}
-  zone.classList.remove('busy');dz.textContent=EMPTY;}
- zone.onclick=()=>inp.click();
- inp.onchange=e=>handle(e.target.files[0]);
- ['dragover','dragenter'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('over');}));
- ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('over');}));
- zone.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)handle(f);});
-})();
-
-let _blocks=[];
-function renderBlocks(){
- const host=$('#blkList');
- if(!_blocks.length){host.innerHTML='<div class="hint" style="padding:16px;text-align:center">아래 버튼으로 이미지나 글을 추가하세요.</div>';return;}
- host.innerHTML=_blocks.map((b,i)=>{
-  const ctrl=`<div class="blk-ctrl">
-    <button class="btn sm ghost" type="button" onclick="moveBlk(${i},-1)" ${i===0?'disabled':''}>↑</button>
-    <button class="btn sm ghost" type="button" onclick="moveBlk(${i},1)" ${i===_blocks.length-1?'disabled':''}>↓</button>
-    <button class="btn sm ghost" type="button" onclick="delBlk(${i})">삭제</button></div>`;
-  if(b.type==='image'){return `<div class="blk"><div class="blk-h"><b>🖼 이미지</b>${ctrl}</div>
-    <img src="${esc(b.url)}" style="max-width:100%;max-height:240px;border:1px solid #e3e1db;display:block;margin:6px 0">
-    <input placeholder="이미지 설명 (선택)" value="${esc(b.caption||'')}" oninput="_blocks[${i}].caption=this.value"></div>`;}
-  return `<div class="blk"><div class="blk-h"><b>📝 글</b>${ctrl}</div>
-    <textarea rows="4" placeholder="내용을 입력하세요" oninput="_blocks[${i}].text=this.value">${esc(b.text||'')}</textarea></div>`;
- }).join('');
-}
-function moveBlk(i,d){const j=i+d;if(j<0||j>=_blocks.length)return;const t=_blocks[i];_blocks[i]=_blocks[j];_blocks[j]=t;renderBlocks();}
-function delBlk(i){_blocks.splice(i,1);renderBlocks();}
-function addTextBlk(){_blocks.push({type:'text',text:''});renderBlocks();}
-function addImgBlk(){const inp=$('#blkImgInput');inp.value='';inp.click();}
-async function onBlkImg(files){for(const f of files){try{const u=await uploadFile(f);_blocks.push({type:'image',url:u,caption:''});renderBlocks();}catch(e){if(e.message!=='세션 만료')toast(e.message);}}}
-
-async function init(){
- $('#fc').innerHTML=catOptions('');
- if(PAGE.mode==='new'){
-  $('#h2title').textContent='신규 상품 등록';$('#ptitle').textContent='상품 등록';
-  $('#saveBtn').textContent='등록';renderBlocks();return;
- }
- $('#h2title').textContent='상품 상세 편집';$('#ptitle').textContent='상세 편집';
- $('#fslabel').textContent='재고 *';
- try{
-  const d=await api('/admin/api/products/detail?id='+encodeURIComponent(PAGE.id));
-  $('#fn').value=d.name;$('#fc').innerHTML=catOptions(d.category);
-  if(d.price!=null)$('#fp').value=d.price;
-  $('#fs').value=d.stock;$('#fd').value=d.descr;
-  setMainImg(d.img);
-  _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
-  renderBlocks();
-  const v=$('#viewBtn');v.href=d.url;v.style.display='';
-  $('#stat').textContent=d.soldout?'상태: 품절':'상태: 판매중';
-  if(new URLSearchParams(location.search).get('created')==='1'){toast('등록 완료! 상세 내용을 이어서 편집할 수 있습니다.');history.replaceState(null,'','/admin/products/edit?id='+encodeURIComponent(PAGE.id));}
- }catch(e){if(e.message!=='세션 만료'){alert('상품을 불러올 수 없습니다: '+e.message);location.href='/admin/dashboard';}}
-}
-async function save(){
- const name=$('#fn').value.trim(),cat=$('#fc').value;
- if(!name)return toast('상품명을 입력하세요');
- if(!cat)return toast('카테고리를 선택하세요');
- const btn=$('#saveBtn');btn.disabled=true;
- try{
-  if(PAGE.mode==='new'){
-   const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name,category:cat,price:Number($('#fp').value||0),stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,detail_blocks:_blocks})});
-   location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
-  }
-  await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({id:PAGE.id,name,category:cat,price:Number($('#fp').value||0),stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,detail_blocks:_blocks})});
-  toast('저장되었습니다');
- }catch(e){if(e.message!=='세션 만료')toast(e.message);}
- btn.disabled=false;
-}
-init();
-</script></body></html>'''
-
 
 _PDP_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>%(name)s — MAPDAL SEOUL</title>
@@ -2944,6 +2826,92 @@ function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go.
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
 })();</script>"""
 
+MOBNAV_SNIPPET = r"""<style id="mpMobNav">
+#mpNavBtn{display:none;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:40px;height:40px;border:0;background:transparent;cursor:pointer;padding:0;margin-left:2px}
+#mpNavBtn span{display:block;width:20px;height:2px;background:var(--ink,#141414);border-radius:2px}
+@media(max-width:1024px){#mpNavBtn{display:inline-flex}}
+#mpNavDim{position:fixed;inset:0;background:rgba(20,20,20,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:100000}
+#mpNavDim.show{opacity:1;pointer-events:auto}
+#mpNavDrawer{position:fixed;top:0;right:0;height:100dvh;width:min(84vw,340px);background:#141414;color:#fff;z-index:100001;transform:translateX(105%);transition:transform .28s cubic-bezier(.22,.61,.36,1);display:flex;flex-direction:column;box-shadow:-18px 0 48px rgba(0,0,0,.35);overflow-y:auto;-webkit-overflow-scrolling:touch}
+#mpNavDrawer.show{transform:translateX(0)}
+#mpNavDrawer .mpNavHead{display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;border-bottom:1px solid rgba(255,255,255,.12);flex:0 0 auto}
+#mpNavDrawer .mpNavTt{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.22em;color:var(--amber,#FFB000)}
+#mpNavDrawer .mpNavX{border:0;background:transparent;color:#fff;font-size:18px;line-height:1;cursor:pointer;padding:6px 4px}
+#mpNavDrawer .mpNavList{padding:8px 20px 20px;flex:1 1 auto}
+#mpNavDrawer .mpNavTop{display:block;padding:15px 2px;font-size:16px;font-weight:800;letter-spacing:.07em;color:#fff;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.08)}
+#mpNavDrawer .mpNavTop.red,#mpNavDrawer .mpNavTop.on{color:var(--red,#E8332A)}
+#mpNavDrawer .mpNavGrp{padding:12px 2px 6px;border-bottom:1px solid rgba(255,255,255,.08)}
+#mpNavDrawer .mpNavGrp h6{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.18em;color:var(--amber,#FFB000);margin:6px 0 8px;font-weight:500}
+#mpNavDrawer .mpNavSub{display:block;padding:8px 0;font-size:13.5px;color:#D6D4CE;text-decoration:none}
+#mpNavDrawer .mpNavSub.on{color:var(--red,#E8332A)}
+#mpNavDrawer .mpNavFt{padding:16px 20px 28px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:#6F6E69;line-height:1.8;flex:0 0 auto}
+@media(min-width:1025px){#mpNavBtn,#mpNavDrawer,#mpNavDim{display:none!important}}
+</style><script>(function(){
+if(window.__mpMobNav)return;window.__mpMobNav=1;
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function ready(f){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',f);else f()}
+ready(function(){
+ var header=document.querySelector('header');
+ if(!header||document.getElementById('mpNavBtn'))return;
+ /* 1) 페이지의 데스크톱 네비에서 링크 수확 (페이지별 활성 상태·경로 그대로 유지) */
+ var items=[],nav=document.querySelector('nav.main');
+ if(nav){var ds=nav.children;
+  for(var i=0;i<ds.length;i++){var d=ds[i];var a=d.querySelector('a.top')||d.querySelector('a');if(!a)continue;
+   var it={label:(a.textContent||'').replace(/\s+/g,' ').trim(),href:a.getAttribute('href')||'#',
+           red:(a.className||'').indexOf('drops')>=0,groups:[]};
+   var megs=d.querySelectorAll('.mega>div');
+   for(var g=0;g<megs.length;g++){var h=megs[g].querySelector('h5'),ls=megs[g].querySelectorAll('ul a');
+    if(!h||!ls.length)continue;
+    var grp={h:(h.textContent||'').trim(),links:[]};
+    for(var k=0;k<ls.length;k++)grp.links.push({label:(ls[k].textContent||'').trim(),href:ls[k].getAttribute('href')||'#'});
+    it.groups.push(grp)}
+   items.push(it)}}
+ /* 2) 네비 마크업이 없는 페이지용 기본 카테고리 */
+ if(!items.length)items=[
+  {label:'NEW / DROPS',href:'/new-drops.html',red:true,groups:[]},
+  {label:'SHOP',href:'/shop.html',red:false,groups:[]},
+  {label:'MAPDAL SEOUL',href:'/mapdal-seoul.html',red:false,groups:[]},
+  {label:'SUPPORT',href:'/support.html',red:false,groups:[
+   {h:'GUIDE',links:[{label:'\ubc30\uc1a1 \uc548\ub0b4',href:'/shipping.html'},{label:'\uad50\ud658/\ubc18\ud488',href:'/returns.html'}]},
+   {h:'COMPANY',links:[{label:'\ud30c\ud2b8\ub108\uc2ed \ubb38\uc758',href:'/partnership.html'},{label:'IR \u00b7 \ub274\uc2a4\ub8f8',href:'/ir.html'}]}]}];
+ /* 3) 햄버거 버튼 — util 우측 끝에 삽입해 기존 레이아웃 불변 */
+ var btn=document.createElement('button');btn.id='mpNavBtn';btn.type='button';
+ btn.setAttribute('aria-label','\uba54\ub274 \uc5f4\uae30');btn.setAttribute('aria-controls','mpNavDrawer');btn.setAttribute('aria-expanded','false');
+ btn.innerHTML='<span></span><span></span><span></span>';
+ var util=header.querySelector('.util');
+ if(util)util.appendChild(btn);else (header.querySelector('.header-inner')||header).appendChild(btn);
+ /* 4) 딤 + 드로어 */
+ var dim=document.createElement('div');dim.id='mpNavDim';
+ var dw=document.createElement('aside');dw.id='mpNavDrawer';
+ dw.setAttribute('role','dialog');dw.setAttribute('aria-modal','true');dw.setAttribute('aria-label','\ubaa8\ubc14\uc77c \uba54\ub274');
+ var cur=(location.pathname.split('/').pop()||'').toLowerCase();
+ function base(h){return (h||'').split(/[?#]/)[0].split('/').pop().toLowerCase()}
+ var htm='<div class="mpNavHead"><span class="mpNavTt">MENU</span><button type="button" class="mpNavX" aria-label="\uba54\ub274 \ub2eb\uae30">&#10005;</button></div><nav class="mpNavList">';
+ for(var i2=0;i2<items.length;i2++){var t=items[i2],on=cur&&base(t.href)===cur;
+  htm+='<a class="mpNavTop'+(t.red?' red':'')+(on?' on':'')+'" href="'+esc(t.href)+'">'+esc(t.label)+'</a>';
+  for(var g2=0;g2<t.groups.length;g2++){var gr=t.groups[g2];
+   htm+='<div class="mpNavGrp"><h6>'+esc(gr.h)+'</h6>';
+   for(var k2=0;k2<gr.links.length;k2++){var L=gr.links[k2];
+    htm+='<a class="mpNavSub'+(cur&&base(L.href)===cur?' on':'')+'" href="'+esc(L.href)+'">'+esc(L.label)+'</a>'}
+   htm+='</div>'}}
+ htm+='</nav><div class="mpNavFt">MAPDAL SEOUL \u00b7 SEONGSU<br>SHOP SEONGSU, FROM ANYWHERE.</div>';
+ dw.innerHTML=htm;
+ document.body.appendChild(dim);document.body.appendChild(dw);
+ /* 5) 열기/닫기 */
+ var open=false;
+ function setOpen(v){open=v;btn.setAttribute('aria-expanded',v?'true':'false');
+  if(v){dw.classList.add('show');dim.classList.add('show');document.body.style.overflow='hidden';
+   var x=dw.querySelector('.mpNavX');if(x)try{x.focus()}catch(e){}}
+  else{dw.classList.remove('show');dim.classList.remove('show');document.body.style.overflow=''}}
+ btn.onclick=function(){setOpen(!open)};
+ dim.onclick=function(){setOpen(false)};
+ dw.querySelector('.mpNavX').onclick=function(){setOpen(false)};
+ dw.addEventListener('click',function(e){var el=e.target;
+  while(el&&el!==dw){if(el.tagName==='A'){setOpen(false);break}el=el.parentNode}});
+ document.addEventListener('keydown',function(e){if(e.key==='Escape'&&open)setOpen(false)});
+ window.addEventListener('resize',function(){if(open&&window.innerWidth>1024)setOpen(false)});
+});})();</script>"""
+
 def _patch_legacy_footer(html):
     """목업 원본 푸터의 구형 회사정보 줄을 법정 실값으로 현장 대체."""
     info = biz_info()
@@ -2975,6 +2943,7 @@ def _inject_auth(html):
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
+    if 'mpMobNav' not in html: add += MOBNAV_SNIPPET
     if (not patched) and ('mpFooter' not in html): add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')

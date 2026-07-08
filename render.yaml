@@ -2,6 +2,7 @@ services:
   - type: web
     name: mapdal-seoul
     runtime: docker
+    region: singapore
     plan: starter
     healthCheckPath: /healthz
     autoDeploy: true
@@ -20,3 +21,4 @@ services:
 databases:
   - name: mapdal-db
     plan: basic-1gb
+    region: singapore

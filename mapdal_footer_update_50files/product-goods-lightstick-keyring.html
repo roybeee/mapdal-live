@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>네온서울 응원봉 키링 — MAPDAL SEOUL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --red:#E8332A;        /* 떡볶이 레드 */
+  --red-deep:#B71F18;
+  --ink:#141414;        /* 김 블랙 */
+  --paper:#F7F6F2;      /* 뉴트럴 화이트 */
+  --steel:#87867F;      /* 스틸 그레이 */
+  --amber:#FFB000;      /* LED 앰버 */
+  --line:#E2E0D9;
+  --disp:'Black Han Sans',sans-serif;
+  --body:'IBM Plex Sans KR',sans-serif;
+  --mono:'IBM Plex Mono',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:var(--body);background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+img{display:block;max-width:100%}
+.mono{font-family:var(--mono)}
+
+/* ---------- 상단 글로벌 바 ---------- */
+.global-bar{background:var(--ink);color:#bbb;font-family:var(--mono);font-size:11px;
+  display:flex;justify-content:space-between;align-items:center;padding:6px 24px;letter-spacing:.04em}
+.global-bar .right{display:flex;gap:16px}
+.global-bar select{background:transparent;color:#eee;border:none;font-family:var(--mono);font-size:11px;cursor:pointer}
+.global-bar select:focus{outline:1px solid var(--amber)}
+
+/* ---------- 헤더 / 메가메뉴 ---------- */
+header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1px solid var(--line)}
+.header-inner{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:64px;max-width:1440px;margin:0 auto}
+.logo{font-family:var(--disp);font-size:26px;letter-spacing:.02em;color:var(--ink);line-height:1}
+.logo em{color:var(--red);font-style:normal}
+nav.main{display:flex;gap:4px;height:100%}
+nav.main>div{position:relative;height:100%;display:flex;align-items:center}
+nav.main a.top{font-size:13px;font-weight:600;letter-spacing:.08em;padding:0 14px;height:100%;
+  display:flex;align-items:center;border-bottom:2px solid transparent;transition:border-color .15s,color .15s}
+nav.main>div:hover a.top{border-bottom-color:var(--red);color:var(--red)}
+nav.main a.top.drops{color:var(--red)}
+.util{display:flex;gap:18px;font-size:13px;font-weight:600;align-items:center}
+.util .cart{background:var(--ink);color:#fff;border-radius:20px;padding:6px 14px;font-size:12px}
+
+/* 메가메뉴 패널 */
+.mega{position:absolute;top:100%;left:50%;transform:translateX(-50%);width:640px;background:#fff;
+  border:1px solid var(--line);border-top:2px solid var(--red);display:none;padding:28px 32px;
+  grid-template-columns:1fr 1fr 220px;gap:24px;box-shadow:0 16px 40px rgba(20,20,20,.08)}
+nav.main>div:hover .mega{display:grid}
+.mega h5{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--steel);margin-bottom:12px}
+.mega ul{list-style:none}
+.mega li{margin-bottom:9px}
+.mega li a{font-size:13.5px;font-weight:500}
+.mega li a:hover{color:var(--red)}
+.mega .visual{background:linear-gradient(160deg,var(--red) 0%,var(--red-deep) 100%);color:#fff;
+  padding:18px;display:flex;flex-direction:column;justify-content:flex-end;min-height:180px}
+.mega .visual b{font-family:var(--disp);font-size:20px;font-weight:400;line-height:1.15}
+.mega .visual span{font-family:var(--mono);font-size:10px;letter-spacing:.1em;opacity:.85;margin-top:6px}
+
+/* ---------- LED 드롭 티커 ---------- */
+.ticker{background:var(--ink);overflow:hidden;padding:9px 0;border-bottom:3px solid var(--red)}
+.ticker-track{display:flex;gap:56px;white-space:nowrap;animation:marquee 28s linear infinite;width:max-content}
+.ticker span{font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--amber)}
+.ticker span b{color:#fff;font-weight:500}
+@keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){.ticker-track{animation:none}}
+
+/* ---------- 히어로 ---------- */
+.hero{position:relative;background:
+  radial-gradient(1200px 600px at 80% -10%,#FF6A4D 0%,transparent 55%),
+  linear-gradient(155deg,var(--red) 0%,var(--red-deep) 70%,#7E120D 100%);
+  color:#fff;overflow:hidden}
+.hero-inner{max-width:1440px;margin:0 auto;padding:96px 48px 84px;position:relative}
+.hero .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:#FFD9B0;margin-bottom:20px}
+.hero h1{font-family:var(--disp);font-weight:400;font-size:clamp(52px,8vw,116px);line-height:.98;letter-spacing:-.01em}
+.hero h1 .hollow{color:transparent;-webkit-text-stroke:2px #fff}
+.hero p{margin-top:26px;font-size:16px;max-width:480px;line-height:1.7;color:#FFE9E7}
+.hero .cta-row{margin-top:36px;display:flex;gap:14px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 26px;font-size:13px;font-weight:700;
+  letter-spacing:.06em;border-radius:2px;transition:transform .15s}
+.btn:hover{transform:translateY(-2px)}
+.btn.white{background:#fff;color:var(--ink)}
+.btn.ghost{border:1.5px solid rgba(255,255,255,.7);color:#fff}
+.hero .bg-type{position:absolute;right:-2%;bottom:-14%;font-family:var(--disp);font-size:340px;
+  line-height:1;color:rgba(255,255,255,.07);pointer-events:none;user-select:none}
+.hero .drop-chip{position:absolute;top:96px;right:48px;background:var(--ink);color:#fff;padding:14px 18px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.08em;line-height:1.8;border-left:3px solid var(--amber)}
+.hero .drop-chip b{color:var(--amber);font-weight:500}
+
+/* ---------- 공통 섹션 ---------- */
+section{max-width:1440px;margin:0 auto;padding:88px 48px}
+.sec-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:40px;gap:24px}
+.sec-head .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--red);margin-bottom:10px}
+.sec-head h2{font-family:var(--disp);font-weight:400;font-size:clamp(30px,3.6vw,46px);line-height:1.08}
+.sec-head .more{font-size:13px;font-weight:700;letter-spacing:.06em;border-bottom:2px solid var(--ink);padding-bottom:3px;white-space:nowrap}
+.sec-head .more:hover{color:var(--red);border-color:var(--red)}
+
+/* ---------- 컬렉션 캐러셀 ---------- */
+.col-track{display:grid;grid-auto-flow:column;grid-auto-columns:320px;gap:20px;overflow-x:auto;
+  padding-bottom:12px;scroll-snap-type:x mandatory}
+.col-track::-webkit-scrollbar{height:6px}
+.col-track::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.col-card{scroll-snap-align:start;background:#fff;border:1px solid var(--line);display:flex;flex-direction:column;transition:transform .18s,box-shadow .18s}
+.col-card:hover{transform:translateY(-4px);box-shadow:0 14px 34px rgba(20,20,20,.09)}
+.col-cover{height:340px;display:flex;align-items:flex-end;padding:20px;color:#fff;position:relative;overflow:hidden}
+.col-cover .big{font-family:var(--disp);font-size:56px;line-height:1;opacity:.95}
+.col-cover .tag{position:absolute;top:16px;left:16px;font-family:var(--mono);font-size:10px;
+  letter-spacing:.12em;background:rgba(20,20,20,.75);padding:5px 9px}
+.cv1{background:linear-gradient(160deg,#1E1E60,#4B3AE8 65%,#9C8CFF)}
+.cv2{background:linear-gradient(160deg,#0C4F3F,#00A879 70%,#7CE7C6)}
+.cv3{background:linear-gradient(160deg,#5E0F35,#C2185B 65%,#FF8AB8)}
+.cv4{background:linear-gradient(160deg,#3A3A3A,#141414 70%,#000)}
+.col-body{padding:18px 20px 22px}
+.col-body h3{font-size:16px;font-weight:700;margin-bottom:6px}
+.col-body p{font-size:13px;color:var(--steel);line-height:1.6}
+.col-body .meta{margin-top:14px;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--red)}
+
+/* ---------- 플로어 가이드 (시그니처) ---------- */
+.floor-sec{background:var(--ink);color:var(--paper);max-width:none;padding:0}
+.floor-wrap{max-width:1440px;margin:0 auto;padding:96px 48px;display:grid;grid-template-columns:1fr 1.1fr;gap:64px;align-items:center}
+.floor-wrap .kicker{color:var(--amber)}
+.floor-wrap h2{color:#fff;font-family:var(--disp);font-weight:400;font-size:clamp(30px,3.6vw,46px);line-height:1.12;margin:10px 0 20px}
+.floor-wrap .desc{color:#A8A7A0;font-size:15px;line-height:1.75;max-width:440px}
+.floor-info{margin-top:34px;border-left:3px solid var(--red);padding:6px 0 6px 20px;min-height:96px}
+.floor-info h4{font-size:19px;font-weight:700;color:#fff}
+.floor-info h4 small{font-family:var(--mono);font-size:11px;color:var(--amber);margin-right:10px;letter-spacing:.1em}
+.floor-info p{margin-top:8px;font-size:13.5px;color:#B9B8B1;line-height:1.7;max-width:420px}
+.building{display:flex;flex-direction:column;gap:6px}
+.floor{display:flex;align-items:center;gap:18px;background:#1E1E1D;border:1px solid #2C2C2A;
+  padding:20px 24px;cursor:pointer;transition:background .15s,border-color .15s,transform .15s}
+.floor .no{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--steel);width:34px}
+.floor .nm{font-size:15px;font-weight:600;flex:1}
+.floor .en{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;color:var(--steel)}
+.floor:hover,.floor.active{background:var(--red);border-color:var(--red);transform:translateX(8px)}
+.floor:hover .no,.floor.active .no,.floor:hover .en,.floor.active .en{color:#FFD9B0}
+.floor.rf{border-style:dashed}
+.floor-cap{font-family:var(--mono);font-size:10.5px;color:#6E6D67;letter-spacing:.1em;margin-top:14px;text-align:right}
+
+/* ---------- K-FOOD ---------- */
+.kf-line{margin-bottom:64px}
+.kf-line:last-child{margin-bottom:0}
+.kf-line-head{display:flex;align-items:baseline;gap:16px;margin-bottom:22px;border-bottom:1px solid var(--line);padding-bottom:12px}
+.kf-line-head .ln{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;color:var(--red)}
+.kf-line-head h3{font-family:var(--disp);font-weight:400;font-size:24px}
+.kf-line-head .spec{font-family:var(--mono);font-size:10.5px;color:var(--steel);letter-spacing:.06em;margin-left:auto}
+/* 떡볶이 컵 — 투컵 피처 */
+.cup-panel{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.cup-card{background:#fff;border:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;align-items:center;overflow:hidden;transition:transform .18s,box-shadow .18s}
+.cup-card:hover{transform:translateY(-4px);box-shadow:0 14px 34px rgba(20,20,20,.09)}
+.cup-img{padding:22px 6px 22px 22px;display:flex;justify-content:center}
+.cup-img img{max-height:250px;width:auto;filter:drop-shadow(0 14px 22px rgba(20,20,20,.16))}
+.cup-txt{padding:22px 22px 22px 8px}
+.cup-txt .flavor{font-family:var(--mono);font-size:10px;letter-spacing:.14em;padding:4px 8px;display:inline-block;margin-bottom:10px;color:#fff}
+.cup-txt h4{font-size:17px;font-weight:700;margin-bottom:8px}
+.cup-txt p{font-size:12.5px;color:var(--steel);line-height:1.6}
+/* 김밥 바 — 가로 레일 */
+.bar-rail{display:grid;grid-auto-flow:column;grid-auto-columns:400px;gap:16px;overflow-x:auto;padding-bottom:12px;scroll-snap-type:x mandatory}
+.bar-rail::-webkit-scrollbar{height:6px}
+.bar-rail::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.bar-card{scroll-snap-align:start;background:#fff;border:1px solid var(--line);padding:22px 18px 18px;transition:transform .18s,box-shadow .18s}
+.bar-card:hover{transform:translateY(-4px);box-shadow:0 14px 34px rgba(20,20,20,.09)}
+.bar-card img{width:100%;height:auto;filter:drop-shadow(0 10px 16px rgba(20,20,20,.14))}
+.bar-meta{display:flex;justify-content:space-between;align-items:baseline;margin-top:16px}
+.bar-meta h4{font-size:14.5px;font-weight:700}
+.bar-meta .en{font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--steel)}
+/* BOWL — 그리드 */
+.bowl-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.bowl-card{background:#fff;border:1px solid var(--line);padding:24px 20px 20px;text-align:center;transition:transform .18s,box-shadow .18s}
+.bowl-card:hover{transform:translateY(-4px);box-shadow:0 14px 34px rgba(20,20,20,.09)}
+.bowl-card img{max-height:280px;width:auto;margin:0 auto;filter:drop-shadow(0 14px 22px rgba(20,20,20,.18))}
+.bowl-card h4{font-size:15px;font-weight:700;margin-top:16px}
+.bowl-card .kcal{font-family:var(--mono);font-size:10.5px;color:var(--steel);letter-spacing:.06em;margin-top:6px}
+.bowl-card .price-row{justify-content:center;gap:16px}
+.kf-note{margin-top:18px;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--steel)}
+/* ---------- 저널 ---------- */
+.journal-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.j-card{border-top:3px solid var(--ink);padding-top:18px;transition:border-color .15s}
+.j-card:hover{border-color:var(--red)}
+.j-card .cat{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;color:var(--red)}
+.j-card h3{font-size:18px;font-weight:700;line-height:1.45;margin:10px 0 8px}
+.j-card p{font-size:13.5px;color:var(--steel);line-height:1.65}
+.j-card .live{display:inline-flex;align-items:center;gap:6px}
+.j-card .live::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--red);animation:pulse 1.4s infinite}
+@keyframes pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.j-card .live::before{animation:none}}
+
+/* ---------- 글로벌 신뢰 스트립 & 푸터 ---------- */
+.trust{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}
+.trust-inner{max-width:1440px;margin:0 auto;padding:34px 48px;display:grid;grid-template-columns:repeat(4,1fr);gap:24px}
+.trust-item b{display:block;font-size:14px;font-weight:700;margin-bottom:6px}
+.trust-item span{font-size:12.5px;color:var(--steel);line-height:1.6}
+footer{background:var(--ink);color:#8E8D87}
+.foot-inner{max-width:1440px;margin:0 auto;padding:64px 48px 40px;display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:40px}
+footer .logo{color:#fff;margin-bottom:16px}
+footer p{font-size:12.5px;line-height:1.8;max-width:300px}
+footer h6{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:#5F5E58;margin-bottom:14px}
+footer ul{list-style:none}
+footer li{font-size:13px;margin-bottom:9px}
+footer li a:hover{color:#fff}
+.foot-base{border-top:1px solid #2A2A28;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;
+  max-width:1440px;margin:0 auto;padding:20px 48px;display:flex;justify-content:space-between;color:#5F5E58}
+
+/* ---------- 반응형 ---------- */
+@media(max-width:1024px){
+  nav.main{display:none}
+  .floor-wrap{grid-template-columns:1fr;gap:44px}
+  .journal-grid{grid-template-columns:1fr 1fr}.cup-panel{grid-template-columns:1fr}.bowl-grid{grid-template-columns:1fr 1fr}
+  .trust-inner{grid-template-columns:1fr 1fr}
+  .foot-inner{grid-template-columns:1fr 1fr}
+  .hero .drop-chip{position:static;display:inline-block;margin-top:32px}
+}
+@media(max-width:640px){
+  section{padding:64px 20px}
+  .hero-inner{padding:64px 20px 56px}
+  .journal-grid{grid-template-columns:1fr}.bowl-grid{grid-template-columns:1fr}.cup-card{grid-template-columns:1fr}.cup-img{padding:22px}.cup-txt{padding:0 22px 22px}.bar-rail{grid-auto-columns:320px}
+  .hero .bg-type{display:none}
+}
+</style>
+<style>
+nav.main a.active-page{border-bottom-color:var(--red);color:var(--red)}
+.crumb{max-width:1440px;margin:0 auto;padding:18px 48px 0;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--steel)}
+.crumb a:hover{color:var(--red)}
+.pdp{max-width:1440px;margin:0 auto;padding:28px 48px 56px;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:48px;align-items:start}
+.pdp>div{min-width:0}
+/* 갤러리 */
+.gal-main{border:1px solid var(--line);display:flex;align-items:center;justify-content:center;padding:56px 48px 84px;min-height:560px;position:relative;overflow:hidden;transition:background .5s ease}
+.gal-main[data-theme="original"]{background:radial-gradient(130% 95% at 50% 15%,#FFF8F2 0%,#FBE9DF 42%,#F2D3C4 100%)}
+.gal-main[data-theme="cheese"]{background:radial-gradient(130% 95% at 50% 15%,#FFFBF1 0%,#FCF0D6 42%,#F4DDB0 100%)}
+.gal-main .bg-word{position:absolute;top:6%;left:50%;transform:translateX(-50%);font-family:var(--disp);font-size:clamp(80px,10vw,132px);letter-spacing:.03em;color:rgba(20,20,20,.045);pointer-events:none;user-select:none;white-space:nowrap;z-index:0}
+.gal-main img{max-height:420px;width:auto;position:relative;z-index:2;filter:drop-shadow(0 30px 26px rgba(96,32,10,.22))}
+.gal-main::after{content:'';position:absolute;bottom:58px;left:50%;transform:translateX(-50%);width:44%;height:34px;background:radial-gradient(ellipse at center,rgba(60,20,8,.32),rgba(60,20,8,0) 68%);filter:blur(6px);z-index:1}
+.gal-flavor{position:absolute;top:22px;left:22px;font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--red);background:#fff;border:1px solid var(--line);padding:6px 10px;z-index:3}
+.gal-pager{position:absolute;bottom:16px;z-index:3;left:50%;transform:translateX(-50%);background:rgba(20,20,20,.7);color:#fff;font-family:var(--mono);font-size:10.5px;padding:5px 12px;border-radius:12px}
+.gal-thumbs{display:flex;gap:10px;margin-top:12px}
+.gal-thumbs button{width:84px;height:84px;background:#fff;border:1px solid var(--line);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:10px;transition:border-color .15s}
+.gal-thumbs button.on,.gal-thumbs button:hover{border-color:var(--red)}
+.gal-thumbs img{max-height:64px;width:auto}
+/* 구매 모듈 */
+.buy{position:sticky;top:80px;max-height:calc(100vh - 96px);overflow-y:auto;padding-right:8px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.buy::-webkit-scrollbar{width:5px}
+.buy::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.badges{display:flex;gap:6px;margin-bottom:10px}
+.bdg{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;padding:4px 8px}
+.bdg.dream{background:var(--red);color:#fff}
+.bdg.best{background:var(--ink);color:#fff}
+.buy .brand{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--red);margin-bottom:8px}
+.buy h1{font-size:22px;font-weight:700;line-height:1.4}
+.price-block{margin-top:14px}
+.price-block .was{font-size:14px;color:var(--steel);text-decoration:line-through}
+.price-block .now{display:flex;align-items:baseline;gap:10px;margin-top:2px}
+.price-block .pct{font-family:var(--disp);font-size:26px;color:var(--red)}
+.price-block .amt{font-family:var(--disp);font-size:30px}
+.price-block .unit{font-size:12px;color:var(--steel);margin-top:4px}
+.rating-row{display:flex;gap:10px;align-items:center;margin:14px 0 6px;font-size:13px}
+.stars{color:var(--red);letter-spacing:2px}
+.rating-row a{color:var(--steel);text-decoration:underline;font-size:12px}
+.viewers{font-size:12px;color:var(--red);font-weight:600;margin-bottom:16px}
+.viewers::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-right:6px;animation:pulse 1.4s infinite}
+@media (prefers-reduced-motion:reduce){.viewers::before{animation:none}}
+/* 옵션 우선 구조 */
+.opt-select{width:100%;padding:15px;border:1px solid var(--ink);background:#fff;font-family:var(--body);font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
+.opt-lines{margin-top:10px}
+.opt-line{background:var(--paper);border:1px solid var(--line);padding:12px 14px;margin-bottom:8px;display:grid;grid-template-columns:1fr auto auto auto;gap:12px;align-items:center}
+.opt-line .nm{font-size:12.5px;font-weight:600}
+.opt-line .qty-ctl{display:flex;border:1px solid var(--line);background:#fff}
+.opt-line .qty-ctl button{width:28px;height:28px;border:none;background:#fff;cursor:pointer;font-size:14px}
+.opt-line .qty-ctl span{width:36px;text-align:center;font-family:var(--mono);font-size:12.5px;line-height:28px}
+.opt-line .lp{font-family:var(--mono);font-size:12.5px;min-width:70px;text-align:right}
+.opt-line .rm{border:none;background:none;cursor:pointer;color:var(--steel);font-size:15px}
+.opt-line .rm:hover{color:var(--red)}
+.total-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:14px;padding-top:14px;border-top:2px solid var(--ink)}
+.total-row .tl{font-size:13px;font-weight:600}.total-row .tl small{color:var(--steel);font-weight:400;margin-left:6px}
+.total-row .tv{font-family:var(--disp);font-size:28px;color:var(--red)}
+.dream-check{display:flex;align-items:center;gap:10px;margin-top:14px;background:#fff;border:1px solid var(--line);padding:12px 14px;font-size:13px}
+.dream-check input{width:16px;height:16px;accent-color:var(--red)}
+.buy-btns{display:grid;grid-template-columns:56px 1fr 1fr;gap:8px;margin-top:14px}
+.buy-btns .gift{border:1px solid var(--line);background:#fff;font-size:11px;cursor:pointer;font-family:var(--mono)}
+.buy-btns .btn{justify-content:center;padding:16px;border:none;cursor:pointer;font-family:var(--body)}
+.btn.cartb{background:#fff;border:1.5px solid var(--ink);color:var(--ink)}
+.btn.red{background:var(--red);color:#fff}
+.btn[disabled]{opacity:.45;cursor:not-allowed;transform:none!important}
+/* 혜택 아코디언 */
+.ben-acc{margin-top:18px;border-top:1px solid var(--line)}
+.ben-row{border-bottom:1px solid var(--line)}
+.ben-row .bh{display:grid;grid-template-columns:88px 1fr 20px;gap:10px;padding:13px 2px;font-size:12.5px;cursor:pointer;align-items:start}
+.ben-row .bh h6{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--steel);padding-top:2px}
+.ben-row .bh .bv b{font-weight:700}.ben-row .bh .bv .hl{color:var(--red);font-weight:700}
+.ben-row .chev{color:var(--steel);transition:transform .2s;text-align:center}
+.ben-row.open .chev{transform:rotate(180deg)}
+.ben-row .bd{display:none;padding:0 2px 14px 98px;font-size:12px;color:var(--steel);line-height:1.7}
+.ben-row.open .bd{display:block}
+.store-btn{width:100%;margin-top:12px;padding:13px;border:1px solid var(--ink);background:#fff;font-size:12.5px;font-weight:700;cursor:pointer}
+.store-btn:hover{background:var(--ink);color:#fff}
+/* 탭 */
+.pdp-tabs{padding:36px 0 8px}
+.tab-bar{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line);position:sticky;top:64px;background:var(--paper);z-index:50}
+.tab-bar button{padding:16px;border:none;background:transparent;font-family:var(--body);font-size:14.5px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:var(--steel)}
+.tab-bar button b{color:var(--red);font-family:var(--mono);font-size:12px;margin-left:4px}
+.tab-bar button.on{border-bottom-color:var(--ink);color:var(--ink)}
+.tab-panel{display:none;padding:40px 0 8px}
+.tab-panel.on{display:block}
+/* 상품설명 접힘 */
+.desc-wrap{max-height:760px;overflow:hidden;position:relative;transition:max-height .4s}
+.desc-wrap.open{max-height:none}
+.desc-wrap:not(.open)::after{content:'';position:absolute;bottom:0;left:0;right:0;height:120px;background:linear-gradient(transparent,var(--paper))}
+.desc-more{display:block;width:100%;margin-top:14px;padding:15px;border:1px solid var(--line);background:#fff;font-size:13.5px;font-weight:600;cursor:pointer}
+.desc-more:hover{border-color:var(--ink)}
+.desc-hero{background:linear-gradient(155deg,var(--red),var(--red-deep));color:#fff;padding:64px 48px;text-align:center}
+.desc-hero .k{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:#FFD9B0}
+.desc-hero h3{font-family:var(--disp);font-weight:400;font-size:clamp(28px,4vw,44px);margin-top:12px;line-height:1.15}
+.desc-hero p{margin-top:14px;font-size:14.5px;color:#FFE9E7;max-width:520px;margin-left:auto;margin-right:auto;line-height:1.7}
+.desc-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:20px}
+.desc-cell{background:#fff;border:1px solid var(--line);padding:28px 24px}
+.desc-cell .n{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--red)}
+.desc-cell h4{font-size:16px;font-weight:700;margin:10px 0 8px}
+.desc-cell p{font-size:13px;color:var(--steel);line-height:1.7}
+.desc-band{background:var(--ink);color:#fff;padding:44px 40px;margin-top:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:24px;text-align:center}
+.desc-band .step{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--amber)}
+.desc-band h5{font-size:16px;font-weight:700;margin-top:8px}
+.desc-band p{font-size:12.5px;color:#B9B8B1;margin-top:6px;line-height:1.6}
+/* 정보 아코디언 */
+.info-acc{margin-top:28px}
+.info-acc details{background:#fff;border:1px solid var(--line);margin-bottom:-1px}
+.info-acc summary{padding:16px 18px;font-size:14px;font-weight:600;cursor:pointer;list-style:none;display:flex;justify-content:space-between}
+.info-acc summary::after{content:'⌄';color:var(--steel)}
+.info-acc details[open] summary::after{content:'⌃'}
+.info-acc .ic{padding:0 18px 18px}
+.info-table{width:100%;border-collapse:collapse}
+.info-table th{width:200px;text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--steel);padding:11px 12px;border:1px solid var(--line);vertical-align:top;background:var(--paper)}
+.info-table td{font-size:13px;padding:11px 12px;border:1px solid var(--line);line-height:1.6}
+/* 추천 레일 */
+.rec-rail{display:grid;grid-auto-flow:column;grid-auto-columns:200px;gap:14px;overflow-x:auto;padding-bottom:10px}
+.rec-card{background:#fff;border:1px solid var(--line);padding:16px 14px;text-align:center;transition:transform .15s}
+.rec-card:hover{transform:translateY(-3px)}
+.rec-card img{max-height:110px;width:auto;margin:0 auto}
+.rec-card h5{font-size:12.5px;font-weight:600;margin-top:10px;line-height:1.4}
+.rec-card .rp{margin-top:6px;font-size:13px}.rec-card .rp b{color:var(--red);margin-right:5px}
+.rec-card .bdg{margin-top:8px;display:inline-block}
+/* 리뷰 */
+.rev-sum{display:grid;grid-template-columns:200px 1fr;gap:36px;background:#fff;border:1px solid var(--line);padding:30px;align-items:center}
+.rev-sum .big{font-family:var(--disp);font-size:56px;text-align:center}
+.rev-sum .big .stars{display:block;font-size:16px;margin-bottom:4px}
+.rev-sum .big small{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--steel);margin-top:6px}
+.attr-bars div{display:grid;grid-template-columns:76px 1fr 44px;gap:12px;align-items:center;margin-bottom:12px}
+.attr-bars .al{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--steel)}
+.attr-bars .at{font-size:13px;font-weight:600}
+.attr-bars .bar{height:7px;background:var(--line);grid-column:2}
+.attr-bars .bar i{display:block;height:100%;background:var(--red)}
+.attr-bars .pc{font-family:var(--mono);font-size:12px;text-align:right}
+.attr-row{display:grid;grid-template-columns:76px 110px 1fr 44px;gap:12px;align-items:center;margin-bottom:12px}
+.photo-strip{display:flex;gap:10px;margin:20px 0}
+.photo-strip .ph{width:92px;height:92px;background:#fff;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;padding:8px}
+.photo-strip img{max-height:76px;max-width:76px;width:auto}
+.photo-strip .more-ph{background:var(--ink);color:#fff;font-family:var(--mono);font-size:10.5px;cursor:pointer}
+.rev-filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:16px 0;border-bottom:1px solid var(--line)}
+.rev-filters select{padding:9px 12px;border:1px solid var(--line);background:#fff;font-family:var(--body);font-size:12px;border-radius:16px}
+.rev-sort{display:flex;gap:14px;margin-left:auto;font-size:12px;color:var(--steel)}
+.rev-sort button{border:none;background:none;cursor:pointer;font-size:12px;color:var(--steel);padding:0}
+.rev-sort button.on{color:var(--ink);font-weight:700}
+.fit-toggle{display:flex;align-items:center;gap:8px;font-size:12px}
+.fit-toggle .sw{width:34px;height:18px;border-radius:9px;background:var(--line);position:relative;cursor:pointer;transition:background .15s}
+.fit-toggle .sw::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s}
+.fit-toggle .sw.on{background:var(--red)}.fit-toggle .sw.on::after{left:18px}
+.rev-item{border-bottom:1px solid var(--line);padding:22px 4px}
+.rev-item .rh{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--steel)}
+.rev-item .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(150deg,var(--red),#FF7A45);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-size:13px}
+.rev-item .uid{font-weight:700;color:var(--ink);font-size:13px}
+.rev-item .topb{font-family:var(--mono);font-size:9px;background:var(--ink);color:#fff;padding:2.5px 6px;letter-spacing:.08em}
+.rev-item .taste{font-size:11px;color:var(--steel)}
+.rev-item .opt{font-family:var(--mono);font-size:10.5px;color:var(--steel);margin-top:10px}
+.rev-item p{margin-top:8px;font-size:13.5px;line-height:1.7}
+.rev-item .rf{display:flex;justify-content:space-between;margin-top:12px;font-size:11.5px;color:var(--steel)}
+.rev-item .helpful{border:1px solid var(--line);background:#fff;padding:6px 12px;font-size:11.5px;cursor:pointer}
+.rev-item .helpful:hover{border-color:var(--red);color:var(--red)}
+.rev-note{font-size:11px;color:var(--steel);background:#fff;border:1px solid var(--line);padding:10px 12px;margin-top:10px;line-height:1.6}
+/* Q&A */
+.qa-btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.qa-btns button{padding:15px;border:1px solid var(--ink);background:#fff;font-size:13.5px;font-weight:700;cursor:pointer}
+.qa-btns button:hover{background:var(--ink);color:#fff}
+.qa-hint{text-align:center;font-size:12px;color:var(--steel);margin:14px 0 22px}
+.qa-item{background:#fff;border:1px solid var(--line);padding:20px 22px;margin-bottom:12px}
+.qa-item .qtag{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--red)}
+.qa-item .q{font-size:14px;font-weight:700;margin-top:6px}
+.qa-item .a{margin-top:10px;font-size:13.5px;color:var(--steel);line-height:1.7;border-left:3px solid var(--red);padding-left:14px}
+@media(max-width:1024px){.pdp{grid-template-columns:1fr;gap:32px}.buy{position:static;max-height:none;overflow:visible;padding-right:0}.desc-grid,.desc-band{grid-template-columns:1fr}.rev-sum{grid-template-columns:1fr}.attr-row{grid-template-columns:70px 1fr 40px}.attr-row .at{grid-column:1/3}}
+@media(max-width:640px){.pdp,.crumb{padding-left:20px;padding-right:20px}.tab-bar{top:0}}
+
+/* ---------- 프로덕트 스테이지 ---------- */
+.cup-img{background:radial-gradient(120% 95% at 50% 12%,#FFFFFF 0%,var(--tint,#F3E6DC) 100%)}
+.cup-img img{filter:drop-shadow(0 18px 18px rgba(96,32,10,.2))}
+.pimg{display:block;background:radial-gradient(130% 110% at 50% 0%,#FFFFFF 6%,var(--tint,#F0EAE0) 100%);padding:22px 16px}
+.pimg img{width:100%;height:auto;display:block;filter:drop-shadow(0 12px 12px rgba(40,30,20,.2))}
+.bimg{display:block;position:relative;background:#010101;overflow:hidden;text-align:center}
+.bimg img{max-height:300px;width:auto;display:inline-block;margin:0 auto;filter:none}
+.bimg::after{content:'';position:absolute;inset:0;background:radial-gradient(85% 62% at 50% 26%,rgba(255,140,70,.17),transparent 72%);mix-blend-mode:screen;pointer-events:none}
+.rec-card .bimg img{max-height:140px}
+.rec-card .pimg{padding:14px 10px}
+.bowl-card .bimg{margin:-24px -20px 0}
+.rec-card .bimg{margin:-16px -14px 0}
+</style>
+<style>.gal-main{background:linear-gradient(160deg,#1E1E60,#4B3AE8)}
+.glyph-hero{font-family:var(--disp);font-size:clamp(90px,14vw,170px);color:#fff;line-height:1;position:relative;z-index:2;text-shadow:0 24px 40px rgba(0,0,0,.30)}
+.gal-main .bg-word{color:rgba(255,255,255,.08)}
+.gal-main::after{background:radial-gradient(ellipse at center,rgba(0,0,0,.35),rgba(0,0,0,0) 68%)}
+.rec-card .g-thumb{display:block;height:110px;margin:-16px -14px 12px;position:relative;overflow:hidden}
+.rec-card .g-thumb b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:var(--disp);font-size:38px;color:#fff;font-weight:400}
+/* 헤더 좌측 정렬 + NEW/DROPS 레드 */
+.header-inner{justify-content:flex-start}
+.header-inner .logo{margin-right:34px}
+.header-inner .util{margin-left:auto}
+nav.main a.top.drops{color:var(--red)}
+nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:var(--red)}
+</style>
+</head>
+<body>
+<!-- 글로벌 바 -->
+<div class="global-bar">
+  <div>WORLDWIDE SHIPPING · DUTIES & TAXES PREPAID</div>
+  <div class="right">
+    <select aria-label="Language"><option>한국어</option><option>English</option><option>日本語</option></select>
+    <select aria-label="Currency"><option>KRW ₩</option><option>USD $</option><option>JPY ¥</option></select>
+  </div>
+</div>
+
+
+
+<header>
+  <div class="header-inner">
+    <a class="logo" href="mapdal_home_mockup_v1.html">MAPDAL<em>SEOUL</em></a>
+    <nav class="main">
+      <div><a class="top drops" href="new-drops.html">NEW / DROPS</a></div>
+      <div><a class="top active-page" href="shop.html">SHOP</a></div>
+      <div><a class="top" href="mapdal-seoul.html">MAPDAL SEOUL</a></div>
+      <div>
+        <a class="top" href="support.html">SUPPORT</a>
+        <div class="mega">
+          <div><h5>GUIDE</h5><ul><li><a href="shipping.html">배송 안내</a></li><li><a href="returns.html">교환/반품</a></li></ul></div>
+          <div><h5>COMPANY</h5><ul><li><a href="partnership.html">파트너십 문의</a></li><li><a href="ir.html">IR · 뉴스룸</a></li></ul></div>
+          <div class="visual" style="background:linear-gradient(160deg,#141414,#3A3A3A)"><b>NEED<br>HELP?</b><span>ceo@mealzip.kr · 11:00–21:00</span></div>
+        </div>
+      </div>
+    </nav>
+    <div class="util"><a href="search.html">검색</a><a class="cart" href="cart.html">CART · 0</a></div>
+  </div>
+</header>
+<div class="ticker" aria-label="드롭 일정">
+  <div class="ticker-track">
+    <span>NEXT DROP <b>07.11 SAT 12:00 KST</b> — SUMMER DROP 07</span>
+    <span>팬사인회 응모 <b>07.09 마감</b> — 네온서울 성수 팬미팅</span>
+    <span>LIVE <b>매주 금 20:00</b> — 맵달APP · TikTok Shop · YouTube</span>
+    <span>NEW <b>ONLINE NOW</b> — 맵달 KIMBAP 6종 · 맵달 BOWL 6종</span>
+    <span>NEXT DROP <b>07.11 SAT 12:00 KST</b> — SUMMER DROP 07</span>
+    <span>팬사인회 응모 <b>07.09 마감</b> — 네온서울 성수 팬미팅</span>
+    <span>LIVE <b>매주 금 20:00</b> — 맵달APP · TikTok Shop · YouTube</span>
+    <span>NEW <b>ONLINE NOW</b> — 맵달 KIMBAP 6종 · 맵달 BOWL 6종</span>
+  </div>
+</div>
+
+
+
+
+
+<div class="crumb"><a href="mapdal_home_mockup_v1.html">HOME</a> &gt; <a href="shop.html">SHOP</a> &gt; <a href="shop.html">굿즈 / MD</a> &gt; <span style="color:var(--ink)">네온서울 응원봉 키링</span></div>
+<div class="pdp">
+  <div>
+    <div class="gal-main" id="galMain"><span class="bg-word">MAPDAL SEOUL</span><span class="gal-flavor">NEON SEOUL LIGHTSTICK KEYRING</span><div class="glyph-hero">응원봉</div><span class="gal-pager">1 | 1</span></div>
+    <div class="pdp-tabs">
+      <div class="tab-bar">
+        <button class="on" data-tab="desc">상품설명</button>
+        <button data-tab="rev">리뷰&amp;포토<b>812</b></button>
+        <button data-tab="qa">Q&amp;A</button>
+      </div>
+      <div class="tab-panel on" id="tab-desc">
+        <div class="desc-wrap open">
+          <div class="desc-hero" style="background:linear-gradient(155deg,#1E1E60,#4B3AE8)">
+            <div class="k">MAPDAL SEOUL · MD</div>
+            <h3>주머니 속의 응원봉</h3><p>네온서울 공식 응원봉을 키링 사이즈로. 실제 점등되는 미니 LED로 어디서든 응원을 켤 수 있습니다.</p>
+          </div>
+          <div class="desc-grid">
+            <div class="desc-cell"><span class="n">01</span><h4>실제 점등 LED</h4><p>버튼 한 번으로 3가지 점등 모드. 콘서트 응원봉의 시그니처 컬러를 그대로 재현했습니다.</p></div>
+            <div class="desc-cell"><span class="n">02</span><h4>공식 디자인</h4><p>네온서울 공식 응원봉의 1:6 스케일 미니어처. 키링·백참 겸용 카라비너 포함.</p></div>
+            <div class="desc-cell"><span class="n">03 · 정품</span><h4>공식 라이선스</h4><p>맵달SEOUL에서 판매하는 모든 아티스트 MD는 공식 라이선스 상품입니다. 위조품 발견 시 전액 환불을 보장합니다.</p></div>
+          </div>
+        </div>
+        <div class="info-acc">
+          <details><summary>상품정보 제공고시</summary><div class="ic"><table class="info-table">
+            <tr><th>품명 및 모델명</th><td>네온서울 응원봉 키링</td></tr>
+            <tr><th>소재</th><td>아연합금 · 아크릴 · LED 모듈</td></tr>
+            <tr><th>색상</th><td>네온 블루</td></tr>
+            <tr><th>제조자 / 판매자</th><td>맵달서울성수 · 서울 성동구 성수이로16길 5 (라이선스 상품은 라벨 별도 표기)</td></tr>
+            <tr><th>제조국</th><td>대한민국 (일부 품목 상이 · 라벨 표기 기준)</td></tr>
+            <tr><th>취급 시 주의사항</th><td>LED 모듈 침수 주의 · 배터리 CR2032 교체형</td></tr>
+            <tr><th>품질보증기준</th><td>공정거래위원회 고시 소비자분쟁해결기준에 따름</td></tr>
+            <tr><th>A/S 책임자와 연락처</th><td>맵달SEOUL 고객센터 · Q&amp;A 게시판 접수</td></tr>
+          </table></div></details>
+          <details><summary>배송 안내</summary><div class="ic"><table class="info-table">
+            <tr><th>국내배송</th><td>3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고</td></tr>
+            <tr><th>맵달드림</th><td>서울 전역 당일배송 · 성수 1F 픽업</td></tr>
+            <tr><th>글로벌배송</th><td>전 세계 배송 가능 · 관세·세금 선지불(DDP)</td></tr>
+          </table></div></details>
+          <details><summary>교환/반품/환불 안내</summary><div class="ic"><table class="info-table">
+            <tr><th>교환/반품</th><td>수령일로부터 7일 이내 접수 (미개봉·택 부착 상태)</td></tr>
+            <tr><th>불가 사유</th><td>한정판 특전 개봉, 포장 훼손, 착용 흔적이 있는 경우</td></tr>
+            <tr><th>하자/오배송</th><td>왕복 배송비 판매자 부담 · 무상 교환·환불</td></tr>
+          </table></div></details>
+        </div>
+        <div style="margin-top:40px">
+          <div class="sec-head" style="margin-bottom:20px"><div><div class="kicker">TOGETHER</div><h2 style="font-size:24px">함께 구매하면 좋은 제품</h2></div><a class="more" href="shop.html">SHOP 전체 →</a></div>
+          <div class="rec-rail"><a class="rec-card" href="product-goods-photocard-binder.html"><span class="g-thumb" style="background:linear-gradient(160deg,#B71F18,#E8332A)"><b>포카</b></span><h5>포토카드 바인더 성수 에디션</h5><div class="rp"><b>—</b>₩22,000</div></a><a class="rec-card" href="product-goods-logo-hoodie.html"><span class="g-thumb" style="background:linear-gradient(160deg,#141414,#3A3A3A)"><b>후디</b></span><h5>MAPDAL 로고 후디</h5><div class="rp"><b>—</b>₩68,000</div></a><a class="rec-card" href="product-goods-rabbitclub-tee.html"><span class="g-thumb" style="background:linear-gradient(160deg,#0C4F3F,#00A879)"><b>티</b></span><h5>래빗클럽 팝업 티셔츠</h5><div class="rp"><b>—</b>₩38,000</div></a><a class="rec-card" href="product-goods-starlight-album.html"><span class="g-thumb" style="background:linear-gradient(160deg,#4A1D96,#8B5CF6)"><b>앨범</b></span><h5>스타라이트 한정반 (성수 특전)</h5><div class="rp"><b>—</b>₩24,000</div></a></div>
+        </div>
+      </div>
+      <div class="tab-panel" id="tab-rev">
+        <div class="rev-sum">
+          <div class="big"><span class="stars">★★★★★</span>4.9<small>총 812건</small></div>
+          <div class="attr-bars">
+            <div class="attr-row"><span class="al">품질</span><span class="at">만족해요</span><span class="bar"><i style="width:86%"></i></span><span class="pc">86%</span></div>
+            <div class="attr-row"><span class="al">구성</span><span class="at">기대 이상이에요</span><span class="bar"><i style="width:82%"></i></span><span class="pc">82%</span></div>
+            <div class="attr-row"><span class="al">선물</span><span class="at">선물로 추천해요</span><span class="bar"><i style="width:88%"></i></span><span class="pc">88%</span></div>
+          </div>
+        </div>
+        <div class="rev-item"><div class="rh"><span class="avatar">F</span><span class="uid">fan***</span><span class="stars" style="font-size:12px">★★★★★</span><span>2026.06 · 맵달드림</span></div><div class="opt">[옵션] 단품</div><p>가방에 달고 다니는데 퀄리티가 진짜 응원봉 축소판이에요. 점등도 잘 됨.</p><div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>24</b></button></div></div><div class="rev-item"><div class="rh"><span class="avatar">N</span><span class="uid">neon***</span><span class="stars" style="font-size:12px">★★★★★</span><span>2026.06 · 맵달드림</span></div><div class="opt">[옵션] 단품</div><p>공방 굿즈랑 차원이 다릅니다. 공식이 최고.</p><div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>24</b></button></div></div>
+      </div>
+      <div class="tab-panel" id="tab-qa">
+        <div class="qa-btns"><button>상품 문의</button><button>배송·반품·교환 문의</button></div>
+        <div class="qa-item"><span class="qtag">상품 문의 · 답변완료</span><div class="q">Q. 해외 배송이 가능한가요?</div><div class="a">전 세계 배송 가능합니다. 관세·세금은 결제 시 선지불(DDP)되어 수령 시 추가 비용이 없습니다.</div></div>
+        <div class="qa-item"><span class="qtag">상품 문의 · 답변완료</span><div class="q">Q. 성수 매장에서 실물을 볼 수 있나요?</div><div class="a">1F 맵달STATION과 4F 앨범·MD 스토어에서 대부분의 상품을 실물로 확인하실 수 있습니다. 운영시간은 11:00–21:00입니다.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="buy">
+    <div class="badges"><span class="bdg dream">맵달드림</span><span class="bdg best">BEST</span></div>
+    <div class="brand">MAPDAL SEOUL · MD</div>
+    <h1>[맵달픽] 네온서울 응원봉 키링</h1>
+    <div class="price-block">
+      <div class="now"><span class="amt">₩18,000~</span></div>
+    </div>
+    <div class="rating-row"><span class="stars">★★★★★</span><b>4.9</b><a href="#" onclick="openTab('rev');return false">리뷰 812건</a></div>
+    <div class="viewers"><span id="vCount">72</span>명이 보고 있어요</div>
+    <select class="opt-select" id="optSel"><option value="" selected disabled>옵션을 선택해 주세요</option><option value="o0">단품 — ₩18,000</option><option value="o1">2개 세트 (5%↓) — ₩34,200</option></select>
+    <div class="opt-lines" id="optLines"></div>
+    <div class="total-row"><span class="tl">구매수량 <b id="totQty">0</b>개<small>배송비 별도</small></span><span class="tv" id="total">총 0원</span></div>
+    <label class="dream-check"><input type="checkbox"><span><b>맵달드림</b>으로 받아보시겠어요? — 서울 당일배송 · 성수 1F 픽업</span></label>
+    <div class="buy-btns">
+      <button class="gift">선물</button>
+      <button class="btn cartb" id="btnCart" disabled>장바구니</button>
+      <button class="btn red" id="btnBuy" disabled>바로구매</button>
+    </div>
+    <div class="ben-acc">
+      <div class="ben-row"><div class="bh"><h6>결제혜택</h6><div class="bv"><span class="hl">맵달APP 첫 구매 2,000P</span> · 포인트 <b>5% 적립</b></div><span class="chev">⌄</span></div><div class="bd">맵달APP 가입 즉시 2,000P 지급 · 구매 금액의 5% 적립 · 래플 응모 이력 보유 시 추가 2%</div></div>
+      <div class="ben-row"><div class="bh"><h6>정품보증</h6><div class="bv"><b>공식 라이선스</b> · 위조 시 전액 환불</div><span class="chev">⌄</span></div><div class="bd">모든 아티스트 MD는 권리사 공식 라이선스 계약 하에 제작·판매됩니다</div></div>
+      <div class="ben-row"><div class="bh"><h6>맵달드림</h6><div class="bv"><span class="hl">지금 주문하면 오늘 도착 또는 성수 픽업 가능!</span></div><span class="chev">⌄</span></div><div class="bd">서울 전역 당일배송 · 21시 이전 주문 건 당일 처리</div></div>
+      <div class="ben-row"><div class="bh"><h6>글로벌배송</h6><div class="bv">관세·세금 <b>선지불(DDP)</b> · 추가 결제 없음</div><span class="chev">⌄</span></div><div class="bd">전 세계 배송 가능 · 체크아웃에서 배송지 입력 시 최종 금액 자동 확정</div></div>
+      <div class="ben-row"><div class="bh"><h6>픽업</h6><div class="bv">1F·4F 스토어 <b>무료 픽업</b> 가능</div><span class="chev">⌄</span></div><div class="bd">주문 후 1시간 이내 준비 완료 · 운영시간 11:00–21:00</div></div>
+    </div>
+    <button class="store-btn" onclick="location.href='mapdal-seoul.html'">📍 성수 매장 재고 확인 · 맵달SEOUL 안내</button>
+  </div>
+</div>
+
+<!-- 푸터 -->
+<footer>
+  <div class="foot-inner">
+    <div>
+      <div class="logo">MAPDAL<em>SEOUL</em></div>
+      <p>Not a store, A stage. 성수동에서 전 세계 팬에게 — Shop Seongsu, from Anywhere.<br><br>
+      서울 성동구 성수이로16길 5<br>OPEN 11:00 — CLOSE 21:00</p>
+    </div>
+    <div><h6>SHOP</h6><ul><li><a href="new-drops.html">New / Drops</a></li><li><a href="shop.html?cat=album">앨범 / 음반</a></li><li><a href="shop.html?cat=md">굿즈 / MD</a></li><li><a href="shop.html?cat=kfood">K-Food</a></li><li><a href="shop.html?cat=apparel">어패럴</a></li><li><a href="shop.html?cat=living">리빙 / 홈</a></li></ul></div>
+    <div><h6>SPACE</h6><ul><li><a href="mapdal-seoul.html">MAPDAL SEOUL</a></li></ul></div>
+    <div><h6><a href="support.html" style="color:inherit">SUPPORT</a></h6><ul><li><a href="shipping.html">배송 안내</a></li><li><a href="returns.html">교환/반품</a></li><li><a href="partnership.html">파트너십 문의</a></li><li><a href="ir.html">IR</a></li></ul></div>
+  </div>
+  <div class="foot-base">
+    <span style="line-height:1.9"><a href="/terms.html" style="color:#fff;text-decoration:none">이용약관</a>&nbsp;·&nbsp;<a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a>&nbsp;&nbsp;&nbsp;© 2026 MEAL ZIP INC. · MAPDAL SEOUL<br>
+맵달서울성수 · 대표: 황인범, 김동경 · 서울 성동구 성수이로16길 5<br>
+사업자등록번호: 394-85-03267 · 통신판매업신고: 제2026-서울성동-0426호 · 호스팅서비스 제공: Render Services, Inc. · 고객센터: ceo@mealzip.kr</span>
+    <span>KR · EN · JP — KRW / USD / JPY</span>
+  </div>
+</footer>
+
+
+
+<script>
+let v=parseInt(document.getElementById('vCount').textContent);
+setInterval(()=>{v=Math.max(20,v+Math.floor(Math.random()*9)-4);document.getElementById('vCount').textContent=v;},4000);
+const OPTS={"o0": {"name": "단품", "price": 18000}, "o1": {"name": "2개 세트 (5%↓)", "price": 34200}};
+let cart={};const fmt=n=>n.toLocaleString('ko-KR');
+function render(){const box=document.getElementById('optLines');box.innerHTML='';let tq=0,tp=0;
+for(const[k,q]of Object.entries(cart)){tq+=q;tp+=OPTS[k].price*q;
+const r=document.createElement('div');r.className='opt-line';
+r.innerHTML=`<span class="nm">${OPTS[k].name}</span><span class="qty-ctl"><button data-k="${k}" data-d="-1">−</button><span>${q}</span><button data-k="${k}" data-d="1">＋</button></span><span class="lp">₩${fmt(OPTS[k].price*q)}</span><button class="rm" data-k="${k}">✕</button>`;
+box.appendChild(r);}
+document.getElementById('totQty').textContent=tq;
+document.getElementById('total').textContent='총 '+fmt(tp)+'원';
+document.getElementById('btnCart').disabled=tq===0;document.getElementById('btnBuy').disabled=tq===0;}
+document.getElementById('optSel').addEventListener('change',e=>{const k=e.target.value;if(!k)return;cart[k]=(cart[k]||0)+1;e.target.selectedIndex=0;render();});
+document.getElementById('optLines').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const k=b.dataset.k;
+if(b.classList.contains('rm')){delete cart[k];}else{cart[k]=Math.min(99,Math.max(0,(cart[k]||0)+parseInt(b.dataset.d)));if(cart[k]===0)delete cart[k];}render();});
+document.querySelectorAll('.ben-row .bh').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('open')));
+function openTab(id){document.querySelectorAll('.tab-bar button').forEach(b=>b.classList.toggle('on',b.dataset.tab===id));
+document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('on',p.id==='tab-'+id));
+document.querySelector('.pdp-tabs').scrollIntoView({behavior:'smooth'});}
+document.querySelectorAll('.tab-bar button').forEach(b=>b.addEventListener('click',()=>openTab(b.dataset.tab)));
+</script>
+
+<script>
+(function(){
+const CK='mapdal_cart';
+function load(){try{return JSON.parse(localStorage.getItem(CK)||'[]')}catch(e){return[]}}
+function save(a){try{localStorage.setItem(CK,JSON.stringify(a))}catch(e){}}
+function badge(){var c=load().reduce((a,i)=>a+i.q,0);var el=document.querySelector('.util .cart');if(el)el.textContent='CART · '+c;}
+function addSel(){
+  var pn=document.querySelector('.buy h1').textContent.trim();
+  var pg=location.pathname.split('/').pop();
+  var items=load(),added=false;
+  for(var k in cart){var q=cart[k];if(!q)continue;added=true;
+    var id=pg+'::'+k;
+    var nm=pn+(OPTS[k]&&OPTS[k].name?' — '+OPTS[k].name:'');
+    var ex=items.find(function(i){return i.id===id});
+    if(ex)ex.q=Math.min(99,ex.q+q);else items.push({id:id,n:nm,p:OPTS[k].price,q:q,img:'',u:pg});}
+  if(added)save(items);
+  return added;}
+var bc=document.getElementById('btnCart'),bb=document.getElementById('btnBuy');
+if(bc)bc.addEventListener('click',function(){if(bc.disabled)return;if(addSel())location.href='cart.html';});
+if(bb)bb.addEventListener('click',function(){if(bb.disabled)return;if(addSel())location.href='checkout.html';});
+badge();
+})();
+</script>
+<script id="mpAuthJs">(function(){function go(){
+fetch('/api/member/me').then(function(r){return r.json()}).catch(function(){return {login:false}}).then(function(d){
+try{if(document.getElementById('mpAuth'))return;
+var cart=null,els=document.querySelectorAll('a,button,div,span');
+for(var i=0;i<els.length;i++){var t=(els[i].textContent||'').replace(/\s+/g,' ').trim();
+if(t.length<12&&t.indexOf('CART')===0){cart=els[i];break}}
+var a=document.createElement('a');a.id='mpAuth';a.href='/account';
+a.textContent=(d&&d.login)?('MY \u00b7 '+(d.name||'\ud68c\uc6d0')):'\ub85c\uadf8\uc778';
+a.style.cssText='font-weight:700;font-size:12px;letter-spacing:.4px;color:inherit;text-decoration:none;margin-right:14px;white-space:nowrap;display:inline-flex;align-items:center;cursor:pointer';
+if(cart&&cart.parentNode){cart.parentNode.insertBefore(a,cart)}
+else{a.style.cssText='position:fixed;top:12px;right:14px;z-index:99999;background:#141414;color:#FFB000;font:700 12px sans-serif;padding:7px 13px;text-decoration:none';document.body.appendChild(a)}
+}catch(e){}})}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}})();</script><script id="mpLikeJs">(function(){
+var RX=/(^|\/)(product-[A-Za-z0-9._-]+\.html|album-detail\.html\?uid=[A-Za-z0-9_-]+)([?#]|$)/;
+var ST={login:false,liked:{}},seen={};
+function hrefOf(a){try{return a.getAttribute('href')||''}catch(e){return ''}}
+function key(h){return h.split('#')[0]}
+function nameOf(a){var t=(a.textContent||'').replace(/\s+/g,' ').trim();var i=t.indexOf('\u20A9');if(i>0)t=t.slice(0,i);return t.trim().slice(0,60)}
+function priceOf(a){var m=(a.textContent||'').match(/\u20A9\s*([\d,]+)/);return m?Number(m[1].replace(/,/g,'')):0}
+function imgOf(a){var i=a.querySelector('img');if(!i)return '';return (i.currentSrc||i.getAttribute('src')||'').slice(0,300)}
+function mkBtn(a,h){var b=document.createElement('button');b.className='mpLike';b.type='button';
+ b.style.cssText='position:absolute;top:8px;right:8px;z-index:5;width:32px;height:32px;border:0;border-radius:50%;background:rgba(255,255,255,.92);color:#E8332A;font-size:16px;line-height:32px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.18);padding:0';
+ paint(b,!!ST.liked[h]);
+ b.onclick=function(ev){ev.preventDefault();ev.stopPropagation();
+  if(!ST.login){if(confirm('로그인이 필요합니다. 로그인 페이지로 이동할까요?'))location.href='/account';return}
+  var on=!ST.liked[h];
+  fetch('/api/member/likes/page',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({href:h,name:nameOf(a),price:priceOf(a),img:imgOf(a),on:on})})
+  .then(function(r){if(!r.ok)throw 0;ST.liked[h]=on?1:0;paint(b,on)})
+  .catch(function(){alert('잠시 후 다시 시도해 주세요')})};
+ var st=getComputedStyle(a).position;if(st==='static'||!st)a.style.position='relative';
+ a.appendChild(b)}
+function paint(b,on){b.innerHTML=on?'\u2665':'\u2661';b.style.color=on?'#E8332A':'#141414';b.title=on?'\uC88B\uC544\uC694 \uCDE8\uC18C':'\uC88B\uC544\uC694'}
+function scan(){var as=document.querySelectorAll('a[href]'),fresh=[];
+ for(var i=0;i<as.length;i++){var a=as[i],h=key(hrefOf(a));
+  if(!RX.test(h))continue;if(!a.querySelector('img'))continue;if(seen[h])continue;
+  seen[h]=1;fresh.push([a,h])}
+ if(!fresh.length)return;
+ var pages=fresh.map(function(x){return x[1]});
+ fetch('/api/member/likes/state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pages:pages})})
+ .then(function(r){return r.json()}).catch(function(){return{login:false,liked:[]}})
+ .then(function(d){ST.login=!!d.login;(d.liked||[]).forEach(function(h){ST.liked[h]=1});
+  fresh.forEach(function(x){mkBtn(x[0],x[1])})})}
+function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go._t=setTimeout(scan,400)}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
+})();</script></body>
+</html><script id="mpFootWhite">(function(){try{var els=document.querySelectorAll("footer *,footer");for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";if(/사업자등록번호|통신판매업신고|맵달서울성수|MEAL ZIP/.test(t)&&t.length<420&&e.children.length<10){e.style.color="#fff";}}}catch(e){}})();</script>

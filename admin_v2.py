@@ -228,6 +228,8 @@ def ensure_ready():
            code TEXT, created TEXT, expires TEXT, used INTEGER DEFAULT 0)""",
         """CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY, ctype TEXT, ext TEXT,
            data TEXT, created TEXT)""",
+        """CREATE TABLE IF NOT EXISTS k2g_removed(uid TEXT PRIMARY KEY, name TEXT,
+           created TEXT, by_admin TEXT)""",
     ):
         try: run(ddl)
         except Exception: pass
@@ -287,15 +289,21 @@ def ensure_ready():
             try: run("ALTER TABLE member_likes ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
     pcx = _cols('products')
-    for col in ('img', 'descr', 'category', 'detail_html', 'gallery'):
+    for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
+            except Exception: pass
+    for col in ('list_price', 'sort_order'):
+        if pcx and col not in pcx:
+            try: run("ALTER TABLE products ADD COLUMN %s INTEGER" % col)
             except Exception: pass
     pc = _cols('products')
     _state.update(ocols=oc, pcols=pc,
                   paykey=next((c for c in ('pay_key', 'payment_key', 'paykey') if c in oc), None),
                   pname=next((c for c in ('name', 'title', 'n') if c in pc), None),
                   pprice=next((c for c in ('price', 'p', 'amount') if c in pc), None), ready=True)
+    try: _k2g_migrate_from_static()   # K2G 카탈로그 → DB 단일 출처 백필 (1회, 멱등)
+    except Exception: pass
 
 # ── 인증 + 역할 ─────────────────────────────────────────────────────────
 RANK = {'VIEWER': 0, 'STAFF': 1, 'MANAGER': 2, 'OWNER': 3}
@@ -626,6 +634,8 @@ def api_product_update(request: Request, body: dict = Body(...)):
     n = run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
     if not n: raise HTTPException(404, 'not found')
     audit(a, '상품수정', pid, ', '.join(log))
+    try: _k2g_cache_bust()
+    except Exception: pass
     try:
         nowr = one('SELECT stock, soldout FROM products WHERE id=?', (pid,)) or {}
         was_off = num(old.get('soldout')) or num(old.get('stock')) <= 0
@@ -1249,13 +1259,16 @@ async function loadProducts(p){ppage=p;const q=new URLSearchParams({page:p});
  <td class="right">${r.price==null?'-':(can(2)?`<input class="stockin" style="width:88px" id="pr${k}" type="number" min="0" value="${r.price}">`:won(r.price))}</td>
  <td class="right">${can(1)?`<input class="stockin" id="st${k}" type="number" min="0" value="${r.stock}">`:r.stock}</td>
  <td><input type="checkbox" id="so${k}" ${r.soldout?'checked':''} ${can(1)?`onchange="saveProd('${k}',true)"`:'disabled'}></td>
- <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a>${can(2)&&r.id.indexOf('mp::')===0?` <button class="btn sm ghost" style="color:#c0392b;border-color:#c0392b" onclick="delProd('${k}')">삭제</button>`:''}</td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
+ <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a>${can(2)&&(r.id.indexOf('mp::')===0||r.id.indexOf('k2g::')===0)?` <button class="btn sm ghost" style="color:#c0392b;border-color:#c0392b" onclick="delProd('${k}')">삭제</button>`:''}</td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadProducts')}`;}catch(e){$('#plist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function saveProd(k,tg){const body={id:window._pk[k],soldout:document.getElementById('so'+k).checked?1:0};
  if(!tg){body.stock=Number(document.getElementById('st'+k).value);const pr=document.getElementById('pr'+k);if(pr)body.price=Number(pr.value)}
  try{await api('/admin/api/products/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('반영되었습니다')}catch(e){toast(e.message);loadProducts(ppage)}}
-async function delProd(k){const id=window._pk[k];
- if(!confirm('이 상품을 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 목록과 /p/ 상세 페이지에서 즉시 사라집니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.'))return;
+async function delProd(k){const id=window._pk[k];const isK2g=id.indexOf('k2g::')===0;
+ const warn=isK2g
+  ?'이 앨범을 카탈로그에서 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 앨범 목록과 앨범 상세에서 즉시 사라지고 구매가 차단됩니다.\n· 삭제 기록이 남아 카탈로그를 다시 불러와도 목록에 재노출되지 않습니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.'
+  :'이 상품을 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 목록과 /p/ 상세 페이지에서 즉시 사라집니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.';
+ if(!confirm(warn))return;
  try{await api('/admin/api/products/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
  toast('삭제되었습니다');loadProducts(ppage)}catch(e){toast(e.message)}}
 
@@ -1584,6 +1597,8 @@ def api_product_create(request: Request, body: dict = Body(...)):
         cols.append('descr'); vals.append((body.get('descr') or '').strip()[:4000])
     if 'category' in _state['pcols']:
         cols.append('category'); vals.append(norm_cat(body.get('category')))
+    if 'badge' in _state['pcols']:
+        cols.append('badge'); vals.append((body.get('badge') or '').strip()[:30])
     if 'detail_html' in _state['pcols']:
         # detail_blocks(JSON) 우선, 없으면 레거시 detail_html 텍스트 허용
         blocks = body.get('detail_blocks')
@@ -1597,17 +1612,27 @@ def api_product_create(request: Request, body: dict = Body(...)):
 
 @admin_router.post('/admin/api/products/delete')
 def api_product_delete(request: Request, body: dict = Body(...)):
-    """직접등록(mp::) 상품 삭제. k2g:: 카탈로그는 보호 — 삭제 불가.
+    """상품 삭제. mp::(직접등록)와 k2g::(앨범 카탈로그) 모두 삭제 가능.
+    k2g는 삭제 기록(k2g_removed)을 남겨 SHOP·앨범상세의 인라인 카탈로그에서도 즉시 감춘다.
     주문·Q&A 이력은 보존하고, 재입고 알림 대기만 함께 정리한다."""
     a = get_actor(request); need(a, 2, '상품 삭제')
     pid = str(body.get('id') or '').strip()
-    if not pid.startswith('mp::'):
-        raise HTTPException(400, '직접 등록한 상품(mp::)만 삭제할 수 있습니다')
+    if not (pid.startswith('mp::') or pid.startswith('k2g::')):
+        raise HTTPException(400, '삭제할 수 없는 상품 유형입니다')
     r = one('SELECT %s AS name FROM products WHERE id=?' % (_state['pname'] or 'id'), (pid,))
     if not r:
         raise HTTPException(404, '상품을 찾을 수 없습니다')
     run('DELETE FROM products WHERE id=?', (pid,))
     try: run('DELETE FROM member_restock WHERE product_id=?', (pid,))
+    except Exception: pass
+    if pid.startswith('k2g::'):
+        try:
+            run('INSERT INTO k2g_removed(uid, name, created, by_admin) VALUES(?,?,?,?)',
+                (pid[5:], str(r.get('name') or '')[:300], now_iso(), a['name']))
+        except Exception:
+            pass  # 이미 기록됨(PK 충돌) — 무시
+        _k2g_rm_cache['set'] = None  # 삭제목록 캐시 즉시 무효화
+    try: _k2g_cache_bust()           # 카탈로그 캐시 즉시 무효화
     except Exception: pass
     audit(a, '상품삭제', pid, str(r.get('name') or ''))
     return {'ok': True}
@@ -1700,7 +1725,7 @@ def api_product_detail_get(request: Request):
     if not pid: raise HTTPException(400, 'id required')
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr', 'category', 'detail_html', 'gallery'):
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -1719,6 +1744,7 @@ def api_product_detail_get(request: Request):
         'stock': num(r.get('stock')), 'soldout': num(r.get('soldout')),
         'img': r.get('img') or '', 'descr': r.get('descr') or '',
         'category': norm_cat(r.get('category')),
+        'badge': (r.get('badge') or '').strip(),
         'detail_blocks': blocks,
         'gallery': r.get('gallery') or '',
         'categories': [{'value': k, 'label': l} for k, l in PRODUCT_CATEGORIES],
@@ -1741,6 +1767,7 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         'detail_blocks': ('detail_html', None, clean_blocks),
         'detail_html': ('detail_html', 100000, None),
         'category': ('category', 40, norm_cat),
+        'badge': ('badge', 30, None),
         'gallery': ('gallery', None, _clean_gallery),
     }
     for k, (col, limit, fn) in field_map.items():
@@ -1769,6 +1796,8 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         log.append('stock')
     if not sets: raise HTTPException(400, '변경할 값 없음')
     run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
+    try: _k2g_cache_bust()
+    except Exception: pass
     audit(a, '상품상세수정', pid, '수정 항목: ' + ', '.join(log))
     return {'ok': True, 'id': pid, 'url': '/p/' + pid}
 
@@ -1855,7 +1884,9 @@ h2{font-size:19px;margin-bottom:18px}
  </div>
  <div class="row2">
   <div class="f"><label id="fslabel">초기 재고 *</label><input type="number" id="fs" min="0" placeholder="100"></div>
-  <div></div>
+  <div class="f"><label>카드 배지 <span style="font-weight:400;color:#aaa">— SHOP 카드 좌상단 표기</span></label>
+   <input type="text" id="fb" list="badgeOpts" maxlength="30" placeholder="비우면 카테고리명이 표기됩니다">
+   <datalist id="badgeOpts"><option value="BEST"><option value="NEW"><option value="LIMITED"><option value="EVENT"><option value="GIFT"><option value="성수 한정"><option value="세트"><option value="사인회"><option value="영상통화"><option value="예약판매"></datalist></div>
  </div>
  <div class="f"><label>짧은 설명</label><textarea id="fd" rows="3" placeholder="목록·상단 요약 설명 (선택)"></textarea></div>
 </div>
@@ -1962,7 +1993,7 @@ async function init(){
   const d=await api('/admin/api/products/detail?id='+encodeURIComponent(PAGE.id));
   $('#fn').value=d.name;$('#fc').innerHTML=catOptions(d.category);
   if(d.price!=null)$('#fp').value=d.price;
-  $('#fs').value=d.stock;$('#fd').value=d.descr;
+  $('#fs').value=d.stock;$('#fd').value=d.descr;$('#fb').value=d.badge||'';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
   renderBlocks();
@@ -1980,12 +2011,12 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:Number($('#fp').value||0),stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,detail_blocks:_blocks})});
+     img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),detail_blocks:_blocks})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:Number($('#fp').value||0),stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,detail_blocks:_blocks})});
+    img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),detail_blocks:_blocks})});
   toast('저장되었습니다');
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
@@ -3067,7 +3098,7 @@ def _mp_shop_cards():
         sel = 'id, %s AS name, stock, soldout' % _state['pname']
         if _state['pprice']:
             sel += ', %s AS price' % _state['pprice']
-        for c in ('img', 'category'):
+        for c in ('img', 'category', 'badge'):
             if c in _state['pcols']:
                 sel += ', ' + c
         rs = rows('SELECT %s FROM products WHERE id LIKE ? ORDER BY id' % sel, ('mp::%',))
@@ -3082,7 +3113,8 @@ def _mp_shop_cards():
         name = str(r.get('name') or r['id'])
         cat = norm_cat(r.get('category'))
         soldout = bool(num(r.get('soldout')) or num(r.get('stock')) <= 0)
-        tag = _MP_CAT_TAG.get(cat, 'MAPDAL') + (' · SOLD OUT' if soldout else '')
+        badge = str(r.get('badge') or '').strip()
+        tag = (badge or _MP_CAT_TAG.get(cat, 'MAPDAL')) + (' · SOLD OUT' if soldout else '')
         gray = ';filter:grayscale(.85);opacity:.75' if soldout else ''
         img = (r.get('img') or '').strip()
         if _MP_IMG_OK.fullmatch(img):
@@ -3107,7 +3139,175 @@ def _inject_shop_products(html):
         return html
     return _SHOP_GRID_RE.sub(lambda m: m.group(1) + cards, html, count=1)
 
+# ── K2G 카탈로그: DB 단일 출처 ──────────────────────────────────────────
+#   shop.html·album-detail.html의 인라인 배열(const K2G=[[...]])을 서빙 시
+#   DB(products의 k2g:: 행)로 재구성해 치환한다. 관리자에서의 가격·품절·
+#   상품명 변경과 삭제가 사이트에 즉시 반영되며, 정적 스냅숏은 DB 장애 시
+#   폴백으로만 사용된다. 최초 1회, 정적 배열의 정가·이미지·정렬 순서를
+#   DB로 백필하고 배열에만 있던 앨범은 신규 INSERT한다(삭제 기록 제외).
+_k2g_rm_cache = {'t': 0.0, 'set': None}
+
+def _k2g_removed_set():
+    if _k2g_rm_cache['set'] is not None and time.time() - _k2g_rm_cache['t'] < 30:
+        return _k2g_rm_cache['set']
+    try:
+        s = {str(r['uid']) for r in rows('SELECT uid FROM k2g_removed')}
+    except Exception:
+        s = _k2g_rm_cache['set'] or set()
+    _k2g_rm_cache.update(t=time.time(), set=s)
+    return s
+
+_k2g_bounds_cache = {}
+
+def _find_k2g_array_bounds(html):
+    """'const K2G=' 뒤 배열 리터럴의 [시작, 끝) 인덱스.
+    C 가속 JSON 파서(raw_decode)로 끝을 찾고 페이지 지문으로 캐시,
+    배열이 순수 JSON이 아니면 상태 기계 스캔으로 폴백."""
+    k = html.find('const K2G=')
+    if k < 0:
+        return None
+    i = html.find('[', k)
+    if i < 0:
+        return None
+    fp = (len(html), i, html[i:i + 48])
+    b = _k2g_bounds_cache.get(fp)
+    if b and b[1] <= len(html) and html[b[0]] == '[' and html[b[1] - 1] == ']':
+        return b
+    try:
+        _, end = json.JSONDecoder().raw_decode(html, i)
+        b = (i, end)
+    except Exception:
+        b = _scan_k2g_bounds(html, i)
+    if b:
+        if len(_k2g_bounds_cache) > 8:
+            _k2g_bounds_cache.clear()
+        _k2g_bounds_cache[fp] = b
+    return b
+
+def _scan_k2g_bounds(html, i):
+    """폴백: 문자열·이스케이프·중첩 대괄호를 상태 기계로 추적."""
+    depth, in_str, esc_ch, j, n = 0, False, False, i, len(html)
+    while j < n:
+        ch = html[j]
+        if in_str:
+            if esc_ch: esc_ch = False
+            elif ch == '\\': esc_ch = True
+            elif ch == '"': in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    return (i, j + 1)
+        j += 1
+    return None
+
+def _k2g_migrate_from_static():
+    """정적 shop.html의 인라인 배열 → products DB 백필 (멱등).
+    · 기존 k2g:: 행: 비어 있는 img/list_price(정가)/sort_order만 채우고,
+      배열의 품절 플래그가 1이면 soldout 반영 (관리자 수정값은 보존)
+    · 배열에만 있는 앨범: 신규 INSERT (k2g_removed에 기록된 uid는 제외)
+    · 모든 k2g 행에 sort_order가 채워지면 이후 호출은 건너뛴다."""
+    if one("SELECT 1 FROM products WHERE id LIKE ? AND sort_order IS NULL LIMIT 1", ('k2g::%',)) is None \
+       and one("SELECT 1 FROM products WHERE id LIKE ? LIMIT 1", ('k2g::%',)) is not None:
+        return
+    fp = os.path.join(STATIC_DIR, 'shop.html')
+    if not os.path.isfile(fp):
+        return
+    html = open(fp, encoding='utf-8', errors='replace').read()
+    b = _find_k2g_array_bounds(html)
+    if not b:
+        return
+    try:
+        arr = json.loads(html[b[0]:b[1]])
+    except Exception:
+        return
+    if not isinstance(arr, list):
+        return
+    removed = _k2g_removed_set()
+    nm, pr = _state['pname'] or 'name', _state['pprice'] or 'price'
+    existing = {r['id']: r for r in rows(
+        "SELECT id, img, list_price, sort_order, soldout FROM products WHERE id LIKE ?", ('k2g::%',))}
+    ops = []
+    for i, row in enumerate(arr):
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        uid = str(row[0])
+        if uid in removed:
+            continue
+        img, name = str(row[1] or ''), str(row[2] or '')
+        was, sale = num(row[3]), num(row[4])
+        sold = 1 if (len(row) > 5 and num(row[5])) else 0
+        pid = 'k2g::' + uid
+        ex = existing.get(pid)
+        if ex is None:
+            ops.append(('INSERT INTO products(id, %s, %s, stock, soldout, img, category, list_price, sort_order) '
+                        'VALUES(?,?,?,0,?,?,?,?,?)' % (nm, pr),
+                        (pid, name[:300], sale, sold, img[:300], 'album', was, i)))
+        else:
+            sets, args = [], []
+            if not (ex.get('img') or '').strip():
+                sets.append('img=?'); args.append(img[:300])
+            if ex.get('list_price') is None:
+                sets.append('list_price=?'); args.append(was)
+            if ex.get('sort_order') is None:
+                sets.append('sort_order=?'); args.append(i)
+            if sold and not num(ex.get('soldout')):
+                sets.append('soldout=1')
+            if sets:
+                ops.append(('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid])))
+    if ops:
+        runmany(ops)
+
+_k2g_cat_cache = {'t': 0.0, 'body': None}
+
+def _k2g_cache_bust():
+    _k2g_cat_cache['body'] = None
+
+def _k2g_catalog_json():
+    """k2g:: 상품 → 사이트 인라인 배열 형식 [uid, img, name, 정가, 판매가, 품절]의
+    JSON 문자열. 60초 캐시 + 쓰기 API가 즉시 무효화. <script> 내 삽입 안전 처리."""
+    if _k2g_cat_cache['body'] is not None and time.time() - _k2g_cat_cache['t'] < 60:
+        return _k2g_cat_cache['body']
+    ensure_ready()
+    if not _state['pcols'] or not _state['pname'] or not _state['pprice']:
+        return None
+    rs = rows("SELECT id, %s AS name, %s AS price, list_price, img, soldout FROM products "
+              "WHERE id LIKE ? ORDER BY COALESCE(sort_order, 999999999), id"
+              % (_state['pname'], _state['pprice']), ('k2g::%',))
+    if not rs:
+        return '[]' if _k2g_removed_set() else None   # 전부 삭제한 상태면 빈 카탈로그, 미백필이면 정적 폴백
+    out = []
+    for r in rs:
+        sale, was = num(r.get('price')), num(r.get('list_price'))
+        out.append([r['id'][5:], str(r.get('img') or ''), str(r.get('name') or ''),
+                    was if was > sale else 0, sale, 1 if num(r.get('soldout')) else 0])
+    body = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
+    body = body.replace('</', '<\\/').replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
+    _k2g_cat_cache.update(t=time.time(), body=body)
+    return body
+
+def _serve_k2g_from_db(html):
+    """서빙 HTML의 인라인 K2G 배열을 DB 카탈로그로 치환.
+    실패·미백필 시 정적 스냅숏을 그대로 서빙(무해한 폴백)."""
+    if 'const K2G=[' not in html:
+        return html
+    try:
+        body = _k2g_catalog_json()
+        if not body:
+            return html
+        b = _find_k2g_array_bounds(html)
+        if not b:
+            return html
+        return html[:b[0]] + body + html[b[1]:]
+    except Exception:
+        return html
+
 def _inject_auth(html):
+    html = _serve_k2g_from_db(html)
     html = _inject_shop_products(html)
     html, patched = _patch_legacy_footer(html)
     add = ''

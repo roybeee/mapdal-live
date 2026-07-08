@@ -1249,11 +1249,15 @@ async function loadProducts(p){ppage=p;const q=new URLSearchParams({page:p});
  <td class="right">${r.price==null?'-':(can(2)?`<input class="stockin" style="width:88px" id="pr${k}" type="number" min="0" value="${r.price}">`:won(r.price))}</td>
  <td class="right">${can(1)?`<input class="stockin" id="st${k}" type="number" min="0" value="${r.stock}">`:r.stock}</td>
  <td><input type="checkbox" id="so${k}" ${r.soldout?'checked':''} ${can(1)?`onchange="saveProd('${k}',true)"`:'disabled'}></td>
- <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a></td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
+ <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a>${can(2)&&r.id.indexOf('mp::')===0?` <button class="btn sm ghost" style="color:#c0392b;border-color:#c0392b" onclick="delProd('${k}')">삭제</button>`:''}</td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadProducts')}`;}catch(e){$('#plist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function saveProd(k,tg){const body={id:window._pk[k],soldout:document.getElementById('so'+k).checked?1:0};
  if(!tg){body.stock=Number(document.getElementById('st'+k).value);const pr=document.getElementById('pr'+k);if(pr)body.price=Number(pr.value)}
  try{await api('/admin/api/products/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('반영되었습니다')}catch(e){toast(e.message);loadProducts(ppage)}}
+async function delProd(k){const id=window._pk[k];
+ if(!confirm('이 상품을 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 목록과 /p/ 상세 페이지에서 즉시 사라집니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.'))return;
+ try{await api('/admin/api/products/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
+ toast('삭제되었습니다');loadProducts(ppage)}catch(e){toast(e.message)}}
 
 let CMODE='buyers';
 function custMode(m){CMODE=m;$('#cm1').className='btn sm'+(m==='buyers'?'':' ghost');$('#cm2').className='btn sm'+(m==='members'?'':' ghost');
@@ -1590,6 +1594,23 @@ def api_product_create(request: Request, body: dict = Body(...)):
     run('INSERT INTO products(%s) VALUES(%s)' % (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals))
     audit(a, '상품등록', pid, '%s / %s원 / 재고 %d / %s' % (name, format(price, ','), stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류')))
     return {'ok': True, 'id': pid, 'url': '/p/' + pid}
+
+@admin_router.post('/admin/api/products/delete')
+def api_product_delete(request: Request, body: dict = Body(...)):
+    """직접등록(mp::) 상품 삭제. k2g:: 카탈로그는 보호 — 삭제 불가.
+    주문·Q&A 이력은 보존하고, 재입고 알림 대기만 함께 정리한다."""
+    a = get_actor(request); need(a, 2, '상품 삭제')
+    pid = str(body.get('id') or '').strip()
+    if not pid.startswith('mp::'):
+        raise HTTPException(400, '직접 등록한 상품(mp::)만 삭제할 수 있습니다')
+    r = one('SELECT %s AS name FROM products WHERE id=?' % (_state['pname'] or 'id'), (pid,))
+    if not r:
+        raise HTTPException(404, '상품을 찾을 수 없습니다')
+    run('DELETE FROM products WHERE id=?', (pid,))
+    try: run('DELETE FROM member_restock WHERE product_id=?', (pid,))
+    except Exception: pass
+    audit(a, '상품삭제', pid, str(r.get('name') or ''))
+    return {'ok': True}
 
 def _clean_gallery(v):
     """줄바꿈으로 구분된 이미지 URL 목록을 정리해 개행 문자열로 저장 (최대 12장)."""
@@ -3025,7 +3046,69 @@ def _patch_legacy_footer(html):
     html, n3 = re.subn(r'<footer id="mpFooter".*?</footer>\s*', '', html, flags=re.S)
     return html, n1 + n2 + n3
 
+# ── SHOP 목록 연동: 직접등록(mp::) 상품을 shop 그리드에 서버 측 주입 ──────
+#   · 대상: id가 'mp::'로 시작하는 상품만 (k2g:: 카탈로그는 페이지에 이미 인라인 → 중복 방지)
+#   · 기존 col-card 마크업·클래스를 그대로 사용 → 필터 탭(data-cat)·검색과 자동 연동
+#   · 삽입 위치: #shopGrid 여는 태그 직후 → 각 카테고리 탭에서 자체 상품이 먼저 노출
+#   · 품절: SOLD OUT 태그 + 흑백 처리 + '담기' 대신 '품절' (숨기지 않고 노출 유지)
+_SHOP_GRID_RE = re.compile(r'(<div[^>]*id="shopGrid"[^>]*>)')
+_MP_CAT_TAG = {'album': 'ALBUM', 'md': 'MD', 'kfood': 'K-FOOD', 'apparel': 'APPAREL', 'living': 'LIVING'}
+_MP_COVERS = ('linear-gradient(160deg,#141414,#3A3A3A)', 'linear-gradient(160deg,#7A1613,#E8332A)',
+              'linear-gradient(160deg,#5C3D00,#B87F00)', 'linear-gradient(160deg,#1E1E60,#4B3AE8)',
+              'linear-gradient(160deg,#20603C,#57B87B)')
+_MP_IMG_OK = re.compile(r'(?:https?://|/admin/asset/)[^\s\'"()<>\\]+\Z')
+
+def _mp_shop_cards():
+    """직접등록 상품 → shop 그리드용 카드 HTML. 어떤 오류에도 빈 문자열 반환(페이지 서빙은 계속)."""
+    try:
+        ensure_ready()
+        if not _state['pcols'] or not _state['pname']:
+            return ''
+        sel = 'id, %s AS name, stock, soldout' % _state['pname']
+        if _state['pprice']:
+            sel += ', %s AS price' % _state['pprice']
+        for c in ('img', 'category'):
+            if c in _state['pcols']:
+                sel += ', ' + c
+        rs = rows('SELECT %s FROM products WHERE id LIKE ? ORDER BY id' % sel, ('mp::%',))
+    except Exception:
+        return ''
+    if not rs:
+        return ''
+    def h(x):
+        return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+    cards = []
+    for i, r in enumerate(rs):
+        name = str(r.get('name') or r['id'])
+        cat = norm_cat(r.get('category'))
+        soldout = bool(num(r.get('soldout')) or num(r.get('stock')) <= 0)
+        tag = _MP_CAT_TAG.get(cat, 'MAPDAL') + (' · SOLD OUT' if soldout else '')
+        gray = ';filter:grayscale(.85);opacity:.75' if soldout else ''
+        img = (r.get('img') or '').strip()
+        if _MP_IMG_OK.fullmatch(img):
+            cover = ('<div class="col-cover" style="background:#EDECE7 url(\'%s\') center/cover no-repeat;height:240px%s">'
+                     '<span class="tag">%s</span></div>') % (h(img), gray, h(tag))
+        else:
+            cover = ('<div class="col-cover" style="background:%s;height:240px%s">'
+                     '<span class="tag">%s</span><span class="big" style="font-size:44px">%s</span></div>'
+                     ) % (_MP_COVERS[i % len(_MP_COVERS)], gray, h(tag), h(name[:2]))
+        cards.append('<a class="col-card" data-cat="%s" href="/p/%s">%s'
+                     '<div class="col-body"><h3>%s</h3><div class="price-row">'
+                     '<span class="price">₩%s</span><span class="add">%s</span></div></div></a>'
+                     % (h(cat), h(r['id']), cover, h(name),
+                        format(num(r.get('price')), ','), '품절' if soldout else '담기 +'))
+    return '<!-- mpShopDyn -->' + ''.join(cards) + '<!-- /mpShopDyn -->'
+
+def _inject_shop_products(html):
+    if 'id="shopGrid"' not in html or 'mpShopDyn' in html:
+        return html
+    cards = _mp_shop_cards()
+    if not cards:
+        return html
+    return _SHOP_GRID_RE.sub(lambda m: m.group(1) + cards, html, count=1)
+
 def _inject_auth(html):
+    html = _inject_shop_products(html)
     html, patched = _patch_legacy_footer(html)
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET

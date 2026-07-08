@@ -516,7 +516,6 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
         <table class="info-table">
           <tr><th>국내배송</th><td>3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고</td></tr>
           <tr><th>맵달드림</th><td>서울 당일배송 · 성수 1F/4F 픽업 (한터 집계 동일 적용)</td></tr>
-          <tr><th>글로벌배송</th><td>전 세계 배송 · 관세 선지불(DDP)</td></tr>
           <tr><th>이벤트 상품</th><td>사인회/영상통화 응모 상품은 이벤트 종료 후 발송될 수 있음 · 응모 결과와 관계없이 앨범은 발송</td></tr>
           <tr><th>교환/반품</th><td>미개봉에 한해 수령 7일 이내 · 특전/랜덤 구성 개봉 시 불가</td></tr>
         </table>
@@ -543,9 +542,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <div class="ben-row"><div class="bh"><h6>차트반영</h6><div class="bv"><span class="hl">한터차트 집계</span> · 4F = 온라인 동시</div><span class="chev">⌄</span></div><div class="bd">KPOP2GETHER × 맵달SEOUL 판매분은 한터차트에 집계됩니다</div></div>
       <div class="ben-row"><div class="bh"><h6>결제혜택</h6><div class="bv"><span class="hl">맵달APP 첫 구매 2,000P</span> · 5% 적립</div><span class="chev">⌄</span></div><div class="bd">래플 응모 이력 보유 시 추가 2% 적립</div></div>
       <div class="ben-row"><div class="bh"><h6>맵달드림</h6><div class="bv"><span class="hl">오늘 도착 또는 성수 픽업!</span></div><span class="chev">⌄</span></div><div class="bd">서울 당일배송 · 성수 1F/4F 픽업 · 픽업 특전 대상</div></div>
-      <div class="ben-row"><div class="bh"><h6>글로벌배송</h6><div class="bv">관세·세금 <b>선지불(DDP)</b></div><span class="chev">⌄</span></div><div class="bd">전 세계 배송 · 체크아웃 자동 계산</div></div>
     </div>
-    <a class="src-link" id="srcLink" href="#" target="_blank" rel="noopener">원본 상품 정보 (KPOP2GETHER) ↗</a>
   </div>
 </div>
 <!-- 푸터 -->
@@ -642,7 +639,6 @@ renderDetail();
 if(location.protocol!=='file:'){
   fetch('k2g_texts.json').then(x=>x.json()).then(j=>{DET=j;renderDetail();}).catch(()=>{});
 }
-document.getElementById('srcLink').href='https://www.kpop2gether.com/shop/shopdetail.html?branduid='+uid;
 // 뷰어 카운터
 let v=60+(+uid%80);document.getElementById('vCount').textContent=v;
 setInterval(()=>{v=Math.max(20,v+Math.floor(Math.random()*9)-4);document.getElementById('vCount').textContent=v;},4000);

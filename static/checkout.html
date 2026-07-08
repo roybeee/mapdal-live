@@ -363,7 +363,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
         <div class="mega">
           <div><h5>GUIDE</h5><ul><li><a href="shipping.html">배송 안내</a></li><li><a href="returns.html">교환/반품</a></li></ul></div>
           <div><h5>COMPANY</h5><ul><li><a href="partnership.html">파트너십 문의</a></li><li><a href="ir.html">IR · 뉴스룸</a></li></ul></div>
-          <div class="visual" style="background:linear-gradient(160deg,#141414,#3A3A3A)"><b>NEED<br>HELP?</b><span>help@mealzip.kr · 11:00–21:00</span></div>
+          <div class="visual" style="background:linear-gradient(160deg,#141414,#3A3A3A)"><b>NEED<br>HELP?</b><span>ceo@mealzip.kr · 11:00–21:00</span></div>
         </div>
       </div>
     </nav>
@@ -471,14 +471,14 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <p>Not a store, A stage. 성수동에서 전 세계 팬에게 — Shop Seongsu, from Anywhere.<br><br>
       서울 성동구 성수이로16길 5<br>OPEN 11:00 — CLOSE 21:00</p>
     </div>
-    <div><h6>SHOP</h6><ul><li><a href="new-drops.html">New / Drops</a></li><li><a href="collections.html">Collections</a></li><li><a href="kfood.html">K-Food</a></li><li><a href="gift-sets.html">Gift Sets</a></li></ul></div>
-    <div><h6>SPACE</h6><ul><li><a href="mapdal-seoul.html">Floor Guide</a></li><li><a href="mapdal-seoul.html">1F 맵달STATION</a></li><li><a href="mapdal-seoul.html">오시는 길</a></li><li><a href="mapdal-seoul.html">팝업 제안 (IP 파트너십)</a></li></ul></div>
+    <div><h6>SHOP</h6><ul><li><a href="new-drops.html">New / Drops</a></li><li><a href="shop.html?cat=album">앨범 / 음반</a></li><li><a href="shop.html?cat=md">굿즈 / MD</a></li><li><a href="shop.html?cat=kfood">K-Food</a></li><li><a href="shop.html?cat=apparel">어패럴</a></li><li><a href="shop.html?cat=living">리빙 / 홈</a></li></ul></div>
+    <div><h6>SPACE</h6><ul><li><a href="mapdal-seoul.html">MAPDAL SEOUL</a></li></ul></div>
     <div><h6><a href="support.html" style="color:inherit">SUPPORT</a></h6><ul><li><a href="shipping.html">배송 안내</a></li><li><a href="returns.html">교환/반품</a></li><li><a href="partnership.html">파트너십 문의</a></li><li><a href="ir.html">IR</a></li></ul></div>
   </div>
   <div class="foot-base">
-    <span style="line-height:1.9">© 2026 MEAL ZIP INC. · MAPDAL SEOUL<br>
-주식회사 밀집 · 대표: 황인범, 김동경 · 서울 성동구 성수이로16길 5<br>
-사업자등록번호: [기입 필요] · 통신판매업신고: [기입 필요] · 고객센터: help@mealzip.kr</span>
+    <span style="line-height:1.9"><a href="/terms.html" style="color:#fff;text-decoration:none">이용약관</a>&nbsp;·&nbsp;<a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a>&nbsp;&nbsp;&nbsp;© 2026 MEAL ZIP INC. · MAPDAL SEOUL<br>
+맵달서울성수 · 대표: 황인범, 김동경 · 서울 성동구 성수이로16길 5<br>
+사업자등록번호: 394-85-03267 · 통신판매업신고: 제2026-서울성동-0426호 · 호스팅서비스 제공: Render Services, Inc. · 고객센터: ceo@mealzip.kr</span>
     <span>KR · EN · JP — KRW / USD / JPY</span>
   </div>
 </footer>
@@ -611,5 +611,50 @@ if(new URLSearchParams(location.search).get('fail'))
   document.getElementById('postClose').addEventListener('click',()=>layer.style.display='none');
 })();
 </script>
-</body>
-</html>
+<script id="mpAuthJs">(function(){function go(){
+fetch('/api/member/me').then(function(r){return r.json()}).catch(function(){return {login:false}}).then(function(d){
+try{if(document.getElementById('mpAuth'))return;
+var cart=null,els=document.querySelectorAll('a,button,div,span');
+for(var i=0;i<els.length;i++){var t=(els[i].textContent||'').replace(/\s+/g,' ').trim();
+if(t.length<12&&t.indexOf('CART')===0){cart=els[i];break}}
+var a=document.createElement('a');a.id='mpAuth';a.href='/account';
+a.textContent=(d&&d.login)?('MY \u00b7 '+(d.name||'\ud68c\uc6d0')):'\ub85c\uadf8\uc778';
+a.style.cssText='font-weight:700;font-size:12px;letter-spacing:.4px;color:inherit;text-decoration:none;margin-right:14px;white-space:nowrap;display:inline-flex;align-items:center;cursor:pointer';
+if(cart&&cart.parentNode){cart.parentNode.insertBefore(a,cart)}
+else{a.style.cssText='position:fixed;top:12px;right:14px;z-index:99999;background:#141414;color:#FFB000;font:700 12px sans-serif;padding:7px 13px;text-decoration:none';document.body.appendChild(a)}
+}catch(e){}})}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}})();</script><script id="mpLikeJs">(function(){
+var RX=/(^|\/)(product-[A-Za-z0-9._-]+\.html|album-detail\.html\?uid=[A-Za-z0-9_-]+)([?#]|$)/;
+var ST={login:false,liked:{}},seen={};
+function hrefOf(a){try{return a.getAttribute('href')||''}catch(e){return ''}}
+function key(h){return h.split('#')[0]}
+function nameOf(a){var t=(a.textContent||'').replace(/\s+/g,' ').trim();var i=t.indexOf('\u20A9');if(i>0)t=t.slice(0,i);return t.trim().slice(0,60)}
+function priceOf(a){var m=(a.textContent||'').match(/\u20A9\s*([\d,]+)/);return m?Number(m[1].replace(/,/g,'')):0}
+function imgOf(a){var i=a.querySelector('img');if(!i)return '';return (i.currentSrc||i.getAttribute('src')||'').slice(0,300)}
+function mkBtn(a,h){var b=document.createElement('button');b.className='mpLike';b.type='button';
+ b.style.cssText='position:absolute;top:8px;right:8px;z-index:5;width:32px;height:32px;border:0;border-radius:50%;background:rgba(255,255,255,.92);color:#E8332A;font-size:16px;line-height:32px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.18);padding:0';
+ paint(b,!!ST.liked[h]);
+ b.onclick=function(ev){ev.preventDefault();ev.stopPropagation();
+  if(!ST.login){if(confirm('로그인이 필요합니다. 로그인 페이지로 이동할까요?'))location.href='/account';return}
+  var on=!ST.liked[h];
+  fetch('/api/member/likes/page',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({href:h,name:nameOf(a),price:priceOf(a),img:imgOf(a),on:on})})
+  .then(function(r){if(!r.ok)throw 0;ST.liked[h]=on?1:0;paint(b,on)})
+  .catch(function(){alert('잠시 후 다시 시도해 주세요')})};
+ var st=getComputedStyle(a).position;if(st==='static'||!st)a.style.position='relative';
+ a.appendChild(b)}
+function paint(b,on){b.innerHTML=on?'\u2665':'\u2661';b.style.color=on?'#E8332A':'#141414';b.title=on?'\uC88B\uC544\uC694 \uCDE8\uC18C':'\uC88B\uC544\uC694'}
+function scan(){var as=document.querySelectorAll('a[href]'),fresh=[];
+ for(var i=0;i<as.length;i++){var a=as[i],h=key(hrefOf(a));
+  if(!RX.test(h))continue;if(!a.querySelector('img'))continue;if(seen[h])continue;
+  seen[h]=1;fresh.push([a,h])}
+ if(!fresh.length)return;
+ var pages=fresh.map(function(x){return x[1]});
+ fetch('/api/member/likes/state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pages:pages})})
+ .then(function(r){return r.json()}).catch(function(){return{login:false,liked:[]}})
+ .then(function(d){ST.login=!!d.login;(d.liked||[]).forEach(function(h){ST.liked[h]=1});
+  fresh.forEach(function(x){mkBtn(x[0],x[1])})})}
+function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go._t=setTimeout(scan,400)}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
+})();</script></body>
+</html><script id="mpFootWhite">(function(){try{var els=document.querySelectorAll("footer *,footer");for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";if(/사업자등록번호|통신판매업신고|맵달서울성수|MEAL ZIP/.test(t)&&t.length<420&&e.children.length<10){e.style.color="#fff";}}}catch(e){}})();</script>

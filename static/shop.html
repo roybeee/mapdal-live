@@ -373,8 +373,8 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <p>Not a store, A stage. 성수동에서 전 세계 팬에게 — Shop Seongsu, from Anywhere.<br><br>
       서울 성동구 성수이로16길 5<br>OPEN 11:00 — CLOSE 21:00</p>
     </div>
-    <div><h6>SHOP</h6><ul><li><a href="new-drops.html">New / Drops</a></li><li><a href="collections.html">Collections</a></li><li><a href="kfood.html">K-Food</a></li><li><a href="gift-sets.html">Gift Sets</a></li></ul></div>
-    <div><h6>SPACE</h6><ul><li><a href="mapdal-seoul.html">Floor Guide</a></li><li><a href="mapdal-seoul.html">1F 맵달STATION</a></li><li><a href="mapdal-seoul.html">오시는 길</a></li><li><a href="mapdal-seoul.html">팝업 제안 (IP 파트너십)</a></li></ul></div>
+    <div><h6>SHOP</h6><ul><li><a href="new-drops.html">New / Drops</a></li><li><a href="shop.html?cat=album">앨범 / 음반</a></li><li><a href="shop.html?cat=md">굿즈 / MD</a></li><li><a href="shop.html?cat=kfood">K-Food</a></li><li><a href="shop.html?cat=apparel">어패럴</a></li><li><a href="shop.html?cat=living">리빙 / 홈</a></li></ul></div>
+    <div><h6>SPACE</h6><ul><li><a href="mapdal-seoul.html">MAPDAL SEOUL</a></li></ul></div>
     <div><h6><a href="support.html" style="color:inherit">SUPPORT</a></h6><ul><li><a href="shipping.html">배송 안내</a></li><li><a href="returns.html">교환/반품</a></li><li><a href="partnership.html">파트너십 문의</a></li><li><a href="ir.html">IR</a></li></ul></div>
   </div>
   <div class="foot-base">
@@ -493,5 +493,12 @@ function scan(){var as=document.querySelectorAll('a[href]'),fresh=[];
   fresh.forEach(function(x){mkBtn(x[0],x[1])})})}
 function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go._t=setTimeout(scan,400)}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
-})();</script></body>
+})();</script><footer id="mpFooter" style="background:#141414;color:#fff;font:12px/1.9 'IBM Plex Sans KR',sans-serif;padding:26px 20px 34px;margin-top:50px">
+<div style="max-width:1180px;margin:0 auto">
+<div style="margin-bottom:10px"><a href="/terms.html" style="color:#fff;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a></div>
+<div><span style="color:#fff;font-weight:700">맵달서울성수</span> · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 (성수동2가)<br>
+사업자등록번호 394-85-03267 · 통신판매업신고 제2026-서울성동-0426호 · 전화 010-8176-8525 · 이메일 ceo@mealzip.kr<br>
+호스팅서비스 제공: Render Services, Inc.<br>
+<span style="font-size:11px;color:#777">MAPDAL SEOUL — SHOP SEONGSU, FROM ANYWHERE.</span></div>
+</div></footer></body>
 </html><script id="mpFootWhite">(function(){try{var els=document.querySelectorAll("footer *,footer");for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";if(/사업자등록번호|통신판매업신고|맵달서울성수|MEAL ZIP/.test(t)&&t.length<420&&e.children.length<10){e.style.color="#fff";}}}catch(e){}})();</script>

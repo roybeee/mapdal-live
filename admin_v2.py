@@ -2779,8 +2779,8 @@ TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta
 <p>이 약관은 2026년 7월 7일부터 시행합니다.</p>
 </main></body></html>'''
 
-FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#fff;font:12px/1.9 'IBM Plex Sans KR',sans-serif;padding:26px 20px 34px;margin-top:50px">
-<div style="max-width:1180px;margin:0 auto">
+FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#fff;font:12px/1.9 'IBM Plex Sans KR',sans-serif;margin:0;padding:0;border-top:1px solid rgba(255,255,255,.09)">
+<div style="max-width:1440px;margin:0 auto;padding:26px 48px 40px">
 <div style="margin-bottom:10px"><a href="/terms.html" style="color:#fff;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy.html" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a></div>
 <div><span style="color:#fff;font-weight:700">맵달서울성수</span> · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 (성수동2가)<br>
 사업자등록번호 {reg} · 통신판매업신고 {mail_order} · 전화 {phone} · 이메일 {email}<br>
@@ -2905,7 +2905,8 @@ def _patch_legacy_footer(html):
     법정 표기는 표준 푸터(mpFooter) 단일 출처로 일원화한다."""
     html, n1 = re.subn(r'<div class="foot-base">.*?</div>\s*', '', html, flags=re.S)
     html, n2 = re.subn(r'<script id="mpFootWhite">.*?</script>\s*', '', html, flags=re.S)
-    return html, n1 + n2
+    html, n3 = re.subn(r'<footer id="mpFooter".*?</footer>\s*', '', html, flags=re.S)
+    return html, n1 + n2 + n3
 
 def _inject_auth(html):
     html, patched = _patch_legacy_footer(html)

@@ -2161,9 +2161,11 @@ def pdp(pid: str):
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
     soldout = num(r.get('soldout')) or num(r.get('stock')) <= 0
     img = (r.get('img') or '').strip()
-    # 카테고리 칩 → shop.html 해당 필터로 이동
+    # 카테고리 칩 → 해당 목록으로 이동 (앨범은 KPOP(음반) 전용관 직행)
     cat = norm_cat(r.get('category'))
-    cathtml = ('<a class="cat" href="/shop.html?cat=%s">%s</a>' % (cat, h(_CAT_LABEL.get(cat, '')))) if cat else ''
+    _cu = '/kpop' if cat == 'album' else ('/shop.html?cat=' + cat)
+    _cl = 'KPOP(음반)' if cat == 'album' else _CAT_LABEL.get(cat, '')
+    cathtml = ('<a class="cat" href="%s">%s</a>' % (_cu, h(_cl))) if cat else ''
     # 갤러리(추가 이미지) — 클릭 시 메인 이미지 교체
     gal = [u.strip() for u in re.split(r'[\r\n]+', r.get('gallery') or '') if u.strip().startswith('http')]
     galhtml = ''
@@ -3442,9 +3444,130 @@ def _serve_k2g_from_db(html):
     except Exception:
         return html
 
+# ══════════════════════════════════════════════════════════════════════
+# KPOP(음반) 카테고리 분리 — 전 페이지 서빙 시점 변환 (정적 HTML 무수정)
+#   · 메뉴바: SHOP 앞에 KPOP(음반) 신설 (데스크톱 nav + 모바일 mpCatBar)
+#   · /kpop: shop.html을 앨범 전용관으로 변환 서빙 (K2G 카탈로그 + mp:: 앨범)
+#   · /shop.html: 앨범 칩·카드 제거 + K2G 배열 비움(응답 경량화), 기본 뷰 ALL
+#   · 구형 딥링크 shop.html?cat=album → /kpop 전역 재작성 + JS 리다이렉트
+#   ※ _kpop_apply는 반드시 _serve_k2g_from_db 이후에 실행 (SHOP의 K2G 비움이
+#      DB 재구성으로 되살아나지 않도록) — _inject_auth 내 호출 순서로 보장.
+_KPOP_MARK = '<!--MP_KPOP-->'   # /kpop 라우트가 파이프라인 진입 전에 찍는 모드 마커
+
+# 데스크톱 nav의 SHOP 항목 (home/shop/support/album-detail 등 실측 패턴, class 변형 허용)
+_KPOP_NAV_RE = re.compile(
+    r'<div>\s*<a class="top(?:[^"]*)" href="(?:\./)?shop\.html"[^>]*>\s*SHOP\s*</a>\s*</div>')
+# col-card 마크업 (정적 카드와 mp:: 주입 카드 동일 형태 — 내부에 중첩 <a> 없음)
+_KPOP_COL_ALBUM_RE = re.compile(r'\s*<a class="col-card" data-cat="album".*?</a>', re.S)
+_KPOP_COL_OTHER_RE = re.compile(
+    r'\s*<a class="col-card" data-cat="(?:kfood|md|apparel|living)".*?</a>', re.S)
+# 필터 바 (내부는 <button>뿐 — 첫 </div>가 바의 닫힘)
+_KPOP_FBAR_RE = re.compile(r'\s*<div class="filter-bar">.*?</div>', re.S)
+
+def _kpop_empty_k2g(html):
+    """K2G 인라인 배열(DB 재구성분 포함)을 빈 배열로 치환 — SHOP 경량화 전용."""
+    b = _find_k2g_array_bounds(html)
+    if not b:
+        return html
+    return html[:b[0]] + '[]' + html[b[1]:]
+
+def _kpop_apply(html):
+    """전 페이지 공통 변환 + 페이지 시그니처별(SHOP/KPOP/앨범상세) 모드 변환."""
+    if not isinstance(html, str) or '</html>' not in html:
+        return html
+    is_kpop = _KPOP_MARK in html[:200]
+
+    # ── [전역 1] 메뉴바: SHOP 앞에 KPOP(음반) 삽입 (멱등) ─────────────
+    if 'href="/kpop"' not in html:
+        html = _KPOP_NAV_RE.sub(
+            lambda m: '<div><a class="top" href="/kpop">KPOP(음반)</a></div>' + m.group(0),
+            html, count=1)
+
+    # ── [전역 2] 구형 앨범 딥링크·라벨 재작성 ─────────────────────────
+    html = html.replace('shop.html?cat=album', '/kpop')
+    html = html.replace('>SHOP · 앨범/음반<', '>KPOP(음반)<')            # 앨범상세 크럼
+    html = html.replace('<a href="/kpop">앨범 / 음반</a>',
+                        '<a href="/kpop">KPOP(음반)</a>')               # 정적 푸터 라벨
+
+    # ── [모드 판별] shop.html만 shopGrid+filter-bar 동시 보유 (전 페이지 실측) ──
+    is_shop = (not is_kpop) and 'id="shopGrid"' in html and 'class="filter-bar"' in html
+    is_adet = (not is_kpop) and (not is_shop) and 'const DET_EMB=' in html
+
+    if is_shop:
+        # ① 필터 바: 앨범/음반 칩 제거, ALL 기본 활성
+        html = html.replace('\n    <button class="on" data-f="album">앨범 / 음반</button>', '', 1)
+        html = html.replace('<button class="on" data-f="album">앨범 / 음반</button>', '', 1)
+        html = html.replace('<button data-f="all">ALL</button>',
+                            '<button class="on" data-f="all">ALL</button>', 1)
+        # ② 히어로 카피 · 검색 플레이스홀더
+        html = html.replace(
+            '<p>굿즈, 앨범, 어패럴, 리빙 — 품목별로 탐색합니다.',
+            '<p>굿즈, 어패럴, K-FOOD, 리빙 — 품목별로 탐색합니다. 앨범/음반은 KPOP(음반) 메뉴에서 만나보세요.', 1)
+        html = html.replace(
+            '상품 · 아티스트 · 앨범 검색 (예: 원호, DAYDREAM, 후디, 사인회)',
+            '상품 검색 (예: 후디, 키링, 떡볶이)', 1)
+        # ③ 앨범 col-card 제거 (정적 2종 + mp:: 주입 앨범 — 잔여분은 ④ 스윕이 보증)
+        html = _KPOP_COL_ALBUM_RE.sub('', html)
+        # ④ JS: 기본 F='all' + ?cat=album 리다이렉트 + 앨범 col-card 스윕
+        html = html.replace(
+            "let F='album',Q='',VIEW=K2G,ptr=0;",
+            "let F='all',Q='',VIEW=K2G,ptr=0;"
+            "if(new URLSearchParams(location.search).get('cat')==='album'){location.replace('/kpop')}"
+            "/*mpShopSweep*/document.querySelectorAll('#shopGrid .col-card[data-cat=\"album\"]')"
+            ".forEach(function(c){c.remove()});", 1)
+        # ⑤ 앨범 렌더 경로 차단(더보기 포함) + K2G 배열 비움(응답 경량화)
+        html = html.replace("function albumEligible(){return F==='all'||F==='album';}",
+                            "function albumEligible(){return false;}", 1)
+        html = _kpop_empty_k2g(html)
+
+    elif is_kpop:
+        # ① 타이틀 · 히어로
+        html = html.replace('<title>SHOP — MAPDAL SEOUL</title>',
+                            '<title>KPOP(음반) — MAPDAL SEOUL</title>', 1)
+        html = html.replace('<div class="kicker">SHOP · BY CATEGORY</div>',
+                            '<div class="kicker">KPOP · 앨범 / 음반</div>', 1)
+        html = html.replace('<h1>SHOP</h1>', '<h1>KPOP(음반)</h1>', 1)
+        html = html.replace(
+            '<p>굿즈, 앨범, 어패럴, 리빙 — 품목별로 탐색합니다. 컬렉션(세계관)으로 쇼핑하려면 COLLECTIONS로 이동하세요.</p>',
+            '<p>KPOP 앨범·음반 전용관 — 최신 발매반부터 사인회·영상통화 특전 응모까지 한 곳에서 만나보세요.</p>', 1)
+        html = html.replace(
+            '상품 · 아티스트 · 앨범 검색 (예: 원호, DAYDREAM, 후디, 사인회)',
+            '아티스트 · 앨범 검색 (예: 원호, DAYDREAM, 사인회)', 1)
+        # ② 카테고리 필터 바 제거 (앨범 전용관 — 카테고리 개념 불필요)
+        html = _KPOP_FBAR_RE.sub('', html, count=1)
+        # ③ 앨범 외 col-card 제거 (정적 + mp:: 주입분) + JS 스윕(동적 잔여 보증)
+        html = _KPOP_COL_OTHER_RE.sub('', html)
+        if 'mpKpopSweep' not in html:                    # 멱등 가드
+            html = html.replace(
+                "let F='album',Q='',VIEW=K2G,ptr=0;",
+                "let F='album',Q='',VIEW=K2G,ptr=0;"
+                "/*mpKpopSweep*/document.querySelectorAll('#shopGrid .col-card:not([data-cat=\"album\"])')"
+                ".forEach(function(c){c.remove()});", 1)
+        # ④ 데스크톱 nav 활성 표시: SHOP → KPOP(음반)
+        html = html.replace('class="top active-page" href="shop.html"',
+                            'class="top" href="shop.html"', 1)
+        html = html.replace('class="top" href="/kpop"',
+                            'class="top active-page" href="/kpop"', 1)
+        html = html.replace(_KPOP_MARK, '', 1)           # 모드 마커 제거
+
+    elif is_adet:
+        # 앨범 상세: 활성 메뉴를 KPOP(음반)으로 이관 (크럼은 전역 2에서 처리됨)
+        html = html.replace('class="top active-page" href="shop.html"',
+                            'class="top" href="shop.html"', 1)
+        html = html.replace('class="top" href="/kpop"',
+                            'class="top active-page" href="/kpop"', 1)
+
+    return html
+
+# 모바일 mpCatBar 폴백 배열에도 KPOP(음반) 선행 삽입 (nav.main 없는 페이지 대비)
+MOBNAV_SNIPPET = MOBNAV_SNIPPET.replace(
+    "{label:'SHOP',href:'/shop.html',red:false},",
+    "{label:'KPOP(음반)',href:'/kpop',red:false},{label:'SHOP',href:'/shop.html',red:false},", 1)
+
 def _inject_auth(html):
     html = _serve_k2g_from_db(html)
     html = _inject_shop_products(html)
+    html = _kpop_apply(html)
     html, patched = _patch_legacy_footer(html)
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
@@ -4016,6 +4139,24 @@ def api_m_withdraw(request: Request, body: dict = Body(...)):
     resp = JSONResponse({'ok': True})
     resp.delete_cookie('mp_member')
     return resp
+
+# ── /kpop: shop.html을 앨범 전용관 모드로 변환 서빙 ──────────────────────
+#    ※ 캐치올(serve_site)보다 먼저 등록되어야 한다 (등록 순서 = 매칭 순서).
+@admin_router.get('/kpop')
+def kpop_page():
+    html = None
+    try:
+        ensure_ready()
+        ov = one('SELECT html FROM page_edits WHERE path=?', ('shop.html',))
+        if ov: html = ov['html']                 # 관리자 편집본 우선 (serve_site와 동일 규칙)
+    except Exception:
+        pass
+    if html is None:
+        fp = os.path.join(STATIC_DIR, 'shop.html')
+        if not os.path.isfile(fp):
+            return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center"><h2>KPOP(음반) 준비 중입니다</h2><a href="/">MAPDAL SEOUL 홈으로</a>', status_code=503)
+        html = open(fp, 'rb').read().decode('utf-8', errors='replace')
+    return HTMLResponse(_inject_auth(_KPOP_MARK + html), headers={'Cache-Control': 'no-cache'})
 
 # ═══════ 정적 서빙 대체 (편집본 우선 · 반드시 모듈 마지막 라우트) ═══════
 import mimetypes

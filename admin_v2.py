@@ -2410,7 +2410,9 @@ def pdp(pid: str):
         'bmsg': '품절 (SOLD OUT)' if soldout else '구매 가능 · 재고 %d' % num(r.get('stock')),
         'descr': h(r.get('descr')) or 'MAPDAL SEOUL 상품입니다.',
         'imgtag': ('<img src="%s" alt="">' % h(img)) if img else 'MAPDAL SEOUL',
-        'og': ('<meta property="og:image" content="%s">' % h(img)) if img else '',
+        'og': ('<meta property="og:image" content="%s"><meta name="twitter:card" content="summary_large_image">'
+               % h(img if img.startswith('http') else
+                   ('https://mapdal.kr' + img if img.startswith('/') else OG_IMAGE_URL))),
         'cathtml': cathtml, 'galhtml': galhtml, 'detailhtml': detailhtml,
         'pid': h(pid), 'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false'})
 
@@ -3885,12 +3887,62 @@ MOBNAV_SNIPPET = MOBNAV_SNIPPET.replace(
     "{label:'SHOP',href:'/shop',red:false},",
     "{label:'KPOP(음반)',href:'/kpop',red:false},{label:'SHOP',href:'/shop',red:false},", 1)
 
+# ═══════ OG(오픈그래프) 메타 전역 주입 — 카톡/문자/슬랙 링크 썸네일 ═══════
+#  · 정적/편집본 HTML 전체에 og:image 등 부재 시 <title> 직후 자동 삽입
+#  · 페이지별 <title>/<meta description>을 og:title/og:description으로 승계
+#  · 이미지 파일: static/og-image.png (1200×630) → /og-image.png 로 서빙
+import html as _pyhtml
+
+OG_SITE = 'MAPDAL SEOUL'
+OG_TITLE_DEFAULT = 'MAPDAL SEOUL — Shop Seongsu, from Anywhere'
+OG_DESC_DEFAULT = '성수에서 전 세계로 — K-POP 음반 · MD · K-FOOD · 어패럴. K-컬처 플래그십 맵달SEOUL 공식 스토어.'
+OG_IMAGE_URL = 'https://mapdal.kr/og-image.png'
+
+_OG_TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.I | re.S)
+_OG_DESC_RE = re.compile(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)["\']', re.I)
+_OG_HEAD_RE = re.compile(r'<head[^>]*>', re.I)
+
+def _og_esc(s):
+    return (_pyhtml.unescape(str(s or '')).replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;').replace('"', '&quot;'))
+
+def _inject_og(html):
+    if '<head' not in html[:4000].lower():
+        return html                                  # HTML 문서가 아니면 통과
+    parts = []
+    if 'og:title' not in html:
+        m = _OG_TITLE_RE.search(html)
+        t = _og_esc(re.sub(r'\s+', ' ', m.group(1)).strip()) if m else ''
+        t = t or OG_TITLE_DEFAULT
+        dm = _OG_DESC_RE.search(html)
+        dsc = _og_esc(dm.group(1).strip()) if dm and dm.group(1).strip() else OG_DESC_DEFAULT
+        parts += ['<meta property="og:type" content="website">',
+                  '<meta property="og:site_name" content="%s">' % _og_esc(OG_SITE),
+                  '<meta property="og:title" content="%s">' % t,
+                  '<meta property="og:description" content="%s">' % dsc]
+    if 'og:image' not in html:
+        parts += ['<meta property="og:image" content="%s">' % OG_IMAGE_URL,
+                  '<meta property="og:image:width" content="1200">',
+                  '<meta property="og:image:height" content="630">']
+    if 'twitter:card' not in html:
+        parts += ['<meta name="twitter:card" content="summary_large_image">']
+    if not parts:
+        return html
+    block = '\n' + '\n'.join(parts)
+    i = html.lower().find('</title>')                # 문서 앞부분 삽입 — 크롤러 부분 읽기 대응
+    if i >= 0:
+        j = i + len('</title>')
+        return html[:j] + block + html[j:]
+    hm = _OG_HEAD_RE.search(html)
+    return (html[:hm.end()] + block + html[hm.end():]) if hm else html
+
 def _inject_auth(html):
     html = _serve_k2g_from_db(html)
     html = _inject_shop_products(html)
     html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
     html, patched = _patch_legacy_footer(html)
+    html = _inject_og(html)
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET

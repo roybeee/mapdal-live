@@ -116,9 +116,15 @@ def seed():
         for it in json.load(open(os.path.join(BASE, 'data', 'k2g_catalog.json'))):
             price = int(it['p'].replace(',', '')) if it['p'] else 0
             rows.append((f"k2g::{it['u']}", it['n'], price, int(it['s']), 'k2g', None))
+        try:
+            removed = {x['id'] for x in c.all('SELECT id FROM own_removed')}
+        except Exception:
+            removed = set()
         ins = ('INSERT INTO products VALUES(?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING'
                if IS_PG else 'INSERT OR IGNORE INTO products VALUES(?,?,?,?,?,?)')
-        for r in rows: c.exec(ins, r)
+        for r in rows:
+            if r[0] in removed: continue
+            c.exec(ins, r)
         print(f'[seed] products: {len(rows)} ({"PostgreSQL" if IS_PG else "SQLite"})')
 
 from contextlib import asynccontextmanager

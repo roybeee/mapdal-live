@@ -1292,7 +1292,7 @@ async function loadProducts(p){ppage=p;const q=new URLSearchParams({page:p});
  <td class="right">${r.price==null?'-':(can(2)?`<input class="stockin" style="width:88px" id="pr${k}" type="number" min="0" value="${r.price}">`:won(r.price))}</td>
  <td class="right">${can(1)?`<input class="stockin" id="st${k}" type="number" min="0" value="${r.stock}">`:r.stock}</td>
  <td><input type="checkbox" id="so${k}" ${r.soldout?'checked':''} ${can(1)?`onchange="saveProd('${k}',true)"`:'disabled'}></td>
- <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a>${can(2)&&(r.id.indexOf('mp::')===0||r.id.indexOf('k2g::')===0)?` <button class="btn sm ghost" style="color:#c0392b;border-color:#c0392b" onclick="delProd('${k}')">삭제</button>`:''}</td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
+ <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a>${can(2)?` <button class="btn sm ghost" style="color:#c0392b;border-color:#c0392b" onclick="delProd('${k}')">삭제</button>`:''}</td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadProducts')}`;}catch(e){$('#plist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function saveProd(k,tg){const body={id:window._pk[k],soldout:document.getElementById('so'+k).checked?1:0};
  if(!tg){body.stock=Number(document.getElementById('st'+k).value);const pr=document.getElementById('pr'+k);if(pr)body.price=Number(pr.value)}
@@ -1300,7 +1300,9 @@ async function saveProd(k,tg){const body={id:window._pk[k],soldout:document.getE
 async function delProd(k){const id=window._pk[k];const isK2g=id.indexOf('k2g::')===0;
  const warn=isK2g
   ?'이 앨범을 카탈로그에서 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 앨범 목록과 앨범 상세에서 즉시 사라지고 구매가 차단됩니다.\n· 삭제 기록이 남아 카탈로그를 다시 불러와도 목록에 재노출되지 않습니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.'
-  :'이 상품을 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 목록과 /p/ 상세 페이지에서 즉시 사라집니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.';
+  :(id.indexOf('mp::')===0
+    ?'이 상품을 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 목록과 /p/ 상세 페이지에서 즉시 사라집니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.'
+    :'이 상품을 삭제할까요?\n\n· 상품 ID: '+id+'\n· SHOP 정적 카드와 /p/ 상세, 재고 목록에서 즉시 사라집니다.\n· 삭제 기록이 남아 데이터 재시드 후에도 재노출되지 않습니다.\n· 기존 주문·문의 이력은 보존됩니다.\n· 이 작업은 되돌릴 수 없습니다.');
  if(!confirm(warn))return;
  try{await api('/admin/api/products/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
  toast('삭제되었습니다');loadProducts(ppage)}catch(e){toast(e.message)}}
@@ -1768,8 +1770,8 @@ def api_product_delete(request: Request, body: dict = Body(...)):
     주문·Q&A 이력은 보존하고, 재입고 알림 대기만 함께 정리한다."""
     a = get_actor(request); need(a, 2, '상품 삭제')
     pid = str(body.get('id') or '').strip()
-    if not (pid.startswith('mp::') or pid.startswith('k2g::')):
-        raise HTTPException(400, '삭제할 수 없는 상품 유형입니다')
+    if not pid:
+        raise HTTPException(400, '상품 ID가 없습니다')
     r = one('SELECT %s AS name FROM products WHERE id=?' % (_state['pname'] or 'id'), (pid,))
     if not r:
         raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -1783,6 +1785,18 @@ def api_product_delete(request: Request, body: dict = Body(...)):
         except Exception:
             pass  # 이미 기록됨(PK 충돌) — 무시
         _k2g_rm_cache['set'] = None  # 삭제목록 캐시 즉시 무효화
+    elif not pid.startswith('mp::'):
+        # 정적 백필(own) 상품: 톰스톤 기록 → 시드 재실행·SHOP 정적 카드 노출 모두 차단
+        try:
+            run('CREATE TABLE IF NOT EXISTS own_removed(id TEXT PRIMARY KEY, name TEXT, created TEXT, by_admin TEXT)')
+        except Exception:
+            pass
+        try:
+            run('INSERT INTO own_removed(id, name, created, by_admin) VALUES(?,?,?,?)',
+                (pid, str(r.get('name') or '')[:300], now_iso(), a['name']))
+        except Exception:
+            pass  # 이미 기록됨 — 무시
+        _own_rm_cache['set'] = None
     try: _k2g_cache_bust()           # 카탈로그 캐시 즉시 무효화
     except Exception: pass
     audit(a, '상품삭제', pid, str(r.get('name') or ''))
@@ -3376,6 +3390,40 @@ def _mp_shop_cards():
                         format(num(r.get('price')), ','), '품절' if soldout else '담기 +'))
     return '<!-- mpShopDyn -->' + ''.join(cards) + '<!-- /mpShopDyn -->'
 
+_own_rm_cache = {'t': 0.0, 'set': None}
+
+def _own_removed_pages():
+    """삭제된 정적(own) 상품의 페이지 슬러그 집합 (product-… 형태, 30초 캐시)."""
+    if _own_rm_cache['set'] is not None and time.time() - _own_rm_cache['t'] < 30:
+        return _own_rm_cache['set']
+    try:
+        s = {str(r['id']).split('::')[0].replace('.html', '')
+             for r in rows('SELECT id FROM own_removed')}
+    except Exception:
+        s = _own_rm_cache['set'] or set()
+    _own_rm_cache.update(t=time.time(), set=s)
+    return s
+
+_CARD_RE_CACHE = {}
+
+def _hide_removed_static_cards(html):
+    """삭제된 own 상품의 정적 col-card를 목록 페이지 서빙 시 제거 (멱등)."""
+    pages = _own_removed_pages()
+    if not pages or 'col-card' not in html:
+        return html
+    for pg in pages:
+        rx = _CARD_RE_CACHE.get(pg)
+        if rx is None:
+            rx = re.compile(
+                r'<(?:a|div)[^>]*class="[^"]*col-card[^"]*"[^>]*href="/?(?:%s)(?:\.html)?[?#"][^\x00]*?</(?:a|div)>'
+                % re.escape(pg), re.S)
+            # 위 패턴이 과탐지될 수 있어, 안전한 앵커 기반 2차 패턴을 기본 사용
+            rx = re.compile(
+                r'<a class="col-card"[^>]*href="/?%s(?:\.html)?"[\s\S]*?</a>' % re.escape(pg))
+            _CARD_RE_CACHE[pg] = rx
+        html = rx.sub('', html, count=1)
+    return html
+
 def _inject_shop_products(html):
     if 'id="shopGrid"' not in html or 'mpShopDyn' in html:
         return html
@@ -3677,6 +3725,7 @@ MOBNAV_SNIPPET = MOBNAV_SNIPPET.replace(
 def _inject_auth(html):
     html = _serve_k2g_from_db(html)
     html = _inject_shop_products(html)
+    html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
     html, patched = _patch_legacy_footer(html)
     add = ''

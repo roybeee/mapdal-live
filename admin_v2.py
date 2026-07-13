@@ -3349,9 +3349,6 @@ def _k2g_migrate_from_static():
       배열의 품절 플래그가 1이면 soldout 반영 (관리자 수정값은 보존)
     · 배열에만 있는 앨범: 신규 INSERT (k2g_removed에 기록된 uid는 제외)
     · 모든 k2g 행에 sort_order가 채워지면 이후 호출은 건너뛴다."""
-    if one("SELECT 1 FROM products WHERE id LIKE ? AND sort_order IS NULL LIMIT 1", ('k2g::%',)) is None \
-       and one("SELECT 1 FROM products WHERE id LIKE ? LIMIT 1", ('k2g::%',)) is not None:
-        return
     fp = os.path.join(STATIC_DIR, 'shop.html')
     if not os.path.isfile(fp):
         return
@@ -3363,8 +3360,13 @@ def _k2g_migrate_from_static():
         arr = json.loads(html[b[0]:b[1]])
     except Exception:
         return
-    if not isinstance(arr, list):
-        return
+    # 정적 배열의 uid 집합과 DB k2g 행 수 비교 — 신규 항목이 있으면 백필 계속
+    static_uids = {str(r[0]) for r in arr if isinstance(r, list) and len(r) >= 5}
+    db_count = one("SELECT COUNT(*) AS n FROM products WHERE id LIKE ?", ('k2g::%',))
+    db_n = db_count['n'] if db_count else 0
+    if db_n > 0 and db_n >= len(static_uids):
+        if one("SELECT 1 FROM products WHERE id LIKE ? AND sort_order IS NULL LIMIT 1", ('k2g::%',)) is None:
+            return
     removed = _k2g_removed_set()
     nm, pr = _state['pname'] or 'name', _state['pprice'] or 'price'
     existing = {r['id']: r for r in rows(

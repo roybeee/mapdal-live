@@ -170,8 +170,13 @@ def _db_set(data: dict) -> None:
                 "key TEXT PRIMARY KEY, value JSONB NOT NULL,"
                 "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
             )
+            # 다른 코드가 먼저 만든 구버전 테이블(updated_at 없음) 자동 보강
             cur.execute(
-                "INSERT INTO site_settings(key,value) VALUES(%s,%s) "
+                "ALTER TABLE site_settings "
+                "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+            )
+            cur.execute(
+                "INSERT INTO site_settings(key,value) VALUES(%s,%s::jsonb) "
                 "ON CONFLICT (key) DO UPDATE "
                 "SET value=EXCLUDED.value, updated_at=now()",
                 (SETTINGS_KEY, json.dumps(data, ensure_ascii=False)),

@@ -1702,7 +1702,10 @@ def api_banner_put(request: Request, body: dict = Body(...)):
         data = hero_api.HeroData(**body).model_dump()
     except Exception as e:
         raise HTTPException(400, '배너 데이터 형식 오류: %s' % str(e)[:200])
-    hero_api.save_data(data)
+    try:
+        hero_api.save_data(data)
+    except Exception as e:
+        raise HTTPException(502, '배너 저장 실패(DB): %s' % str(e)[:180])
     hero_api._cache['data'] = None  # 5초 캐시 즉시 무효화
     audit(a, '메인배너수정', '%d개 슬라이드' % len(data['slides']), '')
     return {'ok': True, 'slides': len(data['slides'])}

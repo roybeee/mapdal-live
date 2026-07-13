@@ -142,6 +142,31 @@ async def lifespan(app):
 
 app = FastAPI(title='MAPDAL SEOUL API v2', lifespan=lifespan)
 
+# ── 클린 URL: .html 숨김 · 홈은 /home ─────────────────────────────────────
+_STATIC_DIR = os.path.join(BASE, 'static')
+_HOME_FILE = 'mapdal_home_mockup_v1.html'
+
+@app.middleware('http')
+async def clean_urls(request, call_next):
+    if request.method in ('GET', 'HEAD'):
+        p = request.url.path
+        if p == '/home':
+            # 클린 주소 → 실제 홈 파일을 내부 매핑 (주소창은 /home 유지)
+            request.scope['path'] = '/' + _HOME_FILE
+        elif p.endswith('.html'):
+            # 구식 .html 주소 → 클린 주소로 영구 이동 (주소창 정리)
+            name = p.lstrip('/')
+            tgt = '/home' if name in (_HOME_FILE, 'index.html') else p[:-5]
+            q = ('?' + request.url.query) if request.url.query else ''
+            return RedirectResponse(tgt + q, status_code=301)
+        elif p != '/' and '.' not in p.rsplit('/', 1)[-1]:
+            # 확장자 없는 경로 → 동명 html 파일이 있으면 내부 매핑 (API·관리자 경로는 파일이 없어 통과)
+            cand = p.strip('/') + '.html'
+            full = os.path.normpath(os.path.join(_STATIC_DIR, cand))
+            if full.startswith(_STATIC_DIR + os.sep) and os.path.isfile(full):
+                request.scope['path'] = '/' + cand
+    return await call_next(request)
+
 # ── API ─────────────────────────────────────────────────────────
 @app.get('/api/config')
 def config():
@@ -259,7 +284,7 @@ def healthz():
     return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite'}
 
 @app.get('/')
-def root(): return RedirectResponse('/mapdal_home_mockup_v1.html')
+def root(): return RedirectResponse('/home')
 try:
     from hero_api import router as hero_router
     app.include_router(hero_router)

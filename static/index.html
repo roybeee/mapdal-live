@@ -302,10 +302,16 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 <style>
 /* ---- 히어로 슬라이더 (기존 .hero 토큰·타이포 상속) ---- */
 .mzh{padding:0}
-.mzh .mzh-track{display:flex;transition:transform .65s cubic-bezier(.22,.8,.24,1);will-change:transform}
-.mzh .mzh-slide{flex:0 0 100%;position:relative;min-height:0;display:block;color:#fff;text-decoration:none;overflow:hidden}
-.mzh .mzh-slide.is-img{aspect-ratio:2.4/1;max-height:640px;min-height:240px}
+.mzh .mzh-track{display:flex;transition:transform .65s cubic-bezier(.22,.8,.24,1);will-change:transform;height:clamp(500px,41.7vw,640px)}
+.mzh .mzh-slide{flex:0 0 100%;position:relative;height:100%;min-height:0;display:block;color:#fff;text-decoration:none;overflow:hidden}
 .mzh .mzh-slide .hero-inner{position:relative;z-index:2}
+.mzh .mzh-slide .hero-inner{height:100%;box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding-top:16px;padding-bottom:44px}
+.mzh .mzh-slide h1{font-size:clamp(42px,6vw,96px)}
+.mzh .mzh-slide .eyebrow{margin-bottom:10px}
+.mzh .mzh-slide .hero-inner p{margin:12px 0 20px}
+.mzh .mzh-slide .drop-chip{margin-top:14px;padding:10px 14px}
+.mzh .mzh-slide .bg-type{display:none}
+@media (max-width:1279px){.mzh .mzh-slide .drop-chip{display:none}}
 .mzh .mzh-img{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;min-height:0!important;object-fit:cover!important;object-position:center!important;margin:0!important;padding:0!important;filter:none!important;display:block!important;z-index:1}
 .mzh .mzh-slide.is-img::after{content:"";position:absolute;inset:0;z-index:1;
   background:linear-gradient(90deg,rgba(20,20,20,.28) 0%,transparent 45%)}
@@ -330,6 +336,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 @keyframes mzhRun{from{width:0}to{width:100%}}
 @media (max-width:680px){
   .mzh-nav{display:none}
+  .mzh .mzh-track{height:480px}
 }
 @media (prefers-reduced-motion:reduce){
   .mzh .mzh-track{transition:none}
@@ -371,15 +378,16 @@ function esc(s){return String(s==null?"":s)
   .replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
 
 function slideHTML(s){
-  var isImg=!!s.img, tagOpen, tagClose;
-  if(s.href){tagOpen='<a class="mzh-slide'+(isImg?' is-img':'')+'" href="'+esc(s.href)+'">';tagClose="</a>";}
-  else{tagOpen='<div class="mzh-slide'+(isImg?' is-img':'')+'">';tagClose="</div>";}
+  var isImg=!!s.img;
+  var hasText=!!(s.title||s.title2||s.eyebrow||s.sub||s.cta_label||s.cta2_label||s.chip);
+  var useA=s.href&&!hasText, tagOpen, tagClose;
+  if(useA){tagOpen='<a class="mzh-slide'+(isImg?' is-img':'')+'" href="'+esc(s.href)+'">';tagClose="</a>";}
+  else{tagOpen='<div class="mzh-slide'+(isImg?' is-img':'')+'"'+(s.href?' data-href="'+esc(s.href)+'" style="cursor:pointer"':'')+'>';tagClose="</div>";}
   var h="";
   if(isImg){
     h+='<img class="mzh-img" src="'+esc(s.img)+'" alt="'+esc(s.title||"프로모션 배너")+'" '+
        'onerror="this.style.display=\'none\';this.parentNode.classList.remove(\'is-img\')">';
   }
-  var hasText=s.title||s.eyebrow||s.sub||s.cta_label;
   if(hasText){
     h+='<div class="hero-inner">';
     if(s.eyebrow)h+='<div class="eyebrow">'+esc(s.eyebrow)+'</div>';
@@ -455,6 +463,10 @@ function setPaused(p){
   else{runBar();restart();}
 }
 
+track.addEventListener("click",function(e){
+  var sl=e.target.closest?e.target.closest(".mzh-slide[data-href]"):null;
+  if(sl&&!(e.target.closest&&e.target.closest("a")))location.href=sl.getAttribute("data-href");
+});
 prevBtn.addEventListener("click",function(){go(idx-1,true);});
 nextBtn.addEventListener("click",function(){go(idx+1,true);});
 root.addEventListener("mouseenter",function(){setPaused(true);});

@@ -101,6 +101,7 @@ function field(parent,labelText,key,slide,textarea){
   var el=document.createElement(textarea?"textarea":"input");
   if(!textarea)el.type="text"; else el.rows=2;
   el.value=slide[key]||"";
+  el.dataset.k=key;
   el.addEventListener("input",function(){slide[key]=el.value;
     if(key==="img")syncThumb(parent.closest(".card"),el.value);});
   parent.appendChild(el);
@@ -146,6 +147,12 @@ function renderList(){
     body.appendChild(img);
     var f=document.createElement("div");f.className="fields";
     field(f,"이미지 URL (비우면 브랜드 배경)","img",s);
+    var upRow=document.createElement("div");upRow.style.cssText="margin-top:6px;display:flex;gap:8px;align-items:center";
+    var upBtn=document.createElement("button");upBtn.className="btn sm";upBtn.textContent="파일 업로드 (자동 리사이즈)";
+    var fileIn=document.createElement("input");fileIn.type="file";fileIn.accept="image/*";fileIn.style.display="none";
+    upBtn.addEventListener("click",function(){fileIn.click();});
+    fileIn.addEventListener("change",function(){if(fileIn.files[0])uploadHero(s,card,fileIn.files[0],upBtn);fileIn.value="";});
+    upRow.appendChild(upBtn);upRow.appendChild(fileIn);f.appendChild(upRow);
     field(f,"클릭 링크 URL","href",s);
     body.appendChild(f);
 
@@ -171,6 +178,52 @@ function renderList(){
 }
 
 function msg(t,ok){stat.textContent=t;stat.className="status "+(ok?"ok":"err");}
+
+function fitSize(w,h,maxW,maxH){
+  var r=Math.min(1,maxW/w,maxH/h);
+  return [Math.max(1,Math.round(w*r)),Math.max(1,Math.round(h*r))];
+}
+function loadImg(file){
+  return new Promise(function(res,rej){
+    var u=URL.createObjectURL(file),i=new Image();
+    i.onload=function(){URL.revokeObjectURL(u);res(i);};
+    i.onerror=function(){URL.revokeObjectURL(u);rej(new Error("이미지 파일을 읽을 수 없습니다."));};
+    i.src=u;
+  });
+}
+function resizeToJpeg(file,maxW,maxH,q){
+  return loadImg(file).then(function(img){
+    var wh=fitSize(img.naturalWidth,img.naturalHeight,maxW||2400,maxH||1400);
+    var c=document.createElement("canvas");c.width=wh[0];c.height=wh[1];
+    c.getContext("2d").drawImage(img,0,0,wh[0],wh[1]);
+    return new Promise(function(res,rej){
+      c.toBlob(function(b){b?res({blob:b,w:wh[0],h:wh[1]}):rej(new Error("이미지 변환 실패"));},"image/jpeg",q||0.85);
+    });
+  });
+}
+function uploadHero(slide,card,file,btn){
+  var t=tok.value.trim();
+  if(!t){msg("먼저 관리자 토큰을 입력하세요.",false);tok.focus();return;}
+  sessionStorage.setItem("mzh_token",t);
+  var old=btn.textContent;btn.disabled=true;btn.textContent="리사이즈 중…";
+  resizeToJpeg(file).then(function(r){
+    btn.textContent="업로드 중…";
+    var fd=new FormData();fd.append("file",r.blob,"hero-"+Date.now()+".jpg");
+    return fetch("/admin/api/upload?token="+encodeURIComponent(t),{method:"POST",body:fd})
+      .then(function(resp){
+        if(resp.status===401||resp.status===403)throw new Error("토큰이 올바르지 않거나 업로드 권한이 없습니다.");
+        if(!resp.ok)throw new Error("업로드 실패 (HTTP "+resp.status+")");
+        return resp.json();
+      }).then(function(d){
+        slide.img=d.url;
+        var inp=card.querySelector('input[data-k="img"]');
+        if(inp)inp.value=d.url;
+        syncThumb(card,d.url);
+        msg("업로드 완료 ("+r.w+"×"+r.h+", "+d.storage+") — 하단 저장 버튼을 눌러 반영하세요.",true);
+      });
+  }).catch(function(e){msg(e.message,false);})
+  .then(function(){btn.disabled=false;btn.textContent=old;});
+}
 
 function load(){
   msg("불러오는 중...",true);

@@ -164,6 +164,73 @@ def jload(s, d):
 def digits(p): return re.sub(r'\D', '', str(p or ''))
 def uid(): return secrets.token_hex(6)
 
+# ── 가격·할인 규칙 (단일 구현) ─────────────────────────────────────────
+#   · price(판매가) = 실제 청구가 — app.py 체크아웃이 그대로 사용 (무변경)
+#   · list_price(정가) = 할인 중일 때만 채움. 할인율은 파생값(저장 안 함):
+#       round((1 - 판매가/정가) × 100)  → K2G 카탈로그와 동일 모델
+#   · 관리자가 입력하는 '가격'은 항상 정가. 할인율에 따라 판매가 자동 계산.
+def disc_price(base, pct):
+    """정가 base에 pct% 할인 적용 → 10원 단위 반올림 (정수 연산·결정적)."""
+    base, pct = num(base), num(pct)
+    if pct <= 0:
+        return base
+    return max(0, (base * (100 - pct) + 50) // 100 // 10 * 10)
+
+def derived_pct(list_p, price):
+    """정가·판매가 → 표기 할인율(%). 정가가 없거나 판매가 이상이면 0."""
+    list_p, price = num(list_p), num(price)
+    if list_p > price and list_p > 0:
+        return int(round((1 - price / list_p) * 100))
+    return 0
+
+_DISC_OK = re.compile(r'^(mp|k2g)::')   # 할인 표기는 동적 카드(mp::/k2g::)만 지원
+
+def apply_pricing(pid, base=None, pct=None):
+    """상품 1건의 정가(base)/할인율(pct) 변경을 price·list_price에 반영.
+    base=None → 정가 유지 · pct=None → 할인율 유지. 반환 (정가, 할인율, 판매가).
+    ※ 정적(own) 상품은 카드가 고정 HTML이라 표기 불일치 방지를 위해 할인 차단."""
+    cur = one('SELECT %s AS price, list_price FROM products WHERE id=?'
+              % (_state['pprice'] or 'price'), (pid,))
+    if not cur:
+        raise HTTPException(404, '상품을 찾을 수 없습니다')
+    cur_price, cur_list = num(cur.get('price')), num(cur.get('list_price'))
+    cur_pct = derived_pct(cur_list, cur_price)
+    if base is None:
+        base = cur_list if cur_pct > 0 else cur_price
+    base = num(base)
+    pct = cur_pct if pct is None else num(pct)
+    if base < 0:
+        raise HTTPException(400, '가격은 0 이상')
+    if not 0 <= pct <= 90:
+        raise HTTPException(400, '할인율은 0~90 사이 정수만 가능합니다')
+    if pct > 0:
+        if not _DISC_OK.match(str(pid)):
+            raise HTTPException(400, '정적 상품은 카드가 고정 HTML이라 할인 표기를 지원하지 않습니다 (직접등록·K2G 상품만 가능)')
+        if base <= 0:
+            raise HTTPException(400, '할인율을 적용하려면 먼저 정가를 입력하세요')
+        sale = disc_price(base, pct)
+        run('UPDATE products SET %s=?, list_price=? WHERE id=?' % _state['pprice'],
+            (sale, base, pid))
+    else:
+        sale = base
+        run('UPDATE products SET %s=?, list_price=NULL WHERE id=?' % _state['pprice'],
+            (sale, pid))
+    return base, pct, sale
+
+def disc_pct(was, sale):
+    """정가·판매가 → 표시 할인율(%). 사이트 JS Math.round((1-sale/was)*100)와 동일(half-up)."""
+    was, sale = num(was), num(sale)
+    if was <= 0 or sale <= 0 or sale >= was:
+        return 0
+    return (200 * (was - sale) + was) // (2 * was)
+
+def disc_sale(base, rate):
+    """정가 × 할인율 → 할인가 (10원 단위 반올림·half-up). rate 0이면 정가 그대로."""
+    base, rate = num(base), num(rate)
+    if base <= 0 or rate <= 0:
+        return base
+    return (base * (100 - rate) + 500) // 1000 * 10
+
 # ── 스키마 감지 + 지연 초기화 (import 시점 DB 접속 없음) ─────────────────
 _state = {'ready': False, 'ocols': set(), 'pcols': set(), 'paykey': None, 'pname': None, 'pprice': None}
 
@@ -628,11 +695,14 @@ def api_products(request: Request):
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     page = max(1, int(p.get('page', 1) or 1)); size = 30
     total = num((one('SELECT COUNT(*) AS c FROM products' + w, tuple(args)) or {}).get('c'))
-    cols = 'id, %s AS name, stock, soldout' % nm + ((', %s AS price' % pr) if pr else '')
+    cols = 'id, %s AS name, stock, soldout' % nm + ((', %s AS price' % pr) if pr else '') \
+           + (', list_price' if 'list_price' in _state['pcols'] else '')
     rs = rows('SELECT %s FROM products%s ORDER BY soldout DESC, stock ASC, id LIMIT %d OFFSET %d' % (cols, w, size, (page - 1) * size), tuple(args))
     return {'total': total, 'page': page, 'size': size,
             'rows': [{'id': r['id'], 'name': r.get('name') or r['id'], 'stock': num(r.get('stock')),
-                      'soldout': num(r.get('soldout')), 'price': num(r.get('price')) if pr else None} for r in rs]}
+                      'soldout': num(r.get('soldout')), 'price': num(r.get('price')) if pr else None,
+                      'list_price': num(r.get('list_price')) or None,
+                      'pct': derived_pct(r.get('list_price'), r.get('price')) if pr else 0} for r in rs]}
 
 @admin_router.post('/admin/api/products/update')
 def api_product_update(request: Request, body: dict = Body(...)):
@@ -647,14 +717,17 @@ def api_product_update(request: Request, body: dict = Body(...)):
         sets.append('stock=?'); args.append(s); log.append('재고→%d' % s)
     if body.get('soldout') is not None:
         sets.append('soldout=?'); args.append(1 if body['soldout'] else 0); log.append('품절→%s' % ('ON' if body['soldout'] else 'OFF'))
-    if body.get('price') is not None and _state['pprice']:
-        need(a, 2, '가격 변경')
-        v = num(body['price'])
-        if v < 0: raise HTTPException(400, '가격은 0 이상')
-        sets.append('%s=?' % _state['pprice']); args.append(v); log.append('가격→%d' % v)
-    if not sets: raise HTTPException(400, '변경할 값 없음')
-    n = run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
-    if not n: raise HTTPException(404, 'not found')
+    priced = False
+    if (body.get('price') is not None or body.get('discount_pct') is not None) and _state['pprice']:
+        need(a, 2, '가격·할인 변경')
+        b_, p_, s_ = apply_pricing(pid, base=body.get('price'), pct=body.get('discount_pct'))
+        log.append('정가→%s' % format(b_, ',')
+                   + (' · 할인 %d%% → 판매 ₩%s' % (p_, format(s_, ',')) if p_ else ''))
+        priced = True
+    if not sets and not priced: raise HTTPException(400, '변경할 값 없음')
+    if sets:
+        n = run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
+        if not n: raise HTTPException(404, 'not found')
     audit(a, '상품수정', pid, ', '.join(log))
     try: _k2g_cache_bust()
     except Exception: pass
@@ -1142,6 +1215,17 @@ button.btn.sm{padding:4px 9px;font-size:12px}button.btn:disabled{opacity:.4;curs
   <button class="btn red" id="pnew" onclick="location.href='/admin/products/new'">+ 상품 등록</button>
   <span class="hint">가격 변경·상품 등록은 매니저 이상. 등록 상품은 /p/상품ID 페이지가 자동 생성됩니다.</span></div>
   <div id="plist" class="loading">불러오는 중…</div></section>
+<section id="t-discount" style="display:none">
+  <div class="toolbar"><input id="dq" placeholder="상품명 · ID" style="width:220px">
+  <select id="df"><option value="">전체</option><option value="disc">할인중만</option></select>
+  <button class="btn" onclick="loadDiscount(1)">검색</button>
+  <span class="hint">정가·할인율·할인가 중 하나를 고치면 나머지가 자동 계산됩니다. 결제 금액은 항상 <b>할인가</b>이며, 사이트에는 정가(취소선)·할인율(빨강)·할인가로 표시됩니다.</span></div>
+  <div class="toolbar"><b style="font-size:12.5px">일괄 적용</b>
+  <input id="dbr" class="stockin" type="number" min="0" max="99" value="10" style="width:70px"> <span style="font-size:12.5px">%</span>
+  <button class="btn" onclick="bulkDisc('query')">검색결과 전체</button>
+  <button class="btn red" onclick="bulkDisc('k2g')">K2G 앨범 전체</button>
+  <span class="hint">0% 적용 시 할인 해제(판매가=정가 복원) · 가격 0원(가격 문의) 상품은 건너뜁니다.</span></div>
+  <div id="dlist" class="loading">불러오는 중…</div></section>
 <section id="t-pages" style="display:none">
   <div class="panel"><h3>페이지 콘텐츠 관리 <span class="tag">저장 즉시 사이트 반영 · 재배포에도 유지</span></h3>
   <div class="hint" style="margin-bottom:10px">편집 내용은 데이터베이스에 저장되어 원본 파일과 별도로 보존됩니다. [원본 복원]으로 언제든 되돌릴 수 있고, 저장할 때마다 직전 버전이 이력(최근 10개)에 남습니다.</div>
@@ -1203,8 +1287,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['banner','메인배너',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,ticker:loadTicker,banner:loadBanner,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['discount','할인',2],['pages','페이지',2],['ticker','티커',2],['banner','메인배너',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),discount:()=>loadDiscount(1),pages:loadPages,ticker:loadTicker,banner:loadBanner,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -1306,6 +1390,34 @@ async function delProd(k){const id=window._pk[k];const isK2g=id.indexOf('k2g::')
  if(!confirm(warn))return;
  try{await api('/admin/api/products/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
  toast('삭제되었습니다');loadProducts(ppage)}catch(e){toast(e.message)}}
+
+let dpage=1;
+async function loadDiscount(p){dpage=p;const q=new URLSearchParams({page:p});
+ if($('#dq').value)q.set('query',$('#dq').value);if($('#df').value)q.set('filter',$('#df').value);
+ try{const d=await api('/admin/api/discounts?'+q);
+ $('#dlist').innerHTML=`<table><tr><th>상품 ID</th><th>상품명</th><th class="right">정가</th><th class="right">할인율</th><th class="right">할인가 (결제금액)</th><th></th></tr>
+ ${d.rows.map(r=>{const k=btoa(unescape(encodeURIComponent(r.id))).replace(/=/g,'');window._pk[k]=r.id;const lp=r.list_price||r.price||0;return `<tr>
+ <td class="mono" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(r.id)}</td><td>${esc(r.name)}</td>
+ <td class="right"><input class="stockin" style="width:96px" id="lp${k}" type="number" min="0" value="${lp}" oninput="dcalc('${k}','lp')"></td>
+ <td class="right"><input class="stockin" style="width:60px" id="rt${k}" type="number" min="0" max="99" value="${r.pct||0}" oninput="dcalc('${k}','rt')"> <span style="font-size:12px">%</span></td>
+ <td class="right"><input class="stockin" style="width:96px" id="sp${k}" type="number" min="0" value="${r.price||0}" oninput="dcalc('${k}','sp')"></td>
+ <td style="white-space:nowrap"><span class="tag" id="dv${k}" style="${r.pct?'color:#c0392b;border-color:#c0392b':''}">${r.pct?'-'+r.pct+'%':'정가'}</span> <button class="btn sm" onclick="saveDisc('${k}')">저장</button></td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
+ ${pager(p,d,'loadDiscount')}`;}catch(e){$('#dlist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function dcalc(k,src){const g=i=>document.getElementById(i+k);const lp=Number(g('lp').value)||0;let rt=Number(g('rt').value)||0,sp=Number(g('sp').value)||0;
+ if(src==='sp'){rt=lp>0?Math.max(0,Math.round((1-sp/lp)*100)):0;g('rt').value=rt}
+ else{rt=Math.min(99,Math.max(0,rt));sp=Math.round(lp*(100-rt)/1000)*10;g('sp').value=sp}
+ const dv=g('dv');if(dv){dv.textContent=rt>0?'-'+rt+'%':'정가';dv.style.color=rt>0?'#c0392b':'';dv.style.borderColor=rt>0?'#c0392b':''}}
+async function saveDisc(k){const g=i=>document.getElementById(i+k);const lp=Number(g('lp').value)||0,sp=Number(g('sp').value)||0;
+ if(lp>0&&sp>lp){toast('할인가가 정가보다 클 수 없습니다');return}
+ try{await api('/admin/api/products/discount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:window._pk[k],list_price:lp,price:sp})});
+ toast('반영되었습니다 — 사이트 즉시 적용');dcalc(k,'sp')}catch(e){toast(e.message)}}
+async function bulkDisc(scope){const rate=Number($('#dbr').value)||0;if(rate<0||rate>99){toast('할인율은 0~99% 사이여야 합니다');return}
+ const body={rate};let label;
+ if(scope==='k2g'){body.scope='k2g';label='K2G 앨범 전체'}
+ else{const q=$('#dq').value.trim();if(q){body.query=q;label='검색결과("'+q+'") 전체'}else label='직접등록(mp)+K2G 앨범 전체'}
+ if(!confirm(label+'에 할인율 '+rate+'%를 적용할까요?\n\n· 0%는 할인 해제(판매가=정가 복원)입니다.\n· 가격 0원(가격 문의) 상품은 건너뜁니다.\n· 결제 금액이 즉시 변경됩니다.'))return;
+ try{const r=await api('/admin/api/products/discount-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ toast(r.count+'건에 '+rate+'% 적용 완료');loadDiscount(1)}catch(e){toast(e.message)}}
 
 let CMODE='buyers';
 function custMode(m){CMODE=m;$('#cm1').className='btn sm'+(m==='buyers'?'':' ghost');$('#cm2').className='btn sm'+(m==='members'?'':' ghost');
@@ -1739,11 +1851,16 @@ def api_product_create(request: Request, body: dict = Body(...)):
         raise HTTPException(400, '상품 테이블이 준비되지 않았습니다')
     name = (body.get('name') or '').strip()
     price = num(body.get('price')); stock = num(body.get('stock'))
+    dc = num(body.get('discount_pct'))
     if not name: raise HTTPException(400, '상품명을 입력하세요')
     if price < 0 or stock < 0: raise HTTPException(400, '가격/재고는 0 이상')
+    if not 0 <= dc <= 90: raise HTTPException(400, '할인율은 0~90 사이 정수만 가능합니다')
+    if dc > 0 and price <= 0: raise HTTPException(400, '할인율을 적용하려면 먼저 정가를 입력하세요')
     pid = 'mp::' + uid()
     cols, vals = ['id', _state['pname'], 'stock', 'soldout'], [pid, name, stock, 1 if stock == 0 else 0]
-    if _state['pprice']: cols.append(_state['pprice']); vals.append(price)
+    if _state['pprice']: cols.append(_state['pprice']); vals.append(disc_price(price, dc) if dc else price)
+    if dc and 'list_price' in _state['pcols']:
+        cols.append('list_price'); vals.append(price)
     if 'img' in _state['pcols']:
         cols.append('img'); vals.append(_safe_url(body.get('img')))
     if 'descr' in _state['pcols']:
@@ -1760,7 +1877,9 @@ def api_product_create(request: Request, body: dict = Body(...)):
     if 'gallery' in _state['pcols']:
         cols.append('gallery'); vals.append(_clean_gallery(body.get('gallery')))
     run('INSERT INTO products(%s) VALUES(%s)' % (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals))
-    audit(a, '상품등록', pid, '%s / %s원 / 재고 %d / %s' % (name, format(price, ','), stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류')))
+    audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s' % (
+        name, format(price, ','), (' · 할인 %d%% → 판매 ₩%s' % (dc, format(disc_price(price, dc), ','))) if dc else '',
+        stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류')))
     return {'ok': True, 'id': pid, 'url': '/p/' + pid}
 
 @admin_router.post('/admin/api/products/delete')
@@ -1801,6 +1920,92 @@ def api_product_delete(request: Request, body: dict = Body(...)):
     except Exception: pass
     audit(a, '상품삭제', pid, str(r.get('name') or ''))
     return {'ok': True}
+
+# ══════════════ 할인율 관리 (정가 list_price · 판매가 price 쌍) ══════════════
+#   할인율은 두 가격에서 파생(사이트 K2G 카드/앨범상세의 pct 계산과 동일 규칙).
+#   판매·결제 금액은 항상 price 컬럼 → 기존 주문/토스 결제 흐름 무변경.
+#   대상: mp::(직접등록)·k2g::(앨범 카탈로그)만. own(정적 카드)은 HTML에 가격이
+#   박혀 있어 화면-결제 불일치가 생기므로 제외한다.
+
+@admin_router.get('/admin/api/discounts')
+def api_discounts(request: Request):
+    a = get_actor(request); need(a, 2, '할인 관리')
+    if not _state['pcols'] or not _state['pname'] or not _state['pprice'] or 'list_price' not in _state['pcols']:
+        return {'total': 0, 'rows': [], 'page': 1, 'size': 30}
+    p = request.query_params
+    nm, pr = _state['pname'], _state['pprice']
+    where, args = ['(id LIKE ? OR id LIKE ?)'], ['mp::%', 'k2g::%']
+    if p.get('query'):
+        kw = '%' + p['query'].strip() + '%'
+        where.append('(id LIKE ? OR %s LIKE ?)' % nm); args += [kw, kw]
+    if p.get('filter') == 'disc':
+        where.append('COALESCE(list_price,0) > %s AND %s > 0' % (pr, pr))
+    w = ' WHERE ' + ' AND '.join(where)
+    page = max(1, int(p.get('page', 1) or 1)); size = 30
+    total = num((one('SELECT COUNT(*) AS c FROM products' + w, tuple(args)) or {}).get('c'))
+    rs = rows('SELECT id, %s AS name, %s AS price, list_price FROM products%s '
+              'ORDER BY CASE WHEN id LIKE ? THEN 0 ELSE 1 END, COALESCE(sort_order, 999999999), id '
+              'LIMIT %d OFFSET %d' % (nm, pr, w, size, (page - 1) * size),
+              tuple(args) + ('mp::%',))
+    return {'total': total, 'page': page, 'size': size,
+            'rows': [{'id': r['id'], 'name': r.get('name') or r['id'],
+                      'price': num(r.get('price')), 'list_price': num(r.get('list_price')),
+                      'pct': disc_pct(r.get('list_price'), r.get('price'))} for r in rs]}
+
+@admin_router.post('/admin/api/products/discount')
+def api_discount_set(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '할인 설정')
+    pid = str(body.get('id') or '').strip()
+    if not pid: raise HTTPException(400, '상품 ID가 없습니다')
+    if not (pid.startswith('mp::') or pid.startswith('k2g::')):
+        raise HTTPException(400, '직접등록(mp)·앨범(k2g) 상품만 할인 설정이 가능합니다. 정적 상품은 페이지 편집에서 가격을 수정하세요.')
+    if not _state['pprice'] or 'list_price' not in _state['pcols']:
+        raise HTTPException(400, '상품 테이블이 준비되지 않았습니다')
+    lp, sp = num(body.get('list_price')), num(body.get('price'))
+    if lp < 0 or sp < 0: raise HTTPException(400, '가격은 0 이상')
+    if lp > 0 and sp > lp: raise HTTPException(400, '할인가가 정가보다 클 수 없습니다')
+    if not one('SELECT id FROM products WHERE id=?', (pid,)):
+        raise HTTPException(404, '상품을 찾을 수 없습니다')
+    run('UPDATE products SET list_price=?, %s=? WHERE id=?' % _state['pprice'], (lp, sp, pid))
+    try: _k2g_cache_bust()
+    except Exception: pass
+    pct = disc_pct(lp, sp)
+    audit(a, '할인설정', pid, '정가 %s → 판매가 %s (-%d%%)' % (format(lp, ','), format(sp, ','), pct))
+    return {'ok': True, 'pct': pct, 'list_price': lp, 'price': sp}
+
+@admin_router.post('/admin/api/products/discount-bulk')
+def api_discount_bulk(request: Request, body: dict = Body(...)):
+    """할인율 일괄 적용. scope='k2g'(앨범 전체) 또는 query(검색결과), 둘 다 없으면 mp+k2g 전체.
+    정가 = 기존 list_price(있으면) 또는 현재 판매가 → 할인가 재계산. rate 0은 할인 해제(정가 복원)."""
+    a = get_actor(request); need(a, 2, '할인 일괄 적용')
+    if not _state['pprice'] or not _state['pname'] or 'list_price' not in _state['pcols']:
+        raise HTTPException(400, '상품 테이블이 준비되지 않았습니다')
+    rate = num(body.get('rate'))
+    if rate < 0 or rate > 99: raise HTTPException(400, '할인율은 0~99% 사이여야 합니다')
+    nm, pr = _state['pname'], _state['pprice']
+    scope = str(body.get('scope') or '').strip()
+    if scope == 'k2g':
+        where, args = ['id LIKE ?'], ['k2g::%']
+    else:
+        where, args = ['(id LIKE ? OR id LIKE ?)'], ['mp::%', 'k2g::%']
+    q = str(body.get('query') or '').strip()
+    if q:
+        kw = '%' + q + '%'
+        where.append('(id LIKE ? OR %s LIKE ?)' % nm); args += [kw, kw]
+    rs = rows('SELECT id, %s AS price, list_price FROM products WHERE %s' % (pr, ' AND '.join(where)), tuple(args))
+    ops, n = [], 0
+    for r in rs:
+        base = num(r.get('list_price')) or num(r.get('price'))
+        if base <= 0:
+            continue                      # 가격 미정(0원) 상품은 건너뜀
+        ops.append(('UPDATE products SET list_price=?, %s=? WHERE id=?' % pr,
+                    (base, disc_sale(base, rate), r['id'])))
+        n += 1
+    if ops: runmany(ops)
+    try: _k2g_cache_bust()
+    except Exception: pass
+    audit(a, '할인일괄', scope or (('검색:' + q[:40]) if q else 'mp+k2g 전체'), '%d건 · %d%%' % (n, rate))
+    return {'ok': True, 'count': n, 'rate': rate}
 
 def _clean_gallery(v):
     """줄바꿈으로 구분된 이미지 URL 목록을 정리해 개행 문자열로 저장 (최대 12장)."""
@@ -1890,7 +2095,7 @@ def api_product_detail_get(request: Request):
     if not pid: raise HTTPException(400, 'id required')
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge'):
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'list_price'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -1906,6 +2111,9 @@ def api_product_detail_get(request: Request):
     return {
         'id': r['id'], 'name': r.get('name') or r['id'],
         'price': num(r.get('price')) if _state['pprice'] else None,
+        'list_price': num(r.get('list_price')) or None,
+        'discount_pct': derived_pct(r.get('list_price'), r.get('price')),
+        'sale_price': num(r.get('price')) if _state['pprice'] else None,
         'stock': num(r.get('stock')), 'soldout': num(r.get('soldout')),
         'img': r.get('img') or '', 'descr': r.get('descr') or '',
         'category': norm_cat(r.get('category')),
@@ -1948,19 +2156,22 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
             val = (val or '').strip()
             if limit: val = val[:limit]
         sets.append('%s=?' % col); args.append(val); log.append(k)
-    # 가격 · 재고 (별도 페이지 편집 화면에서 한 번에 저장)
-    if body.get('price') is not None and _state['pprice']:
-        v = num(body['price'])
-        if v < 0: raise HTTPException(400, '가격은 0 이상')
-        sets.append('%s=?' % _state['pprice']); args.append(v); log.append('price')
+    # 가격(정가) · 할인율 — 단일 규칙(apply_pricing): 판매가는 자동 계산되어 저장
+    priced = False
+    if (body.get('price') is not None or body.get('discount_pct') is not None) and _state['pprice']:
+        b_, p_, s_ = apply_pricing(pid, base=body.get('price'), pct=body.get('discount_pct'))
+        log.append('정가 %s원%s' % (format(b_, ','),
+                   (' · 할인 %d%% → 판매 ₩%s' % (p_, format(s_, ',')) if p_ else '')))
+        priced = True
     if body.get('stock') is not None:
         s = num(body['stock'])
         if s < 0: raise HTTPException(400, '재고는 0 이상')
         sets.append('stock=?'); args.append(s)
         sets.append('soldout=?'); args.append(1 if s == 0 else 0)
         log.append('stock')
-    if not sets: raise HTTPException(400, '변경할 값 없음')
-    run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
+    if not sets and not priced: raise HTTPException(400, '변경할 값 없음')
+    if sets:
+        run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
     try: _k2g_cache_bust()
     except Exception: pass
     audit(a, '상품상세수정', pid, '수정 항목: ' + ', '.join(log))
@@ -2205,6 +2416,8 @@ main{max-width:860px;margin:0 auto;padding:28px 18px 80px}
 .ph img{width:100%%;height:100%%;object-fit:cover}
 h1{font-size:22px;line-height:1.35;margin-bottom:10px}
 .price{font-family:'IBM Plex Mono';font-size:26px;font-weight:600;margin:12px 0 4px}
+.price .pwas{display:block;font-family:'IBM Plex Sans KR';font-size:13px;font-weight:400;color:#999;text-decoration:line-through;margin-bottom:2px}
+.price .ppct{font-family:'Black Han Sans';font-weight:400;color:var(--red);margin-right:10px}
 .badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;margin-bottom:14px}
 .ok{background:#e9f7ee;color:#0a7d38}.no{background:#fff2f1;color:#c0392b}
 .desc{font-size:14px;line-height:1.8;color:#444;white-space:pre-wrap;border-top:1px solid #eee;margin-top:16px;padding-top:16px}
@@ -2223,7 +2436,7 @@ h1{font-size:22px;line-height:1.35;margin-bottom:10px}
 <header><a href="/">MAPDAL<span>SEOUL</span></a><a class="shop" href="/shop">SHOP 전체보기</a></header>
 <main><div class="wrap"><div><div class="ph" id="mainPh">%(imgtag)s</div>%(galhtml)s</div><div>
 %(cathtml)s
-<h1>%(name)s</h1><div class="price">₩%(price)s</div>
+<h1>%(name)s</h1>%(pricehtml)s
 <span class="badge %(bcls)s">%(bmsg)s</span>
 <div class="desc">%(descr)s</div>
 <div style="display:flex;gap:8px;margin-top:18px">
@@ -2274,7 +2487,7 @@ def pdp(pid: str):
     if not _state['pcols']: raise HTTPException(404)
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr', 'category', 'detail_html', 'gallery'):
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'list_price'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r:
@@ -2298,8 +2511,17 @@ def pdp(pid: str):
     body_html = render_blocks(r.get('detail_html'))
     if body_html.strip():
         detailhtml = '<div class="detail"><h2>상세 정보</h2>%s</div>' % body_html
+    # 가격 표시 — 할인 시 정가(취소선) 위 / 할인율(빨강)·할인가 아래 (K2G 앨범상세와 동일 규격)
+    sale, was = num(r.get('price')), num(r.get('list_price'))
+    pct = disc_pct(was, sale)
+    if pct:
+        pricehtml = ('<div class="price disc"><span class="pwas">%s원</span>'
+                     '<span class="ppct">%d%%</span>₩%s</div>'
+                     % (format(was, ','), pct, format(sale, ',')))
+    else:
+        pricehtml = '<div class="price">₩%s</div>' % format(sale, ',')
     return HTMLResponse(_PDP_HTML % {
-        'name': h(r.get('name')), 'price': format(num(r.get('price')), ','),
+        'name': h(r.get('name')), 'pricehtml': pricehtml,
         'bcls': 'no' if soldout else 'ok',
         'bmsg': '품절 (SOLD OUT)' if soldout else '구매 가능 · 재고 %d' % num(r.get('stock')),
         'descr': h(r.get('descr')) or 'MAPDAL SEOUL 상품입니다.',
@@ -3206,33 +3428,6 @@ MOBNAV_SNIPPET = r"""<style id="mpMobNav">
  .k2g-price .amt{font-size:12.5px}
  .k2g-price .pct{font-size:13.5px}
 }
-/* ── 모바일 히어로: 2.4:1 배너 측면 크롭 제거 → 원본 비율 노출 + 캡션 패널 분리 ── */
-@media(max-width:1024px){
- .mzh .mzh-track{height:auto!important}
- .mzh .mzh-slide{height:auto!important;display:flex!important;flex-direction:column;background:#141414}
- .mzh .mzh-slide.is-img::after{display:none}
- .mzh .mzh-img{position:static!important;width:100%!important;height:auto!important;max-height:62vh!important;object-fit:contain!important;background:#141414;flex:0 0 auto}
- .mzh .mzh-cap{position:static;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;background:#141414;padding:16px 20px 50px}
- .mzh .mzh-slide .hero-inner{flex:1;min-height:0}
- .mzh-progress{background:rgba(255,255,255,.14)}
- #mpCatBar{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 34px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 34px),transparent)}
- #mpCatBar.mp-end{-webkit-mask-image:none;mask-image:none}
-}
-@media(max-width:680px){
- .mzh .mzh-cap{padding:14px 20px 48px}
- .mzh .mzh-cap-tag{font-size:11px;padding:5px 10px;margin-bottom:8px}
- .mzh .mzh-cap-album{font-size:17px;line-height:1.35}
- .mzh .mzh-cap-event{font-size:12.5px;margin-top:6px}
- .mzh .mzh-slide .hero-inner{padding:44px 20px 60px}
- .mzh .mzh-slide h1{font-size:clamp(30px,8.4vw,38px)}
- .mzh .hollow{-webkit-text-stroke:1.5px #fff}
- .mzh .mzh-slide .hero-inner p{font-size:13.5px;line-height:1.65;margin:10px 0 6px}
- .mzh .cta-row{margin-top:16px;gap:10px}
- .mzh .cta-row .btn{padding:12px 18px;font-size:12.5px}
- .mzh .mzh-slide .eyebrow{font-size:11px;letter-spacing:.14em}
- .mzh-dots{bottom:14px;gap:8px}
- .mzh-dots button{width:22px}
-}
 @media(min-width:1025px){#mpCatBar{display:none!important}}
 </style><script>(function(){
 if(window.__mpMobNav)return;window.__mpMobNav=1;
@@ -3261,10 +3456,6 @@ ready(function(){
  bar.setAttribute('aria-label','\uce74\ud14c\uace0\ub9ac');
  bar.innerHTML=h;
  header.appendChild(bar);
- /* 스크롤 끝 도달 시 우측 페이드 힌트 제거 */
- function mpEdge(){bar.classList.toggle('mp-end',bar.scrollLeft+bar.clientWidth>=bar.scrollWidth-6)}
- bar.addEventListener('scroll',mpEdge,{passive:true});
- window.addEventListener('resize',mpEdge);mpEdge();
 });})();</script>"""
 
 # ── LED 드롭 티커: DB 저장 → 전 페이지 동적 반영 ──────────────────────
@@ -3359,6 +3550,20 @@ ready(function(){
  }).catch(function(){});
 });})();</script>"""
 
+CARD_CSS_SNIPPET = r"""<style id="mpCardCss">
+/* 앨범 카드 제목 폰트 통일 — 직접등록(mp) 앨범 카드도 K2G 카드(h4 12px/600·2줄)와 동일 */
+#shopGrid .col-card[data-cat="album"] .col-body h3{
+  font-size:12px;font-weight:600;line-height:1.45;min-height:35px;margin-bottom:4px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* mp 카드 할인 표시(정가/할인율/할인가) — K2G 가격 블록과 좌측 정렬·행 배치 정합 */
+#shopGrid .col-card .price-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+#shopGrid .col-card .k2g-price{text-align:left}
+#shopGrid .col-card .k2g-price .was{font-size:11px;color:#87867F;text-decoration:line-through}
+#shopGrid .col-card .k2g-price .now{display:flex;gap:6px;align-items:baseline}
+#shopGrid .col-card .k2g-price .pct{font-family:'Black Han Sans',sans-serif;font-size:15px;color:#E8332A}
+#shopGrid .col-card .k2g-price .amt{font-family:'IBM Plex Mono',monospace;font-size:13.5px;font-weight:500}
+</style>"""
+
 def _patch_legacy_footer(html):
     """목업 원본 푸터의 구형 법적표기 블록(.foot-base)을 통째로 제거.
     법정 표기는 표준 푸터(mpFooter) 단일 출처로 일원화한다."""
@@ -3388,6 +3593,8 @@ def _mp_shop_cards():
         sel = 'id, %s AS name, stock, soldout' % _state['pname']
         if _state['pprice']:
             sel += ', %s AS price' % _state['pprice']
+        if 'list_price' in _state['pcols']:
+            sel += ', list_price'
         for c in ('img', 'category', 'badge'):
             if c in _state['pcols']:
                 sel += ', ' + c
@@ -3414,11 +3621,21 @@ def _mp_shop_cards():
             cover = ('<div class="col-cover" style="background:%s;height:240px%s">'
                      '<span class="tag">%s</span><span class="big" style="font-size:44px">%s</span></div>'
                      ) % (_MP_COVERS[i % len(_MP_COVERS)], gray, h(tag), h(name[:2]))
+        sale, was = num(r.get('price')), num(r.get('list_price'))
+        pct = disc_pct(was, sale)
+        if pct:
+            # K2G 카드와 동일한 표시: 정가(취소선) 위, 아래 할인율(빨강)+할인가
+            pr_html = ('<span class="k2g-price" style="margin-top:0"><span class="was">%s원</span>'
+                       '<span class="now"><span class="pct">%d%%</span>'
+                       '<span class="amt">₩%s</span></span></span>'
+                       % (format(was, ','), pct, format(sale, ',')))
+        else:
+            pr_html = '<span class="price">₩%s</span>' % format(sale, ',')
         cards.append('<a class="col-card" data-cat="%s" href="/p/%s">%s'
                      '<div class="col-body"><h3>%s</h3><div class="price-row">'
-                     '<span class="price">₩%s</span><span class="add">%s</span></div></div></a>'
+                     '%s<span class="add">%s</span></div></div></a>'
                      % (h(cat), h(r['id']), cover, h(name),
-                        format(num(r.get('price')), ','), '품절' if soldout else '담기 +'))
+                        pr_html, '품절' if soldout else '담기 +'))
     return '<!-- mpShopDyn -->' + ''.join(cards) + '<!-- /mpShopDyn -->'
 
 _own_rm_cache = {'t': 0.0, 'set': None}
@@ -3764,6 +3981,7 @@ def _inject_auth(html):
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
     if 'mpMobNav' not in html: add += MOBNAV_SNIPPET
     if 'mpTickerJs' not in html: add += TICKER_SNIPPET
+    if 'mpCardCss' not in html: add += CARD_CSS_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')

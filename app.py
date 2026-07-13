@@ -261,6 +261,11 @@ def healthz():
 @app.get('/')
 def root(): return RedirectResponse('/mapdal_home_mockup_v1.html')
 try:
+    from hero_api import router as hero_router
+    app.include_router(hero_router)
+except Exception as _e:
+    print('hero_api load skipped:', _e)
+try:
     from admin_v2 import admin_router
     app.include_router(admin_router)
 except Exception as _e:

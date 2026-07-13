@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>맵달 관리자 — 홈 히어로 슬라이드</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--red:#E8332A;--red-deep:#B71F18;--ink:#141414;--paper:#F7F6F2;--steel:#87867F;
+  --amber:#FFB000;--line:#E2E0D9;--disp:'Black Han Sans',sans-serif;
+  --body:'IBM Plex Sans KR',sans-serif;--mono:'IBM Plex Mono',monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body)}
+.top{background:var(--ink);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.top h1{font-family:var(--disp);font-size:20px;margin:0;letter-spacing:.02em}
+.top .path{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.14em}
+.wrap{max-width:920px;margin:26px auto 80px;padding:0 18px}
+.note{font-family:var(--mono);font-size:12px;color:var(--steel);border:1px dashed var(--line);
+  background:#fff;padding:10px 14px;margin-bottom:18px;line-height:1.7}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+label{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--steel);display:block;margin:10px 0 4px}
+input[type=text],input[type=password],input[type=number],textarea{width:100%;padding:9px 10px;border:1px solid var(--line);
+  background:#fff;font-family:var(--body);font-size:14px}
+input:focus,textarea:focus{outline:2px solid var(--amber);border-color:var(--ink)}
+.card{background:#fff;border:1px solid var(--line);margin-bottom:16px}
+.card-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);background:#FBFAF7}
+.card-head .no{font-family:var(--disp);font-size:18px;color:var(--red)}
+.card-head .sp{flex:1}
+.card-body{padding:6px 14px 16px;display:grid;grid-template-columns:96px 1fr;gap:0 16px}
+.thumb{width:96px;height:96px;object-fit:cover;border:1px solid var(--line);background:
+  linear-gradient(155deg,var(--red),var(--red-deep));margin-top:12px}
+.fields{min-width:0}
+details{grid-column:1/-1;margin-top:10px}
+summary{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--red);cursor:pointer}
+.btn{font-family:var(--mono);font-size:12px;letter-spacing:.08em;border:1px solid var(--ink);
+  background:#fff;color:var(--ink);padding:8px 14px;cursor:pointer}
+.btn:hover{background:var(--ink);color:#fff}
+.btn.red{background:var(--red);border-color:var(--red);color:#fff}
+.btn.red:hover{background:var(--red-deep)}
+.btn.sm{padding:4px 9px;font-size:11px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.status{font-family:var(--mono);font-size:12px;margin-left:10px}
+.status.ok{color:#1B7F3B}.status.err{color:var(--red)}
+.savebar{position:sticky;bottom:0;background:var(--paper);border-top:2px solid var(--ink);
+  padding:12px 0;display:flex;align-items:center;gap:10px}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>맵달 관리자</h1>
+  <span class="path">HOME / HERO SLIDES</span>
+  <span class="sp" style="flex:1"></span>
+  <a class="btn sm" href="/" target="_blank" rel="noopener" style="text-decoration:none">사이트에서 확인 ↗</a>
+</div>
+
+<div class="wrap">
+  <div class="note">
+    이미지 파일은 <b>맵달 에셋 업로더(R2)</b>에 올린 뒤 발급 URL을 아래에 붙여넣으세요.
+    슬라이드는 최대 10개, 순서는 ↑↓ 버튼으로 조정합니다. 저장 즉시 홈페이지에 반영됩니다.
+  </div>
+
+  <div class="row">
+    <div style="flex:1;min-width:220px">
+      <label for="tok">관리자 토큰 (ADMIN_TOKEN)</label>
+      <input type="password" id="tok" placeholder="토큰 입력 후 불러오기">
+    </div>
+    <div style="width:150px">
+      <label for="intv">전환 간격 (ms)</label>
+      <input type="number" id="intv" min="1500" max="15000" step="500" value="3000">
+    </div>
+    <button class="btn" id="loadBtn" style="margin-top:24px">불러오기</button>
+  </div>
+
+  <div id="list"></div>
+  <button class="btn" id="addBtn">+ 슬라이드 추가</button>
+
+  <div class="savebar">
+    <button class="btn red" id="saveBtn">변경사항 저장</button>
+    <span class="status" id="stat"></span>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+var API="/api/hero", MAXS=10;
+var state={interval_ms:3000,slides:[]};
+var list=document.getElementById("list"),
+    stat=document.getElementById("stat"),
+    tok=document.getElementById("tok"),
+    intv=document.getElementById("intv");
+
+tok.value=sessionStorage.getItem("mzh_token")||"";
+
+function blank(){return{img:"",href:"",eyebrow:"",title:"",title2:"",sub:"",
+  cta_label:"",cta_href:"",cta2_label:"",cta2_href:"",chip:"",active:true};}
+
+function field(parent,labelText,key,slide,textarea){
+  var l=document.createElement("label");l.textContent=labelText;parent.appendChild(l);
+  var el=document.createElement(textarea?"textarea":"input");
+  if(!textarea)el.type="text"; else el.rows=2;
+  el.value=slide[key]||"";
+  el.addEventListener("input",function(){slide[key]=el.value;
+    if(key==="img")syncThumb(parent.closest(".card"),el.value);});
+  parent.appendChild(el);
+  return el;
+}
+function syncThumb(card,url){
+  var t=card.querySelector(".thumb");
+  if(url){t.src=url;t.style.display="";}
+  else{t.removeAttribute("src");}
+}
+
+function renderList(){
+  list.innerHTML="";
+  state.slides.forEach(function(s,i){
+    var card=document.createElement("div");card.className="card";
+
+    var head=document.createElement("div");head.className="card-head";
+    head.innerHTML='<span class="no">'+String(i+1).padStart(2,"0")+'</span>';
+    var act=document.createElement("label");
+    act.style.cssText="display:flex;align-items:center;gap:6px;margin:0";
+    var cb=document.createElement("input");cb.type="checkbox";cb.checked=s.active!==false;
+    cb.addEventListener("change",function(){s.active=cb.checked;});
+    act.appendChild(cb);act.appendChild(document.createTextNode("사용"));
+    head.appendChild(act);
+    var sp=document.createElement("span");sp.className="sp";head.appendChild(sp);
+    [["↑",-1],["↓",1]].forEach(function(m){
+      var b=document.createElement("button");b.className="btn sm";b.textContent=m[0];
+      b.disabled=(i+m[1]<0||i+m[1]>=state.slides.length);
+      b.addEventListener("click",function(){
+        var t=state.slides[i];state.slides[i]=state.slides[i+m[1]];
+        state.slides[i+m[1]]=t;renderList();});
+      head.appendChild(b);
+    });
+    var del=document.createElement("button");del.className="btn sm";del.textContent="삭제";
+    del.addEventListener("click",function(){
+      if(confirm((i+1)+"번 슬라이드를 삭제할까요?")){state.slides.splice(i,1);renderList();}});
+    head.appendChild(del);
+    card.appendChild(head);
+
+    var body=document.createElement("div");body.className="card-body";
+    var img=document.createElement("img");img.className="thumb";img.alt="";
+    img.onerror=function(){img.removeAttribute("src");};
+    body.appendChild(img);
+    var f=document.createElement("div");f.className="fields";
+    field(f,"이미지 URL (비우면 브랜드 배경)","img",s);
+    field(f,"클릭 링크 URL","href",s);
+    body.appendChild(f);
+
+    var dt=document.createElement("details");
+    var sm=document.createElement("summary");sm.textContent="텍스트 오버레이 (제목·버튼·칩)";
+    dt.appendChild(sm);
+    field(dt,"아이브로우 (작은 상단 라벨)","eyebrow",s);
+    field(dt,"제목 1행","title",s);
+    field(dt,"제목 2행 (아웃라인체)","title2",s);
+    field(dt,"서브 문구","sub",s,true);
+    field(dt,"버튼1 라벨","cta_label",s);
+    field(dt,"버튼1 링크","cta_href",s);
+    field(dt,"버튼2 라벨","cta2_label",s);
+    field(dt,"버튼2 링크","cta2_href",s);
+    field(dt,"NEXT DROP 칩 (줄은 | 로 구분)","chip",s);
+    body.appendChild(dt);
+
+    card.appendChild(body);
+    list.appendChild(card);
+    if(s.img)syncThumb(card,s.img);
+  });
+  document.getElementById("addBtn").disabled=state.slides.length>=MAXS;
+}
+
+function msg(t,ok){stat.textContent=t;stat.className="status "+(ok?"ok":"err");}
+
+function load(){
+  msg("불러오는 중...",true);
+  fetch(API,{cache:"no-store"}).then(function(r){return r.json();})
+  .then(function(d){
+    state.interval_ms=d.interval_ms||3000;
+    state.slides=(d.slides&&d.slides.length?d.slides:[blank()]).map(function(s){
+      return Object.assign(blank(),s);});
+    intv.value=state.interval_ms;
+    renderList();
+    msg("불러오기 완료 · 슬라이드 "+state.slides.length+"개",true);
+  }).catch(function(){msg("불러오기 실패 — 서버 상태를 확인하세요.",false);});
+}
+
+function save(){
+  var t=tok.value.trim();
+  if(!t){msg("관리자 토큰을 입력하세요.",false);tok.focus();return;}
+  sessionStorage.setItem("mzh_token",t);
+  state.interval_ms=parseInt(intv.value,10)||3000;
+  msg("저장 중...",true);
+  fetch(API,{method:"PUT",
+    headers:{"Content-Type":"application/json","X-Admin-Token":t},
+    body:JSON.stringify(state)})
+  .then(function(r){
+    if(r.status===401)throw new Error("토큰이 올바르지 않습니다.");
+    if(!r.ok)throw new Error("저장 실패 (HTTP "+r.status+")");
+    return r.json();})
+  .then(function(d){msg("저장 완료 — 홈페이지에 즉시 반영됩니다. (슬라이드 "+d.slides+"개, 저장소: "+d.storage+")",true);})
+  .catch(function(e){msg(e.message,false);});
+}
+
+document.getElementById("loadBtn").addEventListener("click",load);
+document.getElementById("saveBtn").addEventListener("click",save);
+document.getElementById("addBtn").addEventListener("click",function(){
+  if(state.slides.length<MAXS){state.slides.push(blank());renderList();}});
+
+load();
+})();
+</script>
+</body>
+</html>

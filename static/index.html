@@ -288,23 +288,202 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
   </div>
 </div>
 
-<!-- 히어로 -->
-<div class="hero">
-  <div class="hero-inner">
-    <div class="eyebrow">NOT A STORE, A STAGE · SEONGSU, SEOUL</div>
-    <h1>SHOP SEONGSU,<br><span class="hollow">FROM ANYWHERE</span></h1>
-    <p>성수동 연무장길 825평 — 몰입부터 구매까지, 무대에서 벌어진 팬 경험이
-    매주 새로운 드롭으로 도착합니다. 현장의 열기를 그대로 배송합니다.</p>
-    <div class="cta-row">
-      <a class="btn white" href="new-drops.html">SUMMER DROP 07 보기</a>
-      <a class="btn ghost" href="#space">공간 둘러보기</a>
-    </div>
-    <div class="drop-chip">
-      <b>NEXT DROP</b><br>07.11 (SAT) 12:00 KST<br>응모 마감 07.09 (THU)
-    </div>
-    <div class="bg-type">맵달</div>
-  </div>
+<!-- 히어로 슬라이더 -->
+<div class="hero mzh" id="mzHero" role="region" aria-roledescription="carousel" aria-label="메인 배너">
+  <div class="mzh-track" id="mzhTrack"></div>
+
+  <button class="mzh-nav prev" id="mzhPrev" aria-label="이전 슬라이드">‹</button>
+  <button class="mzh-nav next" id="mzhNext" aria-label="다음 슬라이드">›</button>
+
+  <div class="mzh-dots" id="mzhDots" role="tablist" aria-label="슬라이드 선택"></div>
+  <div class="mzh-progress" aria-hidden="true"><span id="mzhBar"></span></div>
 </div>
+
+<style>
+/* ---- 히어로 슬라이더 (기존 .hero 토큰·타이포 상속) ---- */
+.mzh{padding:0}
+.mzh .mzh-track{display:flex;transition:transform .65s cubic-bezier(.22,.8,.24,1);will-change:transform}
+.mzh .mzh-slide{flex:0 0 100%;position:relative;min-height:clamp(380px,34vw,640px);display:block;color:#fff;text-decoration:none}
+.mzh .mzh-slide .hero-inner{position:relative;z-index:2}
+.mzh .mzh-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1}
+.mzh .mzh-slide.is-img::after{content:"";position:absolute;inset:0;z-index:1;
+  background:linear-gradient(90deg,rgba(20,20,20,.28) 0%,transparent 45%)}
+/* 좌우 화살표 */
+.mzh-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:5;
+  width:44px;height:44px;border:1px solid rgba(255,255,255,.45);border-radius:0;
+  background:rgba(20,20,20,.35);color:#fff;font-size:24px;line-height:1;cursor:pointer;
+  font-family:var(--mono);transition:background .2s,border-color .2s}
+.mzh-nav:hover{background:var(--ink);border-color:var(--amber)}
+.mzh-nav:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.mzh-nav.prev{left:18px}.mzh-nav.next{right:18px}
+/* 도트 */
+.mzh-dots{position:absolute;left:50%;transform:translateX(-50%);bottom:18px;z-index:5;display:flex;gap:10px}
+.mzh-dots button{width:26px;height:4px;border:0;padding:0;cursor:pointer;
+  background:rgba(255,255,255,.35);transition:background .2s}
+.mzh-dots button[aria-selected="true"]{background:var(--amber)}
+.mzh-dots button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
+/* LED 카운트다운 바 (시그니처) */
+.mzh-progress{position:absolute;left:0;right:0;bottom:0;height:3px;z-index:4;background:rgba(0,0,0,.25)}
+.mzh-progress span{display:block;height:100%;width:0;background:var(--amber)}
+.mzh-progress span.run{animation:mzhRun var(--mzh-int,3000ms) linear forwards}
+@keyframes mzhRun{from{width:0}to{width:100%}}
+@media (max-width:680px){
+  .mzh-nav{display:none}
+  .mzh .mzh-slide{min-height:64vw}
+}
+@media (prefers-reduced-motion:reduce){
+  .mzh .mzh-track{transition:none}
+  .mzh-progress{display:none}
+}
+</style>
+
+<script>
+(function(){
+"use strict";
+/* API 실패·초기 로딩용 기본 슬라이드 (관리자 저장값이 오면 대체됨) */
+var MZH_DEFAULT={interval_ms:3000,slides:[
+ {img:"",href:"",eyebrow:"NOT A STORE, A STAGE \u00b7 SEONGSU, SEOUL",
+  title:"SHOP SEONGSU,",title2:"FROM ANYWHERE",
+  sub:"성수동 연무장길 825평 — 몰입부터 구매까지, 무대에서 벌어진 팬 경험이 매주 새로운 드롭으로 도착합니다. 현장의 열기를 그대로 배송합니다.",
+  cta_label:"SUMMER DROP 07 보기",cta_href:"new-drops.html",
+  cta2_label:"공간 둘러보기",cta2_href:"#space",
+  chip:"NEXT DROP|07.21 (TUE) 12:00 KST|응모 마감 07.29 (WED)",active:true},
+ {img:"https://pub-XXXX.r2.dev/hero/hero-slide-2-vernon-the8.jpg",href:"/kpop",active:true},
+ {img:"https://pub-XXXX.r2.dev/hero/hero-slide-3-girlgroup.jpg",href:"/kpop",active:true},
+ {img:"https://pub-XXXX.r2.dev/hero/hero-slide-4-icecream.jpg",href:"/kpop",active:true},
+ {img:"",href:"new-drops.html",eyebrow:"DROP 08 \u00b7 TEASER",
+  title:"NEXT STAGE,",title2:"COMING SOON",
+  sub:"다음 드롭 라인업이 곧 공개됩니다. 응모 일정은 드롭 캘린더에서 확인하세요.",
+  cta_label:"드롭 일정 보기",cta_href:"new-drops.html",active:true}
+]};
+
+var root=document.getElementById("mzHero"),
+    track=document.getElementById("mzhTrack"),
+    dotsBox=document.getElementById("mzhDots"),
+    bar=document.getElementById("mzhBar"),
+    prevBtn=document.getElementById("mzhPrev"),
+    nextBtn=document.getElementById("mzhNext");
+var slides=[],idx=0,timer=null,INT=3000,paused=false,
+    reduced=window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function esc(s){return String(s==null?"":s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+
+function slideHTML(s){
+  var isImg=!!s.img, tagOpen, tagClose;
+  if(s.href){tagOpen='<a class="mzh-slide'+(isImg?' is-img':'')+'" href="'+esc(s.href)+'">';tagClose="</a>";}
+  else{tagOpen='<div class="mzh-slide'+(isImg?' is-img':'')+'">';tagClose="</div>";}
+  var h="";
+  if(isImg){
+    h+='<img class="mzh-img" src="'+esc(s.img)+'" alt="'+esc(s.title||"프로모션 배너")+'" '+
+       'onerror="this.style.display=\'none\';this.parentNode.classList.remove(\'is-img\')">';
+  }
+  var hasText=s.title||s.eyebrow||s.sub||s.cta_label;
+  if(hasText){
+    h+='<div class="hero-inner">';
+    if(s.eyebrow)h+='<div class="eyebrow">'+esc(s.eyebrow)+'</div>';
+    if(s.title||s.title2){
+      h+="<h1>"+esc(s.title||"");
+      if(s.title2)h+='<br><span class="hollow">'+esc(s.title2)+"</span>";
+      h+="</h1>";
+    }
+    if(s.sub)h+="<p>"+esc(s.sub)+"</p>";
+    if(s.cta_label||s.cta2_label){
+      h+='<div class="cta-row">';
+      if(s.cta_label)h+='<a class="btn white" href="'+esc(s.cta_href||"#")+'">'+esc(s.cta_label)+"</a>";
+      if(s.cta2_label)h+='<a class="btn ghost" href="'+esc(s.cta2_href||"#")+'">'+esc(s.cta2_label)+"</a>";
+      h+="</div>";
+    }
+    if(s.chip){
+      var ls=String(s.chip).split("|");
+      h+='<div class="drop-chip"><b>'+esc(ls[0]||"")+"</b>";
+      for(var i=1;i<ls.length;i++)h+="<br>"+esc(ls[i]);
+      h+="</div>";
+    }
+    h+='<div class="bg-type">맵달</div></div>';
+  }
+  return tagOpen+h+tagClose;
+}
+
+function render(data){
+  slides=(data.slides||[]).filter(function(s){return s&&s.active!==false;});
+  if(!slides.length)slides=MZH_DEFAULT.slides;
+  INT=Math.max(1500,Math.min(15000,data.interval_ms||3000));
+  root.style.setProperty("--mzh-int",INT+"ms");
+  track.innerHTML=slides.map(slideHTML).join("");
+  dotsBox.innerHTML=slides.map(function(_,i){
+    return '<button role="tab" aria-selected="false" aria-label="슬라이드 '+(i+1)+'"></button>';
+  }).join("");
+  Array.prototype.forEach.call(dotsBox.children,function(d,i){
+    d.addEventListener("click",function(){go(i,true);});
+  });
+  var single=slides.length<2;
+  prevBtn.style.display=nextBtn.style.display=dotsBox.style.display=single?"none":"";
+  idx=0;go(0,false);restart();
+}
+
+function go(i,user){
+  idx=(i+slides.length)%slides.length;
+  track.style.transform="translateX(-"+(idx*100)+"%)";
+  Array.prototype.forEach.call(track.children,function(el,k){
+    el.setAttribute("aria-hidden",k===idx?"false":"true");
+  });
+  Array.prototype.forEach.call(dotsBox.children,function(d,k){
+    d.setAttribute("aria-selected",k===idx?"true":"false");
+  });
+  /* 다음 슬라이드 이미지 프리로드 */
+  var nx=slides[(idx+1)%slides.length];
+  if(nx&&nx.img){var im=new Image();im.src=nx.img;}
+  runBar();
+  if(user)restart();
+}
+function next(){go(idx+1,false);}
+function runBar(){
+  if(reduced||!bar)return;
+  bar.classList.remove("run");void bar.offsetWidth;/* reflow → 애니 재시작 */
+  if(!paused&&slides.length>1)bar.classList.add("run");
+}
+function restart(){
+  if(timer)clearInterval(timer);
+  if(reduced||paused||slides.length<2)return;
+  timer=setInterval(next,INT);
+}
+function setPaused(p){
+  paused=p;
+  if(p){if(timer)clearInterval(timer);timer=null;bar&&bar.classList.remove("run");}
+  else{runBar();restart();}
+}
+
+prevBtn.addEventListener("click",function(){go(idx-1,true);});
+nextBtn.addEventListener("click",function(){go(idx+1,true);});
+root.addEventListener("mouseenter",function(){setPaused(true);});
+root.addEventListener("mouseleave",function(){setPaused(false);});
+root.addEventListener("focusin",function(){setPaused(true);});
+root.addEventListener("focusout",function(){setPaused(false);});
+root.addEventListener("keydown",function(e){
+  if(e.key==="ArrowLeft"){go(idx-1,true);e.preventDefault();}
+  if(e.key==="ArrowRight"){go(idx+1,true);e.preventDefault();}
+});
+/* 터치 스와이프 */
+var sx=null;
+root.addEventListener("touchstart",function(e){sx=e.touches[0].clientX;setPaused(true);},{passive:true});
+root.addEventListener("touchend",function(e){
+  if(sx!==null){
+    var dx=e.changedTouches[0].clientX-sx;
+    if(Math.abs(dx)>40)go(idx+(dx<0?1:-1),true);
+  }
+  sx=null;setPaused(false);
+},{passive:true});
+
+/* 초기: 기본값 즉시 렌더 → API 값으로 교체 */
+render(MZH_DEFAULT);
+fetch("/api/hero",{cache:"no-store"})
+  .then(function(r){if(!r.ok)throw 0;return r.json();})
+  .then(function(d){if(d&&d.slides&&d.slides.length)render(d);})
+  .catch(function(){/* 기본값 유지 */});
+})();
+</script>
 
 <!-- 컬렉션 캐러셀 -->
 <section>

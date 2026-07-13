@@ -25,7 +25,7 @@ import time
 from typing import List, Optional
 
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter()
 
@@ -95,7 +95,21 @@ class Slide(BaseModel):
     cta2_label: str = Field("", max_length=60)
     cta2_href: str = Field("", max_length=600)
     chip: str = Field("", max_length=200)
+    tag_label: str = Field("", max_length=40)     # 배너 태그 키워드 (예: VIDEOCALL)
+    tag_color: str = Field("", max_length=24)     # 프리셋명 또는 #hex
+    album: str = Field("", max_length=120)        # 앨범명
+    event: str = Field("", max_length=160)        # 행사 이름
     active: bool = True
+
+    @field_validator("tag_color")
+    @classmethod
+    def _tag_color_safe(cls, v: str) -> str:
+        import re as _re
+        v = (v or "").strip()
+        if v and not _re.fullmatch(
+                r"#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}|purple|gold|red|amber|ink|blue|green", v):
+            raise ValueError("tag_color는 #hex 또는 프리셋명(purple/gold/red/amber/ink/blue/green)만 허용")
+        return v
 
 
 class HeroData(BaseModel):

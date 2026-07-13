@@ -1131,6 +1131,12 @@ button.btn.sm{padding:4px 9px;font-size:12px}button.btn:disabled{opacity:.4;curs
   <div class="panel"><h3>LED 드롭 티커 <span class="tag">저장 즉시 전 페이지 반영</span></h3>
   <div class="hint" style="margin-bottom:10px">한 줄에 한 항목 · <b>**별표 두 개**</b>로 감싸면 흰색 강조 · 항목을 전부 지우고 저장하면 사이트에서 티커가 숨겨집니다. 항목 수가 바뀌어도 흐르는 속도는 일정하게 자동 조절됩니다.</div>
   <div id="tkbox" class="loading">불러오는 중…</div></div></section>
+<section id="t-banner" style="display:none">
+  <div class="panel"><h3>메인배너 — 홈 히어로 슬라이드 <span class="tag">저장 즉시 홈 반영 · 최대 5개</span></h3>
+  <div class="hint" style="margin-bottom:10px">이미지 업로드 시 자동 리사이즈됩니다. 태그 키워드·태그 배경색·앨범명·행사 이름은 배너 이미지 좌하단 캡션으로 표시되고, 이미지가 없는 슬라이드는 기존 텍스트 히어로 디자인으로 노출됩니다.</div>
+  <style>.bnf{display:flex;flex-direction:column;font-size:12px;font-weight:700;color:#666;gap:3px}.bnf input{font:inherit;font-weight:400;color:#141414;padding:7px 9px;border:1px solid #ddd;border-radius:5px;background:#fff}</style>
+  <datalist id="bntags"><option value="VIDEOCALL"><option value="FANSIGN&amp;PHOTO EVENT"><option value="FANSIGN"><option value="PHOTO EVENT"><option value="LUCKY DRAW"><option value="POP-UP"><option value="NEW DROP"><option value="LIVE"></datalist>
+  <div id="bnbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-cust" style="display:none">
   <div class="toolbar"><button class="btn sm" id="cm1" onclick="custMode('buyers')">구매 고객</button>
   <button class="btn sm ghost" id="cm2" onclick="custMode('members')">가입 회원</button></div>
@@ -1177,8 +1183,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,ticker:loadTicker,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['banner','메인배너',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,ticker:loadTicker,banner:loadBanner,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -1434,6 +1440,64 @@ async function histPage(path){try{const d=await api('/admin/api/pages/history?pa
 async function restorePage(id){try{await api('/admin/api/pages/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
  toast('해당 버전으로 복원되었습니다');closeM();loadPages()}catch(e){toast(e.message)}}
 
+// ── 메인배너 ─────────────────────────────────────────────
+const BN_COLORS=[['purple','#7C3AED','보라'],['gold','linear-gradient(135deg,#B98A2F,#E7C873)','골드'],['red','#E8332A','레드'],['amber','#FFB000','앰버'],['ink','#141414','잉크'],['blue','#2563EB','블루'],['green','#0E9F6E','그린']];
+let BN=null;
+function bnCss(c){c=(c||'').trim();const p=BN_COLORS.find(x=>x[0]===c);return p?p[1]:(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c)?c:'#7C3AED');}
+async function loadBanner(){try{BN=await api('/admin/api/banner');renderBanner();}catch(e){$('#bnbox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function renderBanner(){
+ const box=$('#bnbox');box.innerHTML='';
+ BN.slides.forEach((s,i)=>{
+  const card=document.createElement('div');card.className='panel';card.style.marginBottom='10px';
+  card.innerHTML=`<h3 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">슬라이드 ${i+1}
+    <span class="tag">${s.img?'이미지 배너':'텍스트 히어로'}</span>
+    <span style="margin-left:auto;display:flex;gap:4px;align-items:center">
+     <button class="btn sm ghost" onclick="bnMove(${i},-1)" ${i===0?'disabled':''}>↑</button>
+     <button class="btn sm ghost" onclick="bnMove(${i},1)" ${i===BN.slides.length-1?'disabled':''}>↓</button>
+     <label style="font-weight:400;font-size:13px;display:flex;align-items:center;gap:4px"><input type="checkbox" ${s.active!==false?'checked':''} onchange="BN.slides[${i}].active=this.checked"> 노출</label>
+    </span></h3>
+   <div style="display:flex;gap:14px;flex-wrap:wrap">
+    <div style="width:230px">
+     <div id="bnpv${i}" style="width:230px;height:96px;background:linear-gradient(135deg,#E8332A,#B71F18);${s.img?`background-image:url('${esc(s.img)}');`:''}background-size:cover;background-position:center;border:1px solid #e3e1db;border-radius:6px;position:relative;overflow:hidden">
+      <span id="bnchip${i}" style="position:absolute;left:8px;bottom:8px;display:${s.tag_label?'inline-block':'none'};font:700 10px 'IBM Plex Mono',monospace;letter-spacing:.04em;color:#fff;padding:3px 7px;border-radius:4px;background:${bnCss(s.tag_color)}">${esc(s.tag_label||'')}</span>
+     </div>
+     <button class="btn sm" style="margin-top:6px;width:100%" onclick="$('#bnfile${i}').click()">이미지 업로드 (자동 리사이즈)</button>
+     <input type="file" id="bnfile${i}" accept="image/*" style="display:none" onchange="bnUpload(${i},this)">
+    </div>
+    <div style="flex:1;min-width:300px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+     <label class="bnf">태그 키워드<input list="bntags" value="${esc(s.tag_label||'')}" oninput="bnSet(${i},'tag_label',this.value)" placeholder="예: VIDEOCALL"></label>
+     <label class="bnf">태그 배경색
+      <span id="bnsw${i}" style="display:flex;gap:4px;align-items:center;margin-top:2px;flex-wrap:wrap">
+       ${BN_COLORS.map(c=>`<button type="button" data-c="${c[0]}" title="${c[2]}" onclick="bnSet(${i},'tag_color','${c[0]}')" style="width:22px;height:22px;border-radius:5px;border:2px solid ${s.tag_color===c[0]?'#141414':'#e3e1db'};background:${c[1]};cursor:pointer;padding:0"></button>`).join('')}
+       <input type="color" value="${/^#[0-9a-fA-F]{6}$/.test(s.tag_color||'')?s.tag_color:'#7C3AED'}" oninput="bnSet(${i},'tag_color',this.value)" style="width:30px;height:26px;border:1px solid #e3e1db;border-radius:5px;padding:0;background:none;cursor:pointer" title="직접 선택">
+      </span></label>
+     <label class="bnf">앨범명<input value="${esc(s.album||'')}" oninput="bnSet(${i},'album',this.value)" placeholder="예: JANG HANEUM The 2nd EP [DAYDREAM]"></label>
+     <label class="bnf">행사 이름<input value="${esc(s.event||'')}" oninput="bnSet(${i},'event',this.value)" placeholder="예: SPECIAL VIDEO CALL EVENT"></label>
+     <label class="bnf" style="grid-column:1/-1">클릭 링크 URL<input value="${esc(s.href||'')}" oninput="bnSet(${i},'href',this.value)" placeholder="/kpop 또는 https://…"></label>
+    </div></div>`;
+  box.appendChild(card);
+ });
+ const bar=document.createElement('div');bar.style.cssText='display:flex;gap:10px;align-items:center;flex-wrap:wrap';
+ bar.innerHTML=`${BN.slides.length<5?'<button class="btn ghost" onclick="bnAdd()">+ 슬라이드 추가</button>':''}
+  <span class="hint">전환 간격 <input id="bniv" type="number" min="1500" max="15000" step="500" value="${BN.interval_ms||3000}" style="width:84px;padding:5px;border:1px solid #ddd;border-radius:5px"> ms</span>
+  ${can(2)?'<button class="btn red" style="margin-left:auto" onclick="saveBanner()">저장 (홈 즉시 반영)</button>':''}`;
+ box.appendChild(bar);
+}
+function bnSet(i,k,v){BN.slides[i][k]=v;
+ if(k==='tag_label'){const c=$('#bnchip'+i);c.textContent=v;c.style.display=v?'inline-block':'none';}
+ if(k==='tag_color'){$('#bnchip'+i).style.background=bnCss(v);
+  document.querySelectorAll('#bnsw'+i+' button').forEach(b=>b.style.borderColor=(b.dataset.c===v)?'#141414':'#e3e1db');}}
+async function bnUpload(i,inp){const f=inp.files[0];if(!f)return;inp.value='';
+ const pv=$('#bnpv'+i);pv.style.opacity=.5;
+ try{const u=await uploadFile(f);BN.slides[i].img=u;renderBanner();toast('업로드 완료 — 저장을 눌러 홈에 반영하세요');}
+ catch(e){if(e.message!=='세션 만료')toast(e.message);}
+ const pv2=$('#bnpv'+i);if(pv2)pv2.style.opacity=1;}
+function bnMove(i,d){const s=BN.slides,j=i+d;if(j<0||j>=s.length)return;const t=s[i];s[i]=s[j];s[j]=t;renderBanner();}
+function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
+async function saveBanner(){try{BN.interval_ms=parseInt($('#bniv').value)||3000;
+ const d=await api('/admin/api/banner',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(BN)});
+ toast('저장 완료 — 홈페이지에 '+d.slides+'개 슬라이드 반영');}catch(e){toast(e.message)}}
+
 async function loadTicker(){try{const d=await api('/admin/api/ticker');
  $('#tkbox').innerHTML=`
  <textarea id="tkitems" rows="7" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.8" placeholder="예) NEXT DROP **07.18 SAT 12:00 KST** — SUMMER DROP 08"></textarea>
@@ -1622,6 +1686,26 @@ async def api_upload(request: Request, file: UploadFile = File(...)):
     audit(a, '이미지업로드', res['url'][:120],
           '%s · %.0fKB · %s' % (file.content_type, len(data) / 1024, res['stored']))
     return {'ok': True, 'url': res['url'], 'storage': res['stored']}
+
+# ── 메인배너 (홈 히어로 슬라이드) — hero_api 저장소 재사용 ─────────────────
+@admin_router.get('/admin/api/banner')
+def api_banner_get(request: Request):
+    a = get_actor(request); need(a, 2, '메인배너 조회')
+    import hero_api
+    return hero_api.load_data()
+
+@admin_router.put('/admin/api/banner')
+def api_banner_put(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '메인배너 수정')
+    import hero_api
+    try:
+        data = hero_api.HeroData(**body).model_dump()
+    except Exception as e:
+        raise HTTPException(400, '배너 데이터 형식 오류: %s' % str(e)[:200])
+    hero_api.save_data(data)
+    hero_api._cache['data'] = None  # 5초 캐시 즉시 무효화
+    audit(a, '메인배너수정', '%d개 슬라이드' % len(data['slides']), '')
+    return {'ok': True, 'slides': len(data['slides'])}
 
 @admin_router.post('/admin/api/products/create')
 def api_product_create(request: Request, body: dict = Body(...)):

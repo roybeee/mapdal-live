@@ -51,19 +51,19 @@ DEFAULT_DATA = {
             "active": True,
         },
         {
-            "img": "https://pub-XXXX.r2.dev/hero/hero-slide-2-vernon-the8.jpg",
+            "img": "/hero/hero-slide-2-vernon-the8.jpg",
             "href": "/kpop", "eyebrow": "", "title": "", "title2": "", "sub": "",
             "cta_label": "", "cta_href": "", "cta2_label": "", "cta2_href": "",
             "chip": "", "active": True,
         },
         {
-            "img": "https://pub-XXXX.r2.dev/hero/hero-slide-3-girlgroup.jpg",
+            "img": "/hero/hero-slide-3-girlgroup.jpg",
             "href": "/kpop", "eyebrow": "", "title": "", "title2": "", "sub": "",
             "cta_label": "", "cta_href": "", "cta2_label": "", "cta2_href": "",
             "chip": "", "active": True,
         },
         {
-            "img": "https://pub-XXXX.r2.dev/hero/hero-slide-4-icecream.jpg",
+            "img": "/hero/hero-slide-4-icecream.jpg",
             "href": "/kpop", "eyebrow": "", "title": "", "title2": "", "sub": "",
             "cta_label": "", "cta_href": "", "cta2_label": "", "cta2_href": "",
             "chip": "", "active": True,

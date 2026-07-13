@@ -3206,6 +3206,33 @@ MOBNAV_SNIPPET = r"""<style id="mpMobNav">
  .k2g-price .amt{font-size:12.5px}
  .k2g-price .pct{font-size:13.5px}
 }
+/* ── 모바일 히어로: 2.4:1 배너 측면 크롭 제거 → 원본 비율 노출 + 캡션 패널 분리 ── */
+@media(max-width:1024px){
+ .mzh .mzh-track{height:auto!important}
+ .mzh .mzh-slide{height:auto!important;display:flex!important;flex-direction:column;background:#141414}
+ .mzh .mzh-slide.is-img::after{display:none}
+ .mzh .mzh-img{position:static!important;width:100%!important;height:auto!important;max-height:62vh!important;object-fit:contain!important;background:#141414;flex:0 0 auto}
+ .mzh .mzh-cap{position:static;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;background:#141414;padding:16px 20px 50px}
+ .mzh .mzh-slide .hero-inner{flex:1;min-height:0}
+ .mzh-progress{background:rgba(255,255,255,.14)}
+ #mpCatBar{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 34px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 34px),transparent)}
+ #mpCatBar.mp-end{-webkit-mask-image:none;mask-image:none}
+}
+@media(max-width:680px){
+ .mzh .mzh-cap{padding:14px 20px 48px}
+ .mzh .mzh-cap-tag{font-size:11px;padding:5px 10px;margin-bottom:8px}
+ .mzh .mzh-cap-album{font-size:17px;line-height:1.35}
+ .mzh .mzh-cap-event{font-size:12.5px;margin-top:6px}
+ .mzh .mzh-slide .hero-inner{padding:44px 20px 60px}
+ .mzh .mzh-slide h1{font-size:clamp(30px,8.4vw,38px)}
+ .mzh .hollow{-webkit-text-stroke:1.5px #fff}
+ .mzh .mzh-slide .hero-inner p{font-size:13.5px;line-height:1.65;margin:10px 0 6px}
+ .mzh .cta-row{margin-top:16px;gap:10px}
+ .mzh .cta-row .btn{padding:12px 18px;font-size:12.5px}
+ .mzh .mzh-slide .eyebrow{font-size:11px;letter-spacing:.14em}
+ .mzh-dots{bottom:14px;gap:8px}
+ .mzh-dots button{width:22px}
+}
 @media(min-width:1025px){#mpCatBar{display:none!important}}
 </style><script>(function(){
 if(window.__mpMobNav)return;window.__mpMobNav=1;
@@ -3234,6 +3261,10 @@ ready(function(){
  bar.setAttribute('aria-label','\uce74\ud14c\uace0\ub9ac');
  bar.innerHTML=h;
  header.appendChild(bar);
+ /* 스크롤 끝 도달 시 우측 페이드 힌트 제거 */
+ function mpEdge(){bar.classList.toggle('mp-end',bar.scrollLeft+bar.clientWidth>=bar.scrollWidth-6)}
+ bar.addEventListener('scroll',mpEdge,{passive:true});
+ window.addEventListener('resize',mpEdge);mpEdge();
 });})();</script>"""
 
 # ── LED 드롭 티커: DB 저장 → 전 페이지 동적 반영 ──────────────────────

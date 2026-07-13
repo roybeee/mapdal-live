@@ -3905,10 +3905,15 @@ _OG_PNG_B64 = (
 )
 _OG_PNG_BYTES = base64.b64decode(_OG_PNG_B64)
 
-@admin_router.get('/og-image.png')
-def og_image():
-    return Response(_OG_PNG_BYTES, media_type='image/png',
-                    headers={'Cache-Control': 'public, max-age=86400'})
+@admin_router.api_route('/og-image.png', methods=['GET', 'HEAD'])
+def og_image(request: Request):
+    # 카카오/페이스북 등 일부 스크래퍼는 이미지 GET 전에 HEAD로 존재·크기를 확인한다.
+    #  .get()은 HEAD를 자동 포함하지 않아 HEAD가 404 → 썸네일 누락되므로 명시 등록.
+    hdr = {'Cache-Control': 'public, max-age=86400',
+           'Content-Length': str(len(_OG_PNG_BYTES))}
+    if request.method == 'HEAD':
+        return Response(b'', media_type='image/png', headers=hdr)  # 헤더만, 바디 없음
+    return Response(_OG_PNG_BYTES, media_type='image/png', headers=hdr)
 
 _OG_TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.I | re.S)
 _OG_DESC_RE = re.compile(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)["\']', re.I)

@@ -4249,8 +4249,8 @@ Sitemap: %s/sitemap.xml
 @admin_router.api_route('/robots.txt', methods=['GET', 'HEAD'])
 def robots_txt(request: Request):
     hdr = {'Cache-Control': 'public, max-age=3600'}
-    if request.method == 'HEAD':
-        return Response(b'', media_type='text/plain', headers=hdr)
+    # HEAD도 GET과 동일 응답을 반환 — Starlette가 HEAD 시 본문만 제거하고
+    # Content-Length는 유지한다. (빈 본문 반환 시 크롤러가 '내용 없음'으로 오판)
     return Response(_ROBOTS_TXT, media_type='text/plain; charset=utf-8', headers=hdr)
 
 _sitemap_cache = {'t': 0.0, 'xml': None}
@@ -4293,8 +4293,8 @@ def _sitemap_xml():
 @admin_router.api_route('/sitemap.xml', methods=['GET', 'HEAD'])
 def sitemap_xml(request: Request):
     hdr = {'Cache-Control': 'public, max-age=600'}
-    if request.method == 'HEAD':
-        return Response(b'', media_type='application/xml', headers=hdr)
+    # HEAD도 GET과 동일 응답 — Starlette가 HEAD 시 본문만 제거하고 Content-Length는
+    # 실제 크기로 유지한다. 빈 본문(0바이트) 반환 시 구글이 '가져올 수 없음' 처리.
     return Response(_sitemap_xml(), media_type='application/xml; charset=utf-8', headers=hdr)
 
 def _inject_auth(html, path='', uid=None):

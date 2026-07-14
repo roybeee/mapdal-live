@@ -2311,84 +2311,319 @@ async function save(){
 init();
 </script></body></html>'''
 
-_PDP_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>%(name)s — MAPDAL SEOUL</title>
-<meta property="og:title" content="%(name)s"><meta property="og:description" content="MAPDAL SEOUL — Shop Seongsu, from Anywhere">%(og)s%(seo)s
-<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
-<style>:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2;--amber:#FFB000}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans KR',sans-serif;background:var(--paper);color:var(--black)}
-header{background:var(--black);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}
-header a{color:#fff;text-decoration:none;font-family:'Black Han Sans';font-size:19px}header a span{color:var(--red)}
-header .shop{font-size:12px;font-weight:700;background:var(--red);padding:7px 14px}
-main{max-width:860px;margin:0 auto;padding:28px 18px 80px}
-.wrap{display:grid;grid-template-columns:1fr 1fr;gap:28px;background:#fff;border:1px solid #e3e1db;padding:26px}
-@media(max-width:720px){.wrap{grid-template-columns:1fr}}
-.ph{background:#f0efe9;min-height:280px;display:flex;align-items:center;justify-content:center;color:#bbb;font-family:'IBM Plex Mono';font-size:12px;overflow:hidden}
-.ph img{width:100%%;height:100%%;object-fit:cover}
-h1{font-size:22px;line-height:1.35;margin-bottom:10px}
-.price{font-family:'IBM Plex Mono';font-size:26px;font-weight:600;margin:12px 0 4px}
+# ═══════════════════════════════════════════════════════════════════════
+# 카테고리별 상세페이지 메타 (뱃지 · 브랜드라인 · 혜택 아코디언)
+#   · album 은 K2G 앨범과 동일한 리치 구성(영상통화·한터차트·4F)
+#   · 그 외 카테고리는 성격에 맞는 뱃지/혜택으로 자동 전환
+#   · 각 값은 (badges[list of (label, cls)], brand_line, benefits[list of (head, hl, rest, detail)])
+# ═══════════════════════════════════════════════════════════════════════
+_PDP_META = {
+    'album': {
+        'badges': [('영상통화', 'dream'), ('한터차트', 'best')],
+        'brand': 'KPOP2GETHER × 맵달SEOUL · 4F',
+        'benefits': [
+            ('차트반영', '한터차트 집계', ' · 4F = 온라인 동시',
+             'KPOP2GETHER × 맵달SEOUL 판매분은 한터차트에 집계됩니다'),
+            ('결제혜택', '맵달APP 첫 구매 2,000P', ' · 5% 적립',
+             '래플 응모 이력 보유 시 추가 2% 적립'),
+            ('맵달드림', '오늘 도착 또는 성수 픽업!', '',
+             '서울 당일배송 · 성수 1F/4F 픽업 · 픽업 특전 대상'),
+        ],
+    },
+    'md': {
+        'badges': [('공식 굿즈', 'dream'), ('맵달드림', 'best')],
+        'brand': 'MAPDAL SEOUL · OFFICIAL MD · 4F',
+        'benefits': [
+            ('정품보증', '공식 라이선스 굿즈', ' · 정품 보증',
+             '맵달SEOUL이 직접 소싱한 공식 상품입니다'),
+            ('결제혜택', '맵달APP 첫 구매 2,000P', ' · 5% 적립',
+             '앱 결제 시 적립 · 래플 이력 보유 시 추가 2% 적립'),
+            ('맵달드림', '오늘 도착 또는 성수 픽업!', '',
+             '서울 당일배송 · 성수 1F/4F 픽업 가능'),
+        ],
+    },
+    'kfood': {
+        'badges': [('콜드체인', 'dream'), ('오늘 도착', 'best')],
+        'brand': 'MAPDAL SEOUL · K-FOOD · 1F MEAL ZIP',
+        'benefits': [
+            ('신선배송', '콜드체인 포장', ' · 신선도 유지',
+             '아이스팩 · 보냉 포장으로 신선하게 배송됩니다'),
+            ('결제혜택', '맵달APP 첫 구매 2,000P', ' · 5% 적립',
+             '앱 결제 시 적립 혜택이 제공됩니다'),
+            ('맵달드림', '서울 당일배송 · 성수 1F 픽업!', '',
+             '성수 1F MEAL ZIP에서 바로 픽업 가능'),
+        ],
+    },
+    'apparel': {
+        'badges': [('MAPDAL', 'dream'), ('성수 픽업', 'best')],
+        'brand': 'MAPDAL SEOUL · APPAREL',
+        'benefits': [
+            ('사이즈', '실측 사이즈 안내', ' · 상세 참고',
+             '상세 설명의 사이즈 표를 확인해 주세요'),
+            ('결제혜택', '맵달APP 첫 구매 2,000P', ' · 5% 적립',
+             '앱 결제 시 적립 혜택이 제공됩니다'),
+            ('맵달드림', '오늘 도착 또는 성수 픽업!', '',
+             '서울 당일배송 · 성수 픽업 가능'),
+        ],
+    },
+    'living': {
+        'badges': [('MAPDAL', 'dream'), ('성수 픽업', 'best')],
+        'brand': 'MAPDAL SEOUL · LIVING & HOME',
+        'benefits': [
+            ('구성안내', '구성품 상세', ' · 상세 참고',
+             '상세 설명에서 구성품을 확인해 주세요'),
+            ('결제혜택', '맵달APP 첫 구매 2,000P', ' · 5% 적립',
+             '앱 결제 시 적립 혜택이 제공됩니다'),
+            ('맵달드림', '오늘 도착 또는 성수 픽업!', '',
+             '서울 당일배송 · 성수 픽업 가능'),
+        ],
+    },
+}
+_PDP_META_DEFAULT = {
+    'badges': [('MAPDAL', 'dream')],
+    'brand': 'MAPDAL SEOUL',
+    'benefits': [
+        ('결제혜택', '맵달APP 첫 구매 2,000P', ' · 5% 적립',
+         '앱 결제 시 적립 혜택이 제공됩니다'),
+        ('맵달드림', '오늘 도착 또는 성수 픽업!', '',
+         '서울 당일배송 · 성수 픽업 가능'),
+    ],
+}
 
-.price .ppct{font-family:'Black Han Sans';font-weight:400;color:var(--red);margin-right:10px}
-.badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;margin-bottom:14px}
-.ok{background:#e9f7ee;color:#0a7d38}.no{background:#fff2f1;color:#c0392b}
-.desc{font-size:14px;line-height:1.8;color:#444;white-space:pre-wrap;border-top:1px solid #eee;margin-top:16px;padding-top:16px}
-.cta{display:block;text-align:center;background:var(--black);color:var(--amber);font-weight:700;padding:14px;margin-top:20px;text-decoration:none}
-.cat{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;color:#141414;background:#f0efe9;border:1px solid #e0ded7;padding:3px 10px;margin-bottom:10px;text-decoration:none}
-.cat:hover{background:#141414;color:#fff}
-.gal{display:flex;gap:8px;overflow-x:auto;margin-top:10px;padding-bottom:4px}
-.gal img{width:84px;height:84px;object-fit:cover;border:1px solid #e3e1db;cursor:pointer;flex:0 0 auto}
-.detail{max-width:860px;margin:22px auto 0;background:#fff;border:1px solid #e3e1db;padding:26px;font-size:14.5px;line-height:1.85;color:#333}
-.detail h2{font-size:16px;border-left:4px solid #E8332A;padding-left:8px;margin:0 0 14px}
-.detail figure{margin:16px 0}
-.detail img{max-width:100%%;height:auto;display:block;margin:0 auto;border-radius:2px}
-.detail figcaption{font-size:12px;color:#888;text-align:center;margin-top:6px}
-.detail p{margin:12px 0;white-space:normal}
-.foot{font-family:'IBM Plex Mono';font-size:10px;color:#aaa;text-align:center;margin-top:26px}</style></head><body>
-<header><a href="/">MAPDAL<span>SEOUL</span></a><a class="shop" href="/shop">SHOP 전체보기</a></header>
-<main><div class="wrap"><div><div class="ph" id="mainPh">%(imgtag)s</div>%(galhtml)s</div><div>
-%(cathtml)s
-<h1>%(name)s</h1>%(pricehtml)s
-<span class="badge %(bcls)s">%(bmsg)s</span>
-<div class="desc">%(descr)s</div>
-<div style="display:flex;gap:8px;margin-top:18px">
-<button id="likeBtn" onclick="toggleLike()" style="flex:1;font:700 14px 'IBM Plex Sans KR';padding:13px;border:1px solid #141414;background:#fff;cursor:pointer">&#9825; 좋아요</button>
-<button id="rsBtn" onclick="toggleRestock()" style="flex:1;display:none;font:700 14px 'IBM Plex Sans KR';padding:13px;border:0;background:#FFB000;color:#141414;cursor:pointer">재입고 알림 신청</button>
+def _pdp_meta_html(cat):
+    """카테고리 → (badges_html, brand_text, benefits_html)"""
+    m = _PDP_META.get(cat, _PDP_META_DEFAULT)
+    bdgs = ''.join('<span class="bdg %s">%s</span>' % (c, b) for b, c in m['badges'])
+    bens = ''
+    for head, hl, rest, detail in m['benefits']:
+        bens += ('<div class="ben-row"><div class="bh"><h6>%s</h6>'
+                 '<div class="bv"><span class="hl">%s</span>%s</div>'
+                 '<span class="chev">⌄</span></div><div class="bd">%s</div></div>'
+                 ) % (head, hl, rest, detail)
+    return bdgs, m['brand'], bens
+
+_PDP_HTML = '''<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>%(name)s — MAPDAL SEOUL</title>
+<meta property="og:title" content="%(name)s"><meta property="og:description" content="MAPDAL SEOUL — Shop Seongsu, from Anywhere">%(og)s%(seo)s
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--red:#E8332A;--red-deep:#B71F18;--ink:#141414;--paper:#F7F6F2;--steel:#87867F;--amber:#FFB000;--line:#E2E0D9;
+--disp:'Black Han Sans',sans-serif;--body:'IBM Plex Sans KR',sans-serif;--mono:'IBM Plex Mono',monospace}
+*{margin:0;padding:0;box-sizing:border-box}html{scroll-behavior:smooth}
+body{font-family:var(--body);background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}img{display:block;max-width:100%%}.mono{font-family:var(--mono)}
+header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1px solid var(--line)}
+.header-inner{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:64px;max-width:1440px;margin:0 auto}
+.logo{font-family:var(--disp);font-size:26px;letter-spacing:.02em;color:var(--ink);line-height:1}
+.logo em{color:var(--red);font-style:normal}
+.util{display:flex;gap:18px;font-size:13px;font-weight:600;align-items:center}
+.util a{font-size:13px;font-weight:600}.util a:hover{color:var(--red)}
+.util .cart{background:var(--ink);color:#fff;border-radius:20px;padding:6px 14px;font-size:12px}
+.crumb{max-width:1440px;margin:0 auto;padding:18px 48px 0;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--steel)}
+.crumb a:hover{color:var(--red)}
+.pdp{max-width:1440px;margin:0 auto;padding:28px 48px 56px;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:48px;align-items:start}
+.pdp>div{min-width:0}
+.gal-main{border:1px solid var(--line);display:flex;align-items:center;justify-content:center;padding:56px 48px 84px;min-height:560px;position:relative;overflow:hidden;background:radial-gradient(130%% 95%% at 50%% 15%%,#FFF8F2 0%%,#FBE9DF 42%%,#F2D3C4 100%%)}
+.gal-main .bg-word{position:absolute;top:6%%;left:50%%;transform:translateX(-50%%);font-family:var(--disp);font-size:clamp(80px,10vw,132px);letter-spacing:.03em;color:rgba(20,20,20,.045);pointer-events:none;user-select:none;white-space:nowrap;z-index:0}
+.gal-main img{max-height:420px;width:auto;position:relative;z-index:2;filter:drop-shadow(0 30px 26px rgba(96,32,10,.22))}
+.gal-main .ph-word{font-family:var(--disp);font-size:44px;color:rgba(20,20,20,.18);position:relative;z-index:2}
+.gal-main::after{content:'';position:absolute;bottom:58px;left:50%%;transform:translateX(-50%%);width:44%%;height:34px;background:radial-gradient(ellipse at center,rgba(60,20,8,.32),rgba(60,20,8,0) 68%%);filter:blur(6px);z-index:1}
+.gal-flavor{position:absolute;top:22px;left:22px;font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--red);background:#fff;border:1px solid var(--line);padding:6px 10px;z-index:3}
+.gal-thumbs{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+.gal-thumbs button{width:84px;height:84px;background:#fff;border:1px solid var(--line);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:10px;transition:border-color .15s}
+.gal-thumbs button.on,.gal-thumbs button:hover{border-color:var(--red)}
+.gal-thumbs img{max-height:64px;width:auto}
+.buy{position:sticky;top:80px;max-height:calc(100vh - 96px);overflow-y:auto;padding-right:8px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.buy::-webkit-scrollbar{width:5px}.buy::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.badges{display:flex;gap:6px;margin-bottom:10px}
+.bdg{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;padding:4px 8px}
+.bdg.dream{background:var(--red);color:#fff}.bdg.best{background:var(--ink);color:#fff}
+.buy .brand{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--red);margin-bottom:8px}
+.buy h1{font-size:22px;font-weight:700;line-height:1.4}
+.price-block{margin-top:14px}
+.price-block .now{display:flex;align-items:baseline;gap:10px;margin-top:2px}
+.price-block .pct{font-family:var(--disp);font-size:26px;color:var(--red)}
+.price-block .amt{font-family:var(--disp);font-size:30px}
+.stock-line{font-size:12.5px;font-weight:600;margin:12px 0 4px}
+.stock-line.ok{color:#0a7d38}.stock-line.no{color:var(--red)}
+.viewers{font-size:12px;color:var(--red);font-weight:600;margin:8px 0 16px}
+.viewers::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%%;background:var(--red);margin-right:6px;animation:pulse 1.4s infinite}
+@keyframes pulse{50%%{opacity:.3}}@media (prefers-reduced-motion:reduce){.viewers::before{animation:none}}
+.qty-row{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
+.qty-ctl{display:flex;border:1px solid var(--line);background:#fff}
+.qty-ctl button{width:34px;height:34px;border:none;background:#fff;cursor:pointer;font-size:16px}
+.qty-ctl span{width:44px;text-align:center;font-family:var(--mono);font-size:13px;line-height:34px}
+.total-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:14px;padding-top:14px;border-top:2px solid var(--ink)}
+.total-row .tl{font-size:13px;font-weight:600}
+.total-row .tv{font-family:var(--disp);font-size:28px;color:var(--red)}
+.buy-btns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
+.buy-btns .btn{justify-content:center;padding:16px;border:none;cursor:pointer;font-family:var(--body);font-weight:700;font-size:14px;display:flex;align-items:center;text-align:center}
+.btn.cartb{background:#fff;border:1.5px solid var(--ink);color:var(--ink)}
+.btn.red{background:var(--red);color:#fff}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.like-row{display:flex;gap:8px;margin-top:10px}
+.like-row button{flex:1;font:700 13px var(--body);padding:12px;border:1px solid var(--ink);background:#fff;cursor:pointer}
+.like-row button.rs{border:0;background:var(--amber);color:var(--ink);display:none}
+.ben-acc{margin-top:18px;border-top:1px solid var(--line)}
+.ben-row{border-bottom:1px solid var(--line)}
+.ben-row .bh{display:grid;grid-template-columns:88px 1fr 20px;gap:10px;padding:13px 2px;font-size:12.5px;cursor:pointer;align-items:start}
+.ben-row .bh h6{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--steel);padding-top:2px}
+.ben-row .bh .bv .hl{color:var(--red);font-weight:700}
+.ben-row .chev{color:var(--steel);transition:transform .2s;text-align:center}
+.ben-row.open .chev{transform:rotate(180deg)}
+.ben-row .bd{display:none;padding:0 2px 14px 98px;font-size:12px;color:var(--steel);line-height:1.7}
+.ben-row.open .bd{display:block}
+.pdp-tabs{padding:36px 0 8px}
+.tab-bar{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line);position:sticky;top:64px;background:var(--paper);z-index:50}
+.tab-bar button{padding:16px;border:none;background:transparent;font-family:var(--body);font-size:14.5px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:var(--steel)}
+.tab-bar button.on{border-bottom-color:var(--ink);color:var(--ink)}
+.tab-panel{display:none;padding:40px 0 8px}.tab-panel.on{display:block}
+.tab-panel .descbody{font-size:14.5px;line-height:1.85;color:#333;white-space:pre-wrap}
+.detail-imgs img{max-width:100%%;height:auto;display:block;margin:12px auto;border-radius:2px}
+.info-table{width:100%%;border-collapse:collapse;font-size:13.5px}
+.info-table th{text-align:left;width:130px;padding:12px 10px;background:#faf9f5;border:1px solid var(--line);font-weight:600;vertical-align:top}
+.info-table td{padding:12px 12px;border:1px solid var(--line);color:#444;line-height:1.6;vertical-align:top}
+.qna-wrap{max-width:1440px;margin:8px auto 0;padding:0 48px 40px}
+.qna-wrap h2{font-family:var(--disp);font-size:22px;font-weight:400;margin-bottom:14px}
+.qna-ask{font:700 12.5px var(--body);padding:11px 20px;border:0;background:var(--ink);color:#fff;cursor:pointer;margin-top:12px}
+footer{background:var(--ink);color:#8E8D87;margin-top:40px}
+.foot-inner{max-width:1440px;margin:0 auto;padding:56px 48px 32px}
+footer .logo{color:#fff;margin-bottom:14px}footer .logo em{color:var(--red)}
+footer p{font-size:12.5px;line-height:1.8;max-width:340px}
+.foot-links{display:flex;gap:22px;flex-wrap:wrap;margin-top:18px;font-size:13px}
+.foot-links a{color:#B9B8B1}.foot-links a:hover{color:#fff}
+.foot-base{border-top:1px solid #2A2A28;font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;
+max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
+.foot-base a{color:var(--amber)}
+@media(max-width:1024px){.pdp{grid-template-columns:1fr;gap:28px}.buy{position:static;max-height:none}}
+@media(max-width:640px){.crumb{padding:14px 20px 0}.pdp{padding:20px 20px 40px}.gal-main{min-height:380px;padding:36px 20px 60px}.foot-inner,.foot-base{padding-left:20px;padding-right:20px}.qna-wrap{padding:0 20px 40px}}
+</style></head><body>
+<header><div class="header-inner">
+<a class="logo" href="/home">MAPDAL<em>SEOUL</em></a>
+<div class="util"><a href="/shop">SHOP</a><a href="/account" id="mpAuth">로그인</a><a class="cart" href="/cart" id="cartBadge">CART</a></div>
+</div></header>
+<div class="crumb"><a href="/home">HOME</a> &gt; <a href="%(caturl)s">%(catlabel)s</a> &gt; <span style="color:var(--ink)">%(name)s</span></div>
+<div class="pdp">
+  <div>
+    <div class="gal-main" id="galMain"><span class="bg-word">MAPDAL SEOUL</span><span class="gal-flavor">%(flavor)s</span>%(imgtag)s</div>
+    %(galhtml)s
+    <div class="pdp-tabs">
+      <div class="tab-bar">
+        <button class="on" data-tab="desc">상품설명</button>
+        <button data-tab="info">구매정보</button>
+        <button data-tab="qa">배송/교환</button>
+      </div>
+      <div class="tab-panel on" id="tab-desc">
+        <div class="descbody">%(descr)s</div>
+        %(detailhtml)s
+      </div>
+      <div class="tab-panel" id="tab-info">
+        <table class="info-table">
+          <tr><th>상품명</th><td>%(name)s</td></tr>
+          <tr><th>분류</th><td>%(catlabel)s</td></tr>
+          <tr><th>판매</th><td>맵달서울성수 · MAPDAL SEOUL (성수)</td></tr>
+          %(inforows)s
+        </table>
+      </div>
+      <div class="tab-panel" id="tab-qa">
+        <table class="info-table">
+          <tr><th>국내배송</th><td>3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고</td></tr>
+          <tr><th>맵달드림</th><td>서울 당일배송 · 성수 1F/4F 픽업</td></tr>
+          <tr><th>교환/반품</th><td>미개봉·미사용에 한해 수령 7일 이내 · 신선식품 및 개봉 상품은 불가</td></tr>
+          <tr><th>해외배송</th><td>DDP(관·부가세 포함) 지원 — global@mealzip.kr 문의</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="buy">
+    <div class="badges">%(badges)s</div>
+    <div class="brand">%(brand)s</div>
+    <h1>%(name)s</h1>
+    <div class="price-block">%(pricehtml)s</div>
+    <div class="stock-line %(bcls)s">%(bmsg)s</div>
+    <div class="viewers"><span id="vCount">%(viewers)d</span>명이 보고 있어요</div>
+    <div class="qty-row"><span style="font-size:13px;font-weight:600">수량</span>
+      <div class="qty-ctl"><button id="qm">−</button><span id="qv">1</span><button id="qp">＋</button></div></div>
+    <div class="total-row"><span class="tl">총 상품 금액</span><span class="tv" id="pTot">₩%(price_fmt)s</span></div>
+    <div class="buy-btns">
+      <button class="btn cartb" id="btnCart">장바구니</button>
+      <button class="btn red" id="btnBuy">바로구매</button>
+    </div>
+    <div class="like-row">
+      <button id="likeBtn" onclick="toggleLike()">&#9825; 좋아요</button>
+      <button id="rsBtn" class="rs" onclick="toggleRestock()">재입고 알림 신청</button>
+    </div>
+    <div class="ben-acc">%(benefits)s</div>
+  </div>
 </div>
-<a class="cta" href="/shop">SHOP에서 주문하기</a></div></div>
-%(detailhtml)s
-<div style="max-width:860px;margin:22px auto 0;background:#fff;border:1px solid #e3e1db;padding:22px">
-<h2 style="font-size:15px;border-left:4px solid #E8332A;padding-left:8px;margin-bottom:6px">상품 Q&amp;A</h2>
-<div id="qnaList" style="font-size:13px;color:#999;padding:10px 4px">불러오는 중…</div>
-<button onclick="askQ()" style="font:700 12.5px 'IBM Plex Sans KR';padding:9px 16px;border:0;background:#141414;color:#fff;cursor:pointer">상품 문의하기</button>
-<div style="font-size:11px;color:#999;margin-top:8px">문의 답변은 마이페이지 &gt; 상품 Q&amp;A 내역에서도 확인할 수 있습니다.</div></div>
-<div class="foot">SHOP SEONGSU, FROM ANYWHERE · %(pid)s</div></main>
+<div class="qna-wrap">
+  <h2>상품 Q&amp;A</h2>
+  <div id="qnaList" style="font-size:13px;color:#999;padding:6px 2px">불러오는 중…</div>
+  <button class="qna-ask" onclick="askQ()">상품 문의하기</button>
+  <div style="font-size:11px;color:#999;margin-top:8px">문의 답변은 마이페이지 &gt; 상품 Q&amp;A 내역에서도 확인할 수 있습니다.</div>
+</div>
+<footer><div class="foot-inner">
+  <div class="logo">MAPDAL<em>SEOUL</em></div>
+  <p>Not a store, A stage. 성수동에서 전 세계 팬에게 — Shop Seongsu, from Anywhere.</p>
+  <div class="foot-links"><a href="/shop">SHOP</a><a href="/kpop">KPOP</a><a href="/mapdal-seoul">MAPDAL SEOUL</a><a href="/support">SUPPORT</a><a href="/shipping">배송안내</a><a href="/returns">교환/반품</a></div>
+</div>
+<div class="foot-base"><a href="/terms" style="color:#fff">이용약관</a> · <a href="/privacy">개인정보처리방침</a> &nbsp;&nbsp; © 2026 MEAL ZIP INC. · MAPDAL SEOUL<br>
+맵달서울성수 · 대표: 황인범, 김동경 · 서울 성동구 성수이로16길 5 · 사업자등록번호: 394-85-03267 · 통신판매업신고: 제2026-서울성동-0426호 · 고객센터: ceo@mealzip.kr</div>
+</footer>
 <script>
-var PID=%(pidjs)s, SOLD=%(soldjs)s, ST={login:false,liked:false,restock:false};
+var PID=%(pidjs)s, PRICE=%(pricejs)d, PNAME=%(namejs)s, PIMG=%(imgjs)s, SOLD=%(soldjs)s, STOCK=%(stockjs)d;
+var ST={login:false,liked:false,restock:false};
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-function swapMain(src){var ph=document.getElementById('mainPh');if(ph)ph.innerHTML='<img src="'+esc(src)+'" alt="">';}
+function fmt(n){return '₩'+Number(n).toLocaleString('ko-KR')}
+function swapMain(src){var g=document.getElementById('galMain');var im=g.querySelector('img');if(im){im.src=src}else{g.querySelector('.ph-word')&&(g.querySelector('.ph-word').outerHTML='<img src="'+esc(src)+'" alt="">')}
+ g.querySelectorAll('.gal-thumbs button');document.querySelectorAll('.gal-thumbs button').forEach(function(b){b.classList.toggle('on',b.dataset.src===src)})}
+// 수량·합계
+var q=1;
+function updTot(){document.getElementById('qv').textContent=q;document.getElementById('pTot').textContent=fmt(PRICE*q)}
+document.getElementById('qp').onclick=function(){q=Math.min(99,q+1);updTot()};
+document.getElementById('qm').onclick=function(){q=Math.max(1,q-1);updTot()};
+if(SOLD){document.getElementById('btnCart').disabled=true;document.getElementById('btnBuy').disabled=true}
+// 장바구니 (localStorage mapdal_cart — 기존 결제 파이프라인과 동일 규격)
+var CK='mapdal_cart';
+function ldc(){try{return JSON.parse(localStorage.getItem(CK)||'[]')}catch(e){return[]}}
+function svc(a){try{localStorage.setItem(CK,JSON.stringify(a))}catch(e){}}
+function cbadge(){var c=ldc().reduce(function(a,i){return a+i.q},0);var el=document.getElementById('cartBadge');if(el)el.textContent='CART'+(c?' · '+c:'')}
+function addItem(){var items=ldc();var ex=items.find(function(i){return i.id===PID});
+ if(ex){ex.q=Math.min(99,ex.q+q)}else{items.push({id:PID,n:PNAME,p:PRICE,q:q,img:PIMG,u:'/p/'+encodeURIComponent(PID)})}
+ svc(items);cbadge()}
+document.getElementById('btnCart').onclick=function(){if(SOLD)return;addItem();location.href='/cart'};
+document.getElementById('btnBuy').onclick=function(){if(SOLD)return;addItem();location.href='/checkout'};
+cbadge();
+// 뷰어 카운터
+var v=%(viewers)d;setInterval(function(){v=Math.max(12,v+Math.floor(Math.random()*9)-4);var el=document.getElementById('vCount');if(el)el.textContent=v},4000);
+// 탭·아코디언
+document.querySelectorAll('.tab-bar button').forEach(function(b){b.addEventListener('click',function(){
+ document.querySelectorAll('.tab-bar button').forEach(function(x){x.classList.toggle('on',x===b)});
+ document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.toggle('on',p.id==='tab-'+b.dataset.tab)})})});
+document.querySelectorAll('.ben-row .bh').forEach(function(h){h.addEventListener('click',function(){h.parentElement.classList.toggle('open')})});
+// 로그인 상태 헤더
+fetch('/api/member/me').then(function(r){return r.json()}).catch(function(){return{login:false}}).then(function(d){
+ var a=document.getElementById('mpAuth');if(a)a.textContent=(d&&d.login)?('MY · '+(d.name||'회원')):'로그인'});
+// 좋아요·재입고
 function paint(){var lb=document.getElementById('likeBtn');
  lb.innerHTML=(ST.liked?'&#9829; 좋아요 취소':'&#9825; 좋아요');
  lb.style.background=ST.liked?'#141414':'#fff';lb.style.color=ST.liked?'#FFB000':'#141414';
- var rb=document.getElementById('rsBtn');
- if(SOLD){rb.style.display='block';rb.textContent=ST.restock?'재입고 알림 신청됨 (해제)':'재입고 알림 신청';}}
+ var rb=document.getElementById('rsBtn');if(SOLD){rb.style.display='block';rb.textContent=ST.restock?'재입고 알림 신청됨 (해제)':'재입고 알림 신청'}}
 fetch('/api/member/pdp-state?product_id='+encodeURIComponent(PID)).then(function(r){return r.json()}).then(function(d){ST=d;paint()}).catch(function(){paint()});
-function needLogin(){if(confirm('로그인이 필요합니다. 로그인 페이지로 이동할까요?'))location.href='/account';}
+function needLogin(){if(confirm('로그인이 필요합니다. 로그인 페이지로 이동할까요?'))location.href='/account'}
 function post(u,b,cb){fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
- .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||'오류');return j})}).then(cb)
- .catch(function(e){alert(e.message)})}
-function toggleLike(){if(!ST.login)return needLogin();
- post('/api/member/likes',{product_id:PID,on:!ST.liked},function(){ST.liked=!ST.liked;paint()})}
-function toggleRestock(){if(!ST.login)return needLogin();
- post('/api/member/restock',ST.restock?{product_id:PID,off:true}:{product_id:PID},function(j){ST.restock=!!j.on;paint()})}
-function askQ(){if(!ST.login)return needLogin();
- var q=prompt('상품에 대해 궁금한 점을 남겨주세요');if(!q)return;
- post('/api/member/pqna',{product_id:PID,question:q},function(){alert('문의가 접수되었습니다. 답변은 마이페이지에서 확인하세요.');})}
+ .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||'오류');return j})}).then(cb).catch(function(e){alert(e.message)})}
+function toggleLike(){if(!ST.login)return needLogin();post('/api/member/likes',{product_id:PID,on:!ST.liked},function(){ST.liked=!ST.liked;paint()})}
+function toggleRestock(){if(!ST.login)return needLogin();post('/api/member/restock',ST.restock?{product_id:PID,off:true}:{product_id:PID},function(j){ST.restock=!!j.on;paint()})}
+function askQ(){if(!ST.login)return needLogin();var qq=prompt('상품에 대해 궁금한 점을 남겨주세요');if(!qq)return;
+ post('/api/member/pqna',{product_id:PID,question:qq},function(){alert('문의가 접수되었습니다. 답변은 마이페이지에서 확인하세요.')})}
 fetch('/api/pqna?product_id='+encodeURIComponent(PID)).then(function(r){return r.json()}).then(function(d){
  var el=document.getElementById('qnaList');
  if(!d.rows.length){el.textContent='아직 등록된 문의가 없습니다.';return}
  el.innerHTML=d.rows.map(function(x){return '<div style="border-bottom:1px solid #eee;padding:10px 2px;color:#141414">'+
  '<div style="font-weight:700">Q. '+esc(x.q)+' <span style="color:#aaa;font-weight:400;font-size:11px">'+esc(x.name)+' · '+esc(x.at)+'</span></div>'+
- '<div style="margin-top:6px;background:#faf9f5;padding:9px;white-space:pre-wrap">A. '+esc(x.a)+'</div></div>'}).join('')});
+ '<div style="margin-top:6px;background:#faf9f5;padding:9px;white-space:pre-wrap">A. '+esc(x.a)+'</div></div>'}).join('')}).catch(function(){});
 </script></body></html>'''
 
 @admin_router.get('/p/{pid:path}', response_class=HTMLResponse)
@@ -2423,14 +2658,16 @@ def pdp(pid: str):
     if body_html.strip():
         detailhtml = '<div class="detail"><h2>상세 정보</h2>%s</div>' % body_html
     # 통일 규격: 정가(취소선) 폐기 — 할인율(빨강)·할인가만 표기
+    # ── 가격 (리치 price-block: 할인율%+가격) ──
     sale, was = num(r.get('price')), num(r.get('list_price'))
     pct = derived_pct(was, sale)
-    if pct:
-        pricehtml = ('<div class="price disc">'
-                     '<span class="ppct">%d%%</span>₩%s</div>'
-                     % (pct, format(sale, ',')))
+    if sale <= 0:
+        pricehtml = '<div class="now"><span class="amt">가격 문의</span></div>'
+    elif pct:
+        pricehtml = ('<div class="now"><span class="pct">%d%%</span>'
+                     '<span class="amt">₩%s</span></div>' % (pct, format(sale, ',')))
     else:
-        pricehtml = '<div class="price">₩%s</div>' % format(sale, ',')
+        pricehtml = '<div class="now"><span class="amt">₩%s</span></div>' % format(sale, ',')
     # SEO — canonical(own→정적 페이지 · k2g→앨범상세 · mp→자기 자신) + Product 스키마
     if pid.startswith('k2g::'):
         canon = '%s/album-detail?uid=%s' % (SITE_ORIGIN, pid[5:])
@@ -2454,18 +2691,51 @@ def pdp(pid: str):
                + '<meta property="og:locale" content="ko_KR">'
                + _jsonld(prod_ld)
                + _jsonld(_seo_breadcrumb(_su, _sn, str(r.get('name') or '')[:60], canon)))
+    # ── 카테고리별 메타 (뱃지·브랜드라인·혜택 아코디언) ──
+    badges_html, brand_line, benefits_html = _pdp_meta_html(cat)
+    # 카테고리별 flavor 태그 + 구매정보 탭 추가행
+    _FLAVOR = {'album': 'ALBUM', 'md': 'OFFICIAL MD', 'kfood': 'K-FOOD',
+               'apparel': 'APPAREL', 'living': 'LIVING'}
+    flavor = _FLAVOR.get(cat, 'MAPDAL')
+    if cat == 'album':
+        inforows = ('<tr><th>형태</th><td>음반 (CD) — 구성은 상세 참조</td></tr>'
+                    '<tr><th>발매/공급</th><td>912엔터테인먼트 (KPOP2GETHER)</td></tr>'
+                    '<tr><th>차트 반영</th><td>본 스토어 판매량은 한터차트에 집계됩니다</td></tr>'
+                    '<tr><th>랜덤 구성</th><td>버전/포토카드 랜덤 상품은 선택 불가 · 중복 발송 가능</td></tr>')
+    elif cat == 'kfood':
+        inforows = ('<tr><th>보관</th><td>콜드체인 · 수령 후 냉장/냉동 보관</td></tr>'
+                    '<tr><th>배송</th><td>보냉 포장 · 신선 배송</td></tr>'
+                    '<tr><th>안내</th><td>상세 설명의 원산지·알레르기 정보 확인</td></tr>')
+    elif cat == 'apparel':
+        inforows = ('<tr><th>사이즈</th><td>상세 설명의 실측 사이즈 표 참조</td></tr>'
+                    '<tr><th>소재/세탁</th><td>상세 설명 참조</td></tr>')
+    elif cat == 'living':
+        inforows = '<tr><th>구성품</th><td>상세 설명 참조</td></tr>'
+    else:
+        inforows = '<tr><th>구성</th><td>상세 설명 참조</td></tr>'
+    # 뷰어수(상품 id 기반 안정값 60~139)
+    try:
+        _seed = int(re.sub(r'\D', '', pid)[-4:] or '0')
+    except Exception:
+        _seed = 0
+    viewers = 60 + (_seed % 80)
+    _img_og = img if img.startswith('http') else (('https://mapdal.kr' + img) if img.startswith('/') else OG_IMAGE_URL)
     return HTMLResponse(_PDP_HTML % {
-        'name': h(r.get('name')), 'pricehtml': pricehtml,
+        'name': h(r.get('name')), 'namejs': json.dumps(str(r.get('name') or '')),
+        'pricehtml': pricehtml, 'price_fmt': format(sale, ','), 'pricejs': sale,
         'bcls': 'no' if soldout else 'ok',
         'bmsg': '품절 (SOLD OUT)' if soldout else '구매 가능 · 재고 %d' % num(r.get('stock')),
+        'stockjs': num(r.get('stock')),
         'descr': h(r.get('descr')) or 'MAPDAL SEOUL 상품입니다.',
-        'imgtag': ('<img src="%s" alt="">' % h(img)) if img else 'MAPDAL SEOUL',
-        'og': ('<meta property="og:image" content="%s"><meta name="twitter:card" content="summary_large_image">'
-               % h(img if img.startswith('http') else
-                   ('https://mapdal.kr' + img if img.startswith('/') else OG_IMAGE_URL))),
+        'imgtag': ('<img src="%s" alt="">' % h(img)) if img else '<span class="ph-word">MAPDAL SEOUL</span>',
+        'imgjs': json.dumps(img),
+        'og': ('<meta property="og:image" content="%s"><meta name="twitter:card" content="summary_large_image">' % h(_img_og)),
         'seo': seohtml,
-        'cathtml': cathtml, 'galhtml': galhtml, 'detailhtml': detailhtml,
-        'pid': h(pid), 'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false'})
+        'caturl': h(_cu or '/shop'), 'catlabel': h(_cl or 'SHOP'),
+        'flavor': flavor, 'badges': badges_html, 'brand': h(brand_line),
+        'benefits': benefits_html, 'viewers': viewers,
+        'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
+        'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false'})
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 def _burl(request: Request):

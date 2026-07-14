@@ -4381,8 +4381,25 @@ def _checkout_apply(html):
     # ── [6] 결제 실행부: 토스 requestPayment → INIStdPay 폼 POST ──
     #   /api/orders 응답의 od.inicis(서버 서명 파라미터)로 히든폼 생성 후 INIStdPay.pay().
     #   이후 인증→승인은 서버 /inicis/return 이 처리하고 /order-complete 로 리다이렉트.
-    _toss_call = (
-        "const toss=TossPayments(CFG.clientKey);\n"
+    #   ★ 팝업 차단 방지: 주문 생성을 동기 XHR로 처리해 INIStdPay.pay()가 클릭 제스처
+    #     안에서 동기 호출되도록 함. (await fetch 뒤 호출하면 브라우저가 팝업을 차단함)
+    _toss_handler = (
+        "document.getElementById('payBtn').addEventListener('click',async()=>{\n"
+        "  if(!items.length)return;\n"
+        "  if(!document.getElementById('ag1').checked){alert('필수 약관에 동의해 주세요.');return;}\n"
+        "  const buyer={\n"
+        "    name:document.getElementById('bName').value.trim(),\n"
+        "    phone:document.getElementById('bPhone').value.trim(),\n"
+        "    zip:document.getElementById('zip').value.trim(),\n"
+        "    addr1:document.getElementById('addr1').value.trim(),\n"
+        "    addr2:document.getElementById('addr2').value.trim()};\n"
+        "  const btn=document.getElementById('payBtn');btn.disabled=true;btn.textContent='주문 생성중…';\n"
+        "  try{\n"
+        "    const res=await fetch('/api/orders',{method:'POST',headers:{'Content-Type':'application/json'},\n"
+        "      body:JSON.stringify({items:items.map(i=>({id:i.id,q:i.q})),buyer,shipMethod:shipMethod(),intl})});\n"
+        "    const od=await res.json();\n"
+        "    if(!res.ok)throw new Error(od.detail||'주문 생성 실패');\n"
+        "    const toss=TossPayments(CFG.clientKey);\n"
         "    const payment=toss.payment({customerKey:TossPayments.ANONYMOUS});\n"
         "    await payment.requestPayment({\n"
         "      method:'CARD',\n"
@@ -4393,17 +4410,44 @@ def _checkout_apply(html):
         "      failUrl:location.origin+'/checkout?fail=1',\n"
         "      card:{useEscrow:false,flowMode:'DEFAULT',useCardPoint:false,useAppCardOnly:false}\n"
         "    });")
-    _ini_call = (
-        "if(!od.inicis)throw new Error('결제 파라미터 생성 실패');\n"
+    _ini_handler = (
+        "document.getElementById('payBtn').addEventListener('click',function(){\n"
+        "  if(!items.length)return;\n"
+        "  if(!document.getElementById('ag1').checked){alert('필수 약관에 동의해 주세요.');return;}\n"
+        "  const buyer={\n"
+        "    name:document.getElementById('bName').value.trim(),\n"
+        "    phone:document.getElementById('bPhone').value.trim(),\n"
+        "    zip:document.getElementById('zip').value.trim(),\n"
+        "    addr1:document.getElementById('addr1').value.trim(),\n"
+        "    addr2:document.getElementById('addr2').value.trim()};\n"
+        "  const btn=document.getElementById('payBtn');btn.disabled=true;btn.textContent='주문 생성중…';\n"
+        "  try{\n"
+        "    // 동기 XHR: 응답을 받은 뒤에도 클릭 제스처가 유지되어 결제창이 팝업 차단되지 않음\n"
+        "    const xhr=new XMLHttpRequest();\n"
+        "    xhr.open('POST','/api/orders',false);\n"
+        "    xhr.setRequestHeader('Content-Type','application/json');\n"
+        "    xhr.send(JSON.stringify({items:items.map(i=>({id:i.id,q:i.q})),buyer,shipMethod:shipMethod(),intl}));\n"
+        "    const od=JSON.parse(xhr.responseText||'{}');\n"
+        "    if(xhr.status<200||xhr.status>=300)throw new Error(od.detail||'주문 생성 실패');\n"
+        "    if(!od.inicis)throw new Error('결제 파라미터 생성 실패');\n"
         "    var f=document.getElementById('mpIniForm');if(f)f.remove();\n"
         "    f=document.createElement('form');f.id='mpIniForm';f.method='POST';f.acceptCharset='UTF-8';\n"
         "    Object.keys(od.inicis).forEach(function(k){var inp=document.createElement('input');\n"
         "      inp.type='hidden';inp.name=k;inp.value=od.inicis[k];f.appendChild(inp);});\n"
         "    document.body.appendChild(f);\n"
         "    if(typeof INIStdPay==='undefined')throw new Error('결제 모듈 로딩 실패 — 새로고침 후 다시 시도해 주세요');\n"
-        "    INIStdPay.pay('mpIniForm');")
-    if _toss_call in html:
-        html = html.replace(_toss_call, _ini_call, 1)
+        "    INIStdPay.pay('mpIniForm');   // 클릭 제스처 내 동기 호출 → 팝업 차단 회피")
+    if _toss_handler in html:
+        html = html.replace(_toss_handler, _ini_handler, 1)
+
+    # ── [7] 실패 시 실제 사유(msg) 표시 — 서버가 /checkout?fail=1&msg=... 로 전달 ──
+    html = html.replace(
+        "if(new URLSearchParams(location.search).get('fail'))\n"
+        "  setTimeout(()=>alert('결제가 완료되지 않았습니다. 다시 시도해 주세요.'),300);",
+        "(function(){var _q=new URLSearchParams(location.search);\n"
+        "  if(_q.get('fail')){var _m=_q.get('msg');\n"
+        "    setTimeout(()=>alert(_m?('결제가 완료되지 않았습니다.\\n\\n사유: '+_m):'결제가 완료되지 않았습니다. 다시 시도해 주세요.'),300);}\n"
+        "})();", 1)
 
     return html
 

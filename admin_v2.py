@@ -10,8 +10,8 @@ v2 전체 기능 + ① 고객(회원) CRM  ② 알림톡/SMS 발송(솔라피)  
 알림 발송 환경변수(솔라피): SOLAPI_API_KEY, SOLAPI_API_SECRET, SOLAPI_SENDER(발신번호),
  SOLAPI_PF_ID(카카오채널 pfId — 알림톡용). 미설정 시 발송 대신 로그만 기록(DRY).
 """
-import os, re, json, sqlite3, base64, hashlib, hmac, secrets, datetime, time
-import urllib.request, urllib.error
+import os, re, json, sqlite3, base64, hashlib, hmac, secrets, datetime, time, socket
+import urllib.request, urllib.error, urllib.parse
 from fastapi import APIRouter, HTTPException, Request, Body, UploadFile, File
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 
@@ -29,6 +29,9 @@ def _from_app(name, default=''):
 
 def admin_token():  return os.environ.get('ADMIN_TOKEN') or _from_app('ADMIN_TOKEN', '')
 def toss_secret():  return os.environ.get('TOSS_SECRET_KEY') or _from_app('TOSS_SECRET_KEY', '')
+# KG이니시스 설정 (app.py와 동일 소스 — 환경변수 우선, 없으면 app 모듈 기본값=테스트값)
+def inicis_mid():    return os.environ.get('INICIS_MID') or _from_app('INICIS_MID', 'INIpayTest')
+def inicis_iniapi(): return os.environ.get('INICIS_INIAPI') or _from_app('INICIS_INIAPI', 'ItEQKi3rY7uvDS8l')
 def _genv(k):
     return (os.environ.get(k) or '').strip()
 
@@ -640,21 +643,35 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
     reason = (body.get('reason') or '관리자 취소').strip()[:200]
     refunded = False
     if r.get('status') == 'PAID':
-        pk = r.get(_state['paykey']) if _state['paykey'] else None
-        if not pk: raise HTTPException(400, '결제키가 없어 자동 환불 불가 — 토스 상점관리자에서 직접 취소하세요.')
-        sk = toss_secret()
-        if not sk: raise HTTPException(400, 'TOSS_SECRET_KEY 미설정')
-        req = urllib.request.Request('https://api.tosspayments.com/v1/payments/%s/cancel' % pk,
-                                     data=json.dumps({'cancelReason': reason}).encode(),
-                                     headers={'Authorization': 'Basic ' + base64.b64encode((sk + ':').encode()).decode(),
-                                              'Content-Type': 'application/json'}, method='POST')
+        tid = r.get(_state['paykey']) if _state['paykey'] else None
+        if not tid: raise HTTPException(400, '거래번호(TID)가 없어 자동 환불 불가 — 이니시스 상점관리자에서 직접 취소하세요.')
+        mid = inicis_mid(); iniapi = inicis_iniapi()
+        if not (mid and iniapi): raise HTTPException(400, 'INICIS_MID / INICIS_INIAPI 미설정')
+        ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+        try: client_ip = socket.gethostbyname(socket.gethostname())
+        except Exception: client_ip = '127.0.0.1'
+        paymethod = 'Card'
+        # hashData = SHA512(INIAPIKey + type + paymethod + timestamp + clientIp + mid + tid)
+        hashdata = hashlib.sha512((iniapi + 'Refund' + paymethod + ts + client_ip + mid + tid).encode('utf-8')).hexdigest()
+        payload = urllib.parse.urlencode({
+            'type': 'Refund', 'paymethod': paymethod, 'timestamp': ts, 'clientIp': client_ip,
+            'mid': mid, 'tid': tid, 'msg': reason, 'hashData': hashdata,
+        }).encode('utf-8')
+        req = urllib.request.Request('https://iniapi.inicis.com/api/v1/refund', data=payload,
+                                     headers={'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8'},
+                                     method='POST')
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp: json.loads(resp.read().decode())
-            refunded = True
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                res = json.loads(resp.read().decode('utf-8'))
         except urllib.error.HTTPError as e:
-            try: msg = json.loads(e.read().decode()).get('message', 'toss error')
-            except Exception: msg = 'toss error'
-            raise HTTPException(400, '토스 취소 실패: ' + msg)
+            try: msg = json.loads(e.read().decode()).get('resultMsg', 'inicis error')
+            except Exception: msg = 'inicis error'
+            raise HTTPException(400, '이니시스 취소 실패: ' + msg)
+        except Exception:
+            raise HTTPException(400, '이니시스 취소 통신 오류')
+        if str(res.get('resultCode')) != '00':
+            raise HTTPException(400, '이니시스 취소 실패: ' + str(res.get('resultMsg', '알 수 없는 오류')))
+        refunded = True
     sets, args = ["status='CANCELLED'"], []
     if 'fulfill' in _state['ocols']: sets.append("fulfill='CANCELLED'")
     if 'admin_memo' in _state['ocols']: sets.append('admin_memo=?'); args.append(('[취소] ' + reason)[:300])
@@ -1050,8 +1067,9 @@ def api_audit(request: Request):
 @admin_router.get('/admin/api/system')
 def api_system(request: Request):
     a = get_actor(request); need(a, 0)
-    sk = toss_secret(); cf = solapi_conf()
-    mode = '라이브(실결제)' if sk.startswith('live_') else ('테스트(실과금 없음)' if sk.startswith('test_') else '미설정')
+    cf = solapi_conf()
+    _mid = inicis_mid()
+    mode = '테스트(실과금 없음)' if _mid == 'INIpayTest' else ('라이브(실결제) · MID ' + _mid)
     try:
         oc = num((one('SELECT COUNT(*) AS c FROM orders') or {}).get('c'))
         pc = num((one('SELECT COUNT(*) AS c FROM products') or {}).get('c'))
@@ -1060,7 +1078,7 @@ def api_system(request: Request):
     except Exception:
         oc = pc = cc = 0; db_ok = False
     return {'db': 'PostgreSQL' if IS_PG else 'SQLite', 'db_ok': db_ok, 'orders': oc, 'products': pc,
-            'customers': cc, 'toss_mode': mode,
+            'customers': cc, 'pg_mode': mode,
             'google_oauth': bool(_genv('GOOGLE_CLIENT_ID')),
             'apple_oauth': bool(_genv('APPLE_CLIENT_ID')),
             'kakao_oauth': bool(_genv('KAKAO_CLIENT_ID')),
@@ -1348,7 +1366,7 @@ async function saveFulfill(oid){try{const f=$('#mff').value;
 async function sendNotify(oid,auto){try{const tid=auto?(TPLCACHE.find(t=>t.name.includes('발송'))||TPLCACHE[0]).id:$('#mtpl').value;
  const r=await api('/admin/api/notify/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:oid,template:tid})});
  toast(r.dry?'기록 모드: 발송사 미설정 (로그 저장됨)':'발송 완료');}catch(e){alert(e.message)}}
-async function cancelOrder(oid,refund){if(!confirm(refund?'토스 결제취소(환불)를 실행합니다. 계속할까요?':'이 주문을 취소로 표시할까요?'))return;
+async function cancelOrder(oid,refund){if(!confirm(refund?'이니시스 결제취소(환불)를 실행합니다. 계속할까요?':'이 주문을 취소로 표시할까요?'))return;
  const reason=prompt('취소 사유','고객 요청')||'고객 요청';
  try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});
  toast(r.refunded?'환불 완료 · 재고 복원':'취소 처리 완료');closeM();loadOrders(opage)}catch(e){alert(e.message)}}
@@ -1671,7 +1689,7 @@ async function loadSys(){try{const s=await api('/admin/api/system');
  $('#sys').innerHTML=`<div class="cards">
  <div class="card"><div class="k">데이터베이스</div><div class="v" style="font-size:16px">${esc(s.db)}</div><div class="s">${s.db_ok?'정상':'연결 오류'}</div></div>
  <div class="card"><div class="k">주문 / 상품 / 고객</div><div class="v" style="font-size:16px">${s.orders} / ${s.products.toLocaleString()} / ${s.customers}</div></div>
- <div class="card ${s.toss_mode.includes('테스트')?'alert':''}"><div class="k">토스 결제</div><div class="v" style="font-size:15px">${esc(s.toss_mode)}</div></div>
+ <div class="card ${s.pg_mode.includes('테스트')?'alert':''}"><div class="k">이니시스 결제</div><div class="v" style="font-size:15px">${esc(s.pg_mode)}</div></div>
  <div class="card"><div class="k">알림 발송사</div><div class="v" style="font-size:14px">${esc(s.solapi)}</div></div>
  <div class="card"><div class="k">서버시각 (KST)</div><div class="v" style="font-size:15px">${esc(s.time_kst)}</div></div></div>
  <div class="panel"><h3>운영 체크리스트</h3><div style="line-height:2">
@@ -4092,6 +4110,148 @@ def _serve_k2g_from_db(html):
         return html
 
 # ══════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
+# 홈페이지 수정의견 반영 (2026-07 · 맵달_홈페이지_의견.pdf)
+#   Q1 금액 폰트: 앨범상세 가격 Black Han Sans(--disp) → 고딕(--body) 700 (얇고 깔끔)
+#   Q2 배송정보 : (제외 — 해외배송 불가 문구는 미표기, 글로벌 DDP 메시징 유지)
+#   Q3+Q5 상단바: 데스크톱 nav a.top 폰트 13px/600/.08em → 14px/700/.02em (가독성·확대)
+#   Q4 목록도구 : 정렬(신상품/낮은가격/높은가격/가나다) + 필터(품절제외·행사상품) +
+#                Total 아이템 수 — /kpop(앨범 전용관)은 전체, /shop(굿즈 등)은 정렬·개수
+#   Q7 공간소개 : mapdal-seoul 6F 'VIP 전용 주차장' 층·문구 삭제 (일반 고객 비노출)
+#   ※ 정적 HTML 무수정 원칙 — 전량 서빙 시점 문자열 치환(멱등). _kpop_apply 직후 실행.
+# ══════════════════════════════════════════════════════════════════════════
+# 체크아웃 정비 (2026-07 · 해외배송 제외 + 결제수단 정합화)
+#   · 해외 배송(DDP) 토글·안내문·해외 주소폼 제거 → 국내 배송 전용
+#   · 결제수단: 오해 소지 있던 4-라디오(선택 무시됨) → 실제 동작하는 항목만.
+#     토스 v2 '통합결제창'(method:CARD)은 카드+간편결제(카카오·네이버·토스페이)를
+#     한 창에서 처리하므로, 신용카드/간편결제를 1개 항목으로 통합. 해외카드 항목 제거.
+#   · 결제 실행부: 주문생성→INIStdPay.pay()→서버 /inicis/return 승인 (app.py).
+#     라이브 전환은 INICIS_MID/INICIS_SIGNKEY/INICIS_INIAPI 실계약값 교체(운영 액션)뿐.
+#   ※ 정적 HTML 무수정 — 서빙 시점 문자열 치환(멱등). _feedback_apply와 동일 파이프라인.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _checkout_apply(html):
+    """체크아웃(checkout.html)만 정비 — 해외배송 제거 + 결제수단 정합화 (멱등)."""
+    if not isinstance(html, str) or 'id="tIntl"' not in html:
+        return html   # 체크아웃 페이지가 아니면 통과 (tIntl 토글은 checkout 고유)
+
+    # ── [1] 배송지: DDP 안내문 제거 ──
+    html = html.replace(
+        '<div class="sub">해외 배송 선택 시 관세·세금이 선지불(DDP)로 합산되어 수령 시 추가 비용이 없습니다.</div>',
+        '<div class="sub">국내 전 지역 배송 · 30,000원 이상 무료배송 · 오후 2시 이전 결제 시 당일 출고.</div>', 1)
+
+    # ── [2] 배송지: 국내/해외(DDP) 토글 버튼 제거 ──
+    html = html.replace(
+        '<div class="toggle-2"><button class="on" id="tDom">국내 배송</button><button id="tIntl">해외 배송 (DDP)</button></div>',
+        '', 1)
+
+    # ── [3] 결제수단: 카드+간편결제 통합(실제 통합결제창과 일치) · 해외카드 제거 ──
+    #   기존 라디오는 value·핸들러가 없어 선택이 무시됐음 → 실제 동작 항목만 노출.
+    html = html.replace(
+        '<label class="radio-item on"><input type="radio" name="pay" checked><span class="rd"><b>신용/체크카드</b><small>국내 전 카드사</small></span></label>',
+        '<label class="radio-item on"><input type="radio" name="pay" value="CARD" checked>'
+        '<span class="rd"><b>신용·체크카드 · 간편결제</b>'
+        '<small>카카오페이 · 네이버페이 · 토스페이 · 국내 전 카드사</small></span></label>', 1)
+    # 중복된 간편결제 라디오 제거 (위 통합 항목에 포함)
+    html = html.replace(
+        '<label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>카카오페이 · 네이버페이 · 토스페이</b></span></label>',
+        '', 1)
+    # 해외 결제 라디오 제거 (해외배송 종료)
+    html = html.replace(
+        '<label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>PayPal · Alipay · 해외 카드</b><small>해외 배송 주문 권장</small></span></label>',
+        '', 1)
+
+    # ── [4] intl JS 무력화: 토글 버튼이 사라졌으므로 null 참조 방지 + 항상 국내 ──
+    if '/*mpNoIntl*/' not in html:
+        html = html.replace(
+            "const dom=document.getElementById('tDom'),intlB=document.getElementById('tIntl');",
+            "/*mpNoIntl*/const dom=document.getElementById('tDom'),intlB=document.getElementById('tIntl');"
+            "intl=false;", 1)
+        # 토글 클릭 리스너: 버튼이 없으면(=제거됨) 건너뜀
+        html = html.replace(
+            "dom.addEventListener('click',()=>setIntl(false));",
+            "if(dom)dom.addEventListener('click',()=>setIntl(false));", 1)
+        html = html.replace(
+            "intlB.addEventListener('click',()=>setIntl(true));",
+            "if(intlB)intlB.addEventListener('click',()=>setIntl(true));", 1)
+
+    # ── [5] 결제 SDK: 토스 → KG이니시스 INIStdPay ──
+    html = html.replace(
+        '<script src="https://js.tosspayments.com/v2/standard"></script>',
+        '<script src="https://stdpay.inicis.com/stdjs/INIStdPay.js" charset="UTF-8"></script>', 1)
+
+    # ── [6] 결제 실행부: 토스 requestPayment → INIStdPay 폼 POST ──
+    #   /api/orders 응답의 od.inicis(서버 서명 파라미터)로 히든폼 생성 후 INIStdPay.pay().
+    #   이후 인증→승인은 서버 /inicis/return 이 처리하고 /order-complete 로 리다이렉트.
+    _toss_call = (
+        "const toss=TossPayments(CFG.clientKey);\n"
+        "    const payment=toss.payment({customerKey:TossPayments.ANONYMOUS});\n"
+        "    await payment.requestPayment({\n"
+        "      method:'CARD',\n"
+        "      amount:{currency:'KRW',value:od.amount},\n"
+        "      orderId:od.orderId,orderName:od.orderName,\n"
+        "      customerName:buyer.name||'맵달 고객',\n"
+        "      successUrl:location.origin+'/order-complete',\n"
+        "      failUrl:location.origin+'/checkout?fail=1',\n"
+        "      card:{useEscrow:false,flowMode:'DEFAULT',useCardPoint:false,useAppCardOnly:false}\n"
+        "    });")
+    _ini_call = (
+        "if(!od.inicis)throw new Error('결제 파라미터 생성 실패');\n"
+        "    var f=document.getElementById('mpIniForm');if(f)f.remove();\n"
+        "    f=document.createElement('form');f.id='mpIniForm';f.method='POST';f.acceptCharset='UTF-8';\n"
+        "    Object.keys(od.inicis).forEach(function(k){var inp=document.createElement('input');\n"
+        "      inp.type='hidden';inp.name=k;inp.value=od.inicis[k];f.appendChild(inp);});\n"
+        "    document.body.appendChild(f);\n"
+        "    if(typeof INIStdPay==='undefined')throw new Error('결제 모듈 로딩 실패 — 새로고침 후 다시 시도해 주세요');\n"
+        "    INIStdPay.pay('mpIniForm');")
+    if _toss_call in html:
+        html = html.replace(_toss_call, _ini_call, 1)
+
+    return html
+
+
+def _order_complete_apply(html):
+    """order-complete.html: 토스 confirm 호출 → 이니시스 서버승인 결과(oid) 표시 (멱등)."""
+    if not isinstance(html, str) or "const pk=q.get('paymentKey')" not in html:
+        return html   # order-complete 페이지가 아니면 통과
+    # 토스 결제결과 확인 IIFE 전체 → oid 기반 주문조회로 교체
+    _toss_iife_start = "(async function(){\n  const q=new URLSearchParams(location.search);\n  const pk=q.get('paymentKey'),oid=q.get('orderId'),amt=q.get('amount');"
+    _new_iife_start = (
+        "(async function(){\n"
+        "  const q=new URLSearchParams(location.search);\n"
+        "  const oid=q.get('oid')||q.get('orderId');")
+    html = html.replace(_toss_iife_start, _new_iife_start, 1)
+    # 본문: pk/amt 기반 confirm 호출부 → 서버가 이미 승인한 주문을 조회해 표시
+    _toss_body = (
+        "  if(pk&&oid&&amt){\n"
+        "    title.textContent='결제를 확인하고 있습니다…';\n"
+        "    try{\n"
+        "      const r=await fetch('/api/payments/confirm',{method:'POST',headers:{'Content-Type':'application/json'},\n"
+        "        body:JSON.stringify({paymentKey:pk,orderId:oid,amount:+amt})});\n"
+        "      const d=await r.json();\n"
+        "      if(!r.ok)throw new Error(d.detail||'승인 실패');\n"
+        "      title.textContent='주문이 완료되었습니다';\n"
+        "      desc.innerHTML='결제 금액 <b>₩'+(+amt).toLocaleString('ko-KR')+'</b> · '+(d.method||'카드')+' 결제가 승인되었습니다.'+(d.receipt?' <a href=\"'+d.receipt+'\" target=\"_blank\" style=\"text-decoration:underline\">매출전표 보기</a>':'');\n"
+        "      ono.textContent='ORDER NO. '+oid;\n"
+        "      try{localStorage.removeItem('mapdal_cart');}catch(e){}\n"
+        "    }catch(e){")
+    _new_body = (
+        "  if(oid){\n"
+        "    title.textContent='주문을 확인하고 있습니다…';\n"
+        "    try{\n"
+        "      const r=await fetch('/api/orders/'+encodeURIComponent(oid));\n"
+        "      const d=await r.json();\n"
+        "      if(!r.ok)throw new Error(d.detail||'주문 조회 실패');\n"
+        "      if(d.status!=='PAID')throw new Error('결제가 완료되지 않았습니다');\n"
+        "      title.textContent='주문이 완료되었습니다';\n"
+        "      desc.innerHTML='결제 금액 <b>₩'+(+d.amount).toLocaleString('ko-KR')+'</b> · 결제가 정상 승인되었습니다.';\n"
+        "      ono.textContent='ORDER NO. '+oid;\n"
+        "      try{localStorage.removeItem('mapdal_cart');}catch(e){}\n"
+        "    }catch(e){")
+    html = html.replace(_toss_body, _new_body, 1)
+    return html
+
+
 # KPOP(음반) 카테고리 분리 — 전 페이지 서빙 시점 변환 (정적 HTML 무수정)
 #   · 메뉴바: SHOP 앞에 KPOP(음반) 신설 (데스크톱 nav + 모바일 mpCatBar)
 #   · /kpop: shop.html을 앨범 전용관으로 변환 서빙 (K2G 카탈로그 + mp:: 앨범)
@@ -4572,6 +4732,9 @@ def _inject_auth(html, path='', uid=None):
     html = _inject_shop_products(html)
     html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
+    html = _feedback_apply(html)
+    html = _checkout_apply(html)
+    html = _order_complete_apply(html)
     html, patched = _patch_legacy_footer(html)
     html = _seo_apply(html, path, uid)
     html = _inject_og(html)

@@ -290,7 +290,7 @@ def healthz():
     return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite'}
 
 @app.get('/')
-def root(): return RedirectResponse('/home')
+def root(): return RedirectResponse('/home', status_code=301)
 try:
     from hero_api import router as hero_router
     app.include_router(hero_router)

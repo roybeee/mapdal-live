@@ -3950,6 +3950,7 @@ import html as _pyhtml
 
 OG_SITE = 'MAPDAL SEOUL'
 OG_TITLE_DEFAULT = 'MAPDAL SEOUL — Shop Seongsu, from Anywhere'
+HOME_TITLE = '맵달SEOUL | K-POP 음반·굿즈·K-FOOD'   # 홈 <title> — 네이버 40자 권장 충족
 OG_DESC_DEFAULT = '성수에서 전 세계로 — K-POP 음반 · MD · K-FOOD · 어패럴. K-컬처 플래그십 맵달SEOUL 공식 스토어.'
 OG_IMAGE_URL = 'https://mapdal.kr/og-image.png'
 
@@ -4024,7 +4025,7 @@ _SEO_HOME_ALIAS_FILES = {'mapdal_home_mockup_v1.html', 'index.html'}
 
 # 주요 페이지 meta description (150자 내외 · 미지정 페이지는 사이트 기본 설명)
 _SEO_PAGE_DESC = {
-    '/home': '성수동 K-컬처 플래그십 맵달서울(MAPDAL SEOUL) 공식 온라인 스토어. K-POP 음반·포토카드 굿즈, 컵떡볶이·김밥 K-FOOD, 어패럴·리빙까지 — Shop Seongsu, from Anywhere. 국내·해외배송(DDP) 지원.',
+    '/home': '성수동 K-컬처 플래그십 맵달SEOUL 공식몰. K-POP 음반·굿즈, 컵떡볶이·김밥 K-FOOD, 국내외 배송(DDP).',
     '/shop': 'MAPDAL SEOUL 공식 SHOP — 굿즈/MD · K-FOOD · 어패럴 · 리빙/홈 전 카테고리. 성수 플래그십에서 전 세계로, 3만원 이상 무료배송.',
     '/kpop': 'K-POP 최신 음반·앨범 온라인 구매 — 팬사인회·영상통화 이벤트 응모와 특전까지. KPOP2GETHER×맵달SEOUL 공식 앨범 스토어, 판매량 차트 집계 반영.',
     '/kfood': '맵달 K-FOOD — 컵떡볶이, 김밥 6종, BOWL 6종. 성수 매장의 맛을 콜드체인 배송으로 집앞까지. MAPDAL SEOUL 공식몰.',
@@ -4223,6 +4224,7 @@ def _seo_apply(html, path='', uid=None):
         parts.append('<meta property="og:locale" content="ko_KR">')
     # ④ 구조화 데이터
     if path == '/home':
+        html = _OG_TITLE_RE.sub('<title>%s</title>' % _og_esc(HOME_TITLE), html, count=1)
         parts.append(_seo_home_ld())
     elif path.startswith('/product-'):
         parts.append(_seo_own_product_ld(path[1:], canonical))

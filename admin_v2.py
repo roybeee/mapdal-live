@@ -4120,6 +4120,199 @@ def _serve_k2g_from_db(html):
 #   Q7 공간소개 : mapdal-seoul 6F 'VIP 전용 주차장' 층·문구 삭제 (일반 고객 비노출)
 #   ※ 정적 HTML 무수정 원칙 — 전량 서빙 시점 문자열 치환(멱등). _kpop_apply 직후 실행.
 # ══════════════════════════════════════════════════════════════════════════
+# 홈페이지 수정의견 반영 (2026-07 · 맵달_홈페이지_의견.pdf)
+#   Q1 금액 폰트: 앨범상세 가격 Black Han Sans(--disp) → 고딕(--body) 700 (얇고 깔끔)
+#   Q2 배송정보 : 앨범상세 [배송/교환] 탭에 '해외배송 불가' 명시
+#   Q3+Q5 상단바: 데스크톱 nav a.top 폰트 13px/600/.08em → 14px/700/.02em (가독성·확대)
+#   Q4 목록도구 : 정렬(신상품/낮은가격/높은가격/가나다) + 필터(품절제외·행사상품) +
+#                Total 아이템 수 — /kpop(앨범 전용관)은 전체, /shop(굿즈 등)은 정렬·개수
+#   Q7 공간소개 : mapdal-seoul 6F 'VIP 전용 주차장' 층·문구 삭제 (일반 고객 비노출)
+#   ※ 정적 HTML 무수정 원칙 — 전량 서빙 시점 문자열 치환(멱등). _kpop_apply 직후 실행.
+# ══════════════════════════════════════════════════════════════════════════
+
+# [Q4] 목록 도구모음(정렬·필터·개수) — CSS+HTML+JS. shop.html/kpop 공통 로직.
+#   · 기존 sync()/renderBatch()/VIEW 파이프라인에 훅(원본 함수 재정의 없이 확장).
+#   · window.__mpApplyExtra: 원본 sync()가 매 호출 끝에 부르도록 sync 본문에 1줄 삽입.
+_FB_TOOLBAR_CSS = (
+    '<style id="mpListTools">'
+    '#mpTools{display:flex;align-items:center;gap:14px 18px;flex-wrap:wrap;'
+    'margin:2px 0 18px;padding-bottom:14px;border-bottom:1px solid var(--line)}'
+    '#mpTools .cnt{font-family:var(--mono);font-size:12px;letter-spacing:.04em;'
+    'color:var(--steel)}#mpTools .cnt b{color:var(--ink)}'
+    '#mpTools .spring{flex:1 1 auto}'
+    '#mpTools .chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer;'
+    'font-size:12.5px;color:var(--ink);user-select:none}'
+    '#mpTools .chk input{width:15px;height:15px;accent-color:var(--red);cursor:pointer}'
+    '#mpTools select{font-family:var(--body);font-size:12.5px;color:var(--ink);'
+    'padding:7px 30px 7px 12px;border:1px solid var(--line);border-radius:6px;'
+    'background:#fff url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' '
+    'width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'><path d=\'M2 4l4 4 4-4\' stroke=\'%23141414\' '
+    'stroke-width=\'1.6\' fill=\'none\'/></svg>") no-repeat right 10px center;'
+    '-webkit-appearance:none;appearance:none;cursor:pointer}'
+    '@media(max-width:640px){#mpTools{gap:10px 14px}#mpTools .spring{display:none}'
+    '#mpTools .cnt{width:100%;order:-1}}'
+    '</style>'
+)
+
+# 도구모음 마크업 — filter-bar 다음, shopGrid 앞에 삽입. data-mode로 페이지 구분.
+def _fb_toolbar_html(mode):
+    # 품절제외·행사상품 체크박스는 앨범(=행사/품절 상태 존재) 목록에만 노출.
+    chks = ''
+    if mode == 'kpop':
+        chks = (
+            '<label class="chk"><input type="checkbox" id="mpFhide">품절 제외</label>'
+            '<label class="chk"><input type="checkbox" id="mpFevt">행사상품만 (영통·팬싸)</label>'
+        )
+    return (
+        '<div id="mpTools" data-mode="' + mode + '">'
+        '<span class="cnt">Total <b id="mpCnt">0</b> items</span>'
+        + chks +
+        '<span class="spring"></span>'
+        '<select id="mpSort" aria-label="정렬">'
+        '<option value="new">신상품순</option>'
+        '<option value="asc">낮은가격순</option>'
+        '<option value="desc">높은가격순</option>'
+        '<option value="name">가나다순</option>'
+        '</select>'
+        '</div>'
+    )
+
+# [Q4] JS — 원본 sync() 말미에서 호출되는 확장 훅. 원본 전역(F,Q,K2G,VIEW,ptr,
+#   albumEligible,renderBatch,K2G_FIRST 등)을 그대로 사용. 앨범은 VIEW 정렬/필터 후
+#   재렌더, 자체상품(col-card)은 DOM 정렬. 개수는 표시중 항목 합산.
+_FB_TOOLS_JS = r"""<script id="mpListToolsJs">(function(){
+  var T=document.getElementById('mpTools'); if(!T) return;
+  var MODE=T.dataset.mode, grid=document.getElementById('shopGrid');
+  function pnum(el){ // col-card 가격 텍스트(₩4,500~)→숫자
+    var t=(el.querySelector('.price')||{}).textContent||''; 
+    var m=t.replace(/[^0-9]/g,''); return m?parseInt(m,10):0; }
+  function cname(el){ return ((el.querySelector('h3,h4')||{}).textContent||'').trim(); }
+  // 원본 VIEW(앨범 데이터셋)에 정렬/필터 적용본을 만들어 되돌려줌
+  window.__mpBuildView=function(base){
+    var v=base.slice(), s=(document.getElementById('mpSort')||{}).value||'new';
+    var hide=(document.getElementById('mpFhide')||{}).checked;
+    var evt=(document.getElementById('mpFevt')||{}).checked;
+    if(hide) v=v.filter(function(r){return !r[5];});          // r[5]=품절
+    if(evt)  v=v.filter(function(r){var t=(typeof k2gTag==='function')?k2gTag(r[2]):null;
+                                    return t&&(t[0]==='fansign'||t[0]==='video');});
+    if(s==='asc')  v.sort(function(a,b){return (a[4]||0)-(b[4]||0);});
+    else if(s==='desc') v.sort(function(a,b){return (b[4]||0)-(a[4]||0);});
+    else if(s==='name') v.sort(function(a,b){return (a[2]||'').localeCompare(b[2]||'','ko');});
+    // 'new' = 원본 순서(최신 우선 데이터셋) 유지
+    return v;
+  };
+  // 자체상품 카드 정렬(표시중인 것만) — grid 내 col-card 재배치
+  function sortCards(){
+    var s=(document.getElementById('mpSort')||{}).value||'new';
+    var cards=[].slice.call(grid.querySelectorAll('.col-card'));
+    if(!cards.length) return;
+    var vis=cards.filter(function(c){return c.style.display!=='none';});
+    if(s==='new'){ // 원래 문서순 복원
+      vis.sort(function(a,b){return (+a.dataset.mpseq||0)-(+b.dataset.mpseq||0);});
+    } else if(s==='asc'){ vis.sort(function(a,b){return pnum(a)-pnum(b);}); }
+    else if(s==='desc'){ vis.sort(function(a,b){return pnum(b)-pnum(a);}); }
+    else if(s==='name'){ vis.sort(function(a,b){return cname(a).localeCompare(cname(b),'ko');}); }
+    var lm=document.getElementById('lmWrap');
+    vis.forEach(function(c){ grid.insertBefore(c, lm||null); });
+  }
+  function count(){
+    var n=0;
+    grid.querySelectorAll('.col-card').forEach(function(c){ if(c.style.display!=='none') n++; });
+    // 앨범: 로드된 DOM이 아니라 전체 VIEW 길이로 집계(더보기 방식이므로)
+    if(typeof VIEW!=='undefined' && typeof albumEligible==='function' && albumEligible())
+      n += VIEW.length;
+    var el=document.getElementById('mpCnt'); if(el) el.textContent=n.toLocaleString('ko-KR');
+  }
+  // col-card 원문서순 기록(정렬 후 복원용)
+  [].slice.call(grid.querySelectorAll('.col-card')).forEach(function(c,i){ c.dataset.mpseq=i; });
+  // 원본 sync() 말미 훅: 앨범 재렌더는 sync가 담당하므로 여기선 카드정렬+개수만.
+  window.__mpApplyExtra=function(){ sortCards(); count(); };
+  // 컨트롤 이벤트 → 원본 sync() 재호출(앨범 VIEW 재구성 포함)
+  T.addEventListener('change', function(){ if(typeof sync==='function') sync(); else window.__mpApplyExtra(); });
+  // 더보기 클릭 후에도 개수·정렬 반영
+  var lb=document.getElementById('lmBtn');
+  if(lb) lb.addEventListener('click', function(){ setTimeout(window.__mpApplyExtra,0); });
+  window.__mpApplyExtra();
+})();</script>"""
+
+
+def _feedback_apply(html):
+    """홈페이지 수정의견 5건 서빙 시점 반영 (멱등)."""
+    if not isinstance(html, str) or '</html>' not in html:
+        return html
+
+    # ── [Q3+Q5] 데스크톱 상단 nav 폰트: 가독성↑·소폭 확대 (전 페이지 동일 룰) ──
+    html = html.replace(
+        'a.top{font-size:13px;font-weight:600;letter-spacing:.08em;',
+        'a.top{font-size:14px;font-weight:700;letter-spacing:.02em;', 1)
+
+    # ── [Q1] 앨범상세 가격 폰트: Black Han Sans → 고딕(--body) 700 ──
+    html = html.replace(
+        '.price-block .amt{font-family:var(--disp);font-size:30px}',
+        '.price-block .amt{font-family:var(--body);font-weight:700;font-size:29px;letter-spacing:-.01em}', 1)
+    html = html.replace(
+        '.price-block .pct{font-family:var(--disp);font-size:26px;color:var(--red)}',
+        '.price-block .pct{font-family:var(--body);font-weight:700;font-size:24px;color:var(--red)}', 1)
+
+    # ── [Q2] 앨범상세 [배송/교환] 탭: '해외배송 불가' 명시 (국내배송 행 확장) ──
+    _q2_src = ('<tr><th>국내배송</th><td>3,000원 (30,000원 이상 무료) · '
+               '오후 2시 이전 결제 시 당일 출고</td></tr>')
+    if _q2_src in html and '해외배송' not in html:
+        html = html.replace(
+            _q2_src,
+            _q2_src + '<tr><th>해외배송</th><td>현재 <b>해외배송은 제공하지 않습니다</b> '
+            '(국내 배송지만 가능)</td></tr>', 1)
+
+    # ── [Q7] mapdal-seoul 6F 'VIP 전용 주차장' 삭제 (층 카드 + 방문안내 문구) ──
+    _q7_floor = ('<div class="floor rf" role="listitem" data-t="VIP 전용 주차장" '
+                 'data-n="6F" data-d="아티스트·VIP 동선 분리, 보안·의전 대응을 위한 전용 주차 공간.">'
+                 '\n          <span class="no">6F</span><span class="nm">VIP 전용 주차장</span>'
+                 '<span class="en">VIP PARKING</span>\n        </div>')
+    if _q7_floor in html:
+        html = html.replace(_q7_floor, '', 1)
+        # 방문 안내 하단 6F 주차 문구도 함께 제거
+        html = html.replace(
+            '<p style="font-size:13px;color:var(--steel);margin-top:6px">'
+            '6F VIP 전용 주차 — 동선 분리·보안·의전 대응</p>', '', 1)
+
+    # ── [Q4] 목록 도구모음: shop.html / kpop 에만 (shopGrid+filter-bar 보유 페이지) ──
+    if 'id="shopGrid"' in html and 'id="mpTools"' not in html:
+        _is_kpop = ('KPOP(음반) — MAPDAL SEOUL' in html) or ('<h1>KPOP(음반)</h1>' in html) \
+                   or ('<!--MP_KPOP-->' in html)
+        _mode = 'kpop' if _is_kpop else 'shop'
+        # CSS (head 주입) + 도구모음 마크업(filter-bar 다음 or shopGrid 앞) + JS
+        if 'id="mpListTools"' not in html:
+            _h = html.lower().find('</head>')
+            if _h >= 0:
+                html = html[:_h] + _FB_TOOLBAR_CSS + html[_h:]
+        _tb = _fb_toolbar_html(_mode)
+        # shopGrid 여는 <div> 바로 앞에 삽입 (들여쓰기 편차 무관하게 grid 태그 기준)
+        _gi = html.find('<div class="journal-grid" id="shopGrid"')
+        if _gi == -1:
+            _k = html.find('id="shopGrid"')
+            _gi = html.rfind('<div', 0, _k) if _k >= 0 else -1
+        if _gi >= 0:
+            html = html[:_gi] + _tb + '\n      ' + html[_gi:]
+        # 원본 sync() 말미에 확장 훅 1줄 삽입 (멱등)
+        if 'window.__mpApplyExtra' in _FB_TOOLS_JS and 'mpSyncHook' not in html:
+            html = html.replace(
+                'if(albumEligible())renderBatch(K2G_FIRST);else updateLM();}',
+                'if(albumEligible())renderBatch(K2G_FIRST);else updateLM();'
+                '/*mpSyncHook*/if(window.__mpApplyExtra)window.__mpApplyExtra();}', 1)
+            # 앨범 VIEW 구성 지점: sync가 VIEW=... 로 좁힌 뒤 정렬/필터 적용
+            html = html.replace(
+                'VIEW=Q?K2G.filter(r=>r[2].toLowerCase().includes(Q)):K2G;',
+                'VIEW=Q?K2G.filter(r=>r[2].toLowerCase().includes(Q)):K2G;'
+                'if(window.__mpBuildView)VIEW=window.__mpBuildView(VIEW);', 1)
+        # JS 주입 (body 말미는 _inject_auth가 처리하나, 여기선 즉시 삽입해 순서 보장)
+        if 'id="mpListToolsJs"' not in html:
+            _b = html.lower().rfind('</body>')
+            html = (html[:_b] + _FB_TOOLS_JS + html[_b:]) if _b >= 0 else (html + _FB_TOOLS_JS)
+
+    return html
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 체크아웃 정비 (2026-07 · 해외배송 제외 + 결제수단 정합화)
 #   · 해외 배송(DDP) 토글·안내문·해외 주소폼 제거 → 국내 배송 전용
 #   · 결제수단: 오해 소지 있던 4-라디오(선택 무시됨) → 실제 동작하는 항목만.

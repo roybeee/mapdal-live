@@ -275,7 +275,9 @@ async def create_order(req: Request):
         'verification': verification, 'mKey': mkey, 'currency': 'WON',
         'goodname': order_name, 'buyername': (buyer.get('name') or '맵달 고객')[:30],
         'buyertel': (buyer.get('phone') or ''), 'buyeremail': (buyer.get('email') or ''),
-        'gopaymethod': '', 'acceptmethod': 'centerCd(Y):below1000',
+        # acceptmethod: centerCd(Y)=IDC센터코드 수신(필수), below1000=1천원이하 카드결제 허용,
+        #   HPP(2)=휴대폰결제 상품유형 '실물'(맵달=실물상품). 휴대폰결제 노출 시 HPP(1|2) 필수.
+        'gopaymethod': '', 'acceptmethod': 'centerCd(Y):below1000:HPP(2)',
         'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/inicis/close',
     }
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,

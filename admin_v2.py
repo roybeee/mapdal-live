@@ -4185,7 +4185,7 @@ def _fb_toolbar_html(mode):
 # [Q4] JS — 원본 sync() 말미에서 호출되는 확장 훅. 원본 전역(F,Q,K2G,VIEW,ptr,
 #   albumEligible,renderBatch,K2G_FIRST 등)을 그대로 사용. 앨범은 VIEW 정렬/필터 후
 #   재렌더, 자체상품(col-card)은 DOM 정렬. 개수는 표시중 항목 합산.
-_FB_TOOLS_JS = r"""<script id="mpListToolsJs">(function(){
+_FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.2 */(function(){
   var T=document.getElementById('mpTools'); if(!T) return;
   var MODE=T.dataset.mode, grid=document.getElementById('shopGrid');
   function pnum(el){ // col-card 가격 텍스트(₩4,500~)→숫자
@@ -4248,7 +4248,10 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">(function(){
     } else if(s==='asc'){ vis.sort(function(a,b){return pnum(a)-pnum(b);}); }
     else if(s==='desc'){ vis.sort(function(a,b){return pnum(b)-pnum(a);}); }
     else if(s==='name'){ vis.sort(function(a,b){return cname(a).localeCompare(cname(b),'ko');}); }
-    vis.forEach(function(c){ grid.appendChild(c); });
+    // 직접 등록 상품은 K2G 제휴 상품보다 앞에 유지한다. 더보기 영역(lmWrap)은
+    // grid 바깥에 있으므로 insertBefore 기준으로 사용할 수 없다.
+    var firstK2g=grid.querySelector('.k2g-card');
+    vis.forEach(function(c){ grid.insertBefore(c, firstK2g||null); });
   }
   function count(){
     var n=0;

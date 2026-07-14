@@ -1211,6 +1211,17 @@ button.btn.sm{padding:4px 9px;font-size:12px}button.btn:disabled{opacity:.4;curs
   <div class="panel"><h3>LED 드롭 티커 <span class="tag">저장 즉시 전 페이지 반영</span></h3>
   <div class="hint" style="margin-bottom:10px">한 줄에 한 항목 · <b>**별표 두 개**</b>로 감싸면 흰색 강조 · 항목을 전부 지우고 저장하면 사이트에서 티커가 숨겨집니다. 항목 수가 바뀌어도 흐르는 속도는 일정하게 자동 조절됩니다.</div>
   <div id="tkbox" class="loading">불러오는 중…</div></div></section>
+<section id="t-seo" style="display:none">
+  <div class="panel"><h3>검색엔진 소유확인·설명 <span class="tag">저장 즉시 전 페이지 반영</span></h3>
+  <div class="hint" style="margin-bottom:10px">네이버 서치어드바이저·구글 서치콘솔에서 발급받은 <b>HTML 태그(메타태그) 인증 코드</b>를 붙여넣으세요. 태그 전체를 붙여넣어도 코드만 자동 추출됩니다. 저장 후 각 콘솔에서 [소유확인]을 누르면 됩니다.</div>
+  <div id="seobox" class="loading">불러오는 중…</div></div>
+  <div class="panel"><h3>검색엔진 등록 절차 <span class="tag">1회 수동 등록</span></h3>
+  <div style="line-height:2.1;font-size:13px">
+  ① <b>네이버</b> — <a href="https://searchadvisor.naver.com" target="_blank" rel="noopener">서치어드바이저</a>: 사이트 등록(https://mapdal.kr) → 위 네이버 코드 저장 후 소유확인 → [요청 &gt; 사이트맵 제출]에 <span class="mono">https://mapdal.kr/sitemap.xml</span> 제출 → [요청 &gt; 웹 페이지 수집]으로 홈·SHOP·KPOP 수집 요청<br>
+  ② <b>구글</b> — <a href="https://search.google.com/search-console" target="_blank" rel="noopener">서치콘솔</a>: URL 접두어 방식으로 등록 → 위 구글 코드 저장 후 확인 → [Sitemaps]에 <span class="mono">sitemap.xml</span> 제출<br>
+  ③ <b>다음/카카오</b> — <a href="https://register.search.daum.net" target="_blank" rel="noopener">Daum 검색등록</a>: 사이트 검색 신규등록(URL·설명·품목 입력, 소유확인 불필요) — 네이트에도 함께 노출<br>
+  ④ <b>카카오톡 공유 미리보기 갱신</b> — <a href="https://developers.kakao.com/tool/debugger/sharing" target="_blank" rel="noopener">공유 디버거</a>에서 URL 입력 후 [초기화]하면 새 OG 이미지·설명으로 즉시 갱신<br>
+  · 확인용: <a href="/robots.txt" target="_blank">robots.txt</a> · <a href="/sitemap.xml" target="_blank">sitemap.xml</a> (전 페이지 + 등록 상품 + K-POP 앨범 전체 수록, 10분 캐시)</div></div></section>
 <section id="t-banner" style="display:none">
   <div class="panel"><h3>메인배너 — 홈 히어로 슬라이드 <span class="tag">저장 즉시 홈 반영 · 최대 5개</span></h3>
   <div class="hint" style="margin-bottom:10px">이미지 업로드 시 자동 리사이즈됩니다. 태그 키워드·태그 배경색·앨범명·행사 이름은 배너 이미지 좌하단 캡션으로 표시되고, 이미지가 없는 슬라이드는 기존 텍스트 히어로 디자인으로 노출됩니다.</div>
@@ -1263,8 +1274,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['banner','메인배너',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,ticker:loadTicker,banner:loadBanner,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['seo','SEO·검색',2],['banner','메인배너',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>loadProducts(1),pages:loadPages,ticker:loadTicker,seo:loadSeo,banner:loadBanner,cust:()=>loadCust(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -1616,6 +1627,22 @@ async function saveTicker(){try{
  const d=await api('/admin/api/ticker/save',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({items:tkItems(),speed:tkSpd()})});
  toast('저장 완료 — 전 페이지 즉시 반영 ('+d.items.length+'개 항목)');loadTicker()}catch(e){toast(e.message)}}
+
+async function loadSeo(){try{const d=await api('/admin/api/seo');
+ $('#seobox').innerHTML=`<div style="display:grid;gap:12px;max-width:720px">
+ <label style="font-size:12px;font-weight:700;color:#666">네이버 소유확인 코드 <span style="font-weight:400">(naver-site-verification)</span>
+  <input id="seonaver" style="width:100%;margin-top:4px;font:13px 'IBM Plex Mono',monospace;padding:8px 10px;border:1px solid #ddd;border-radius:5px" placeholder="예: 1a2b3c… 또는 <meta …> 태그 전체" value="${esc(d.naver||'')}"></label>
+ <label style="font-size:12px;font-weight:700;color:#666">구글 소유확인 코드 <span style="font-weight:400">(google-site-verification)</span>
+  <input id="seogoogle" style="width:100%;margin-top:4px;font:13px 'IBM Plex Mono',monospace;padding:8px 10px;border:1px solid #ddd;border-radius:5px" placeholder="예: AbCdEf… 또는 <meta …> 태그 전체" value="${esc(d.google||'')}"></label>
+ <label style="font-size:12px;font-weight:700;color:#666">홈 검색 설명문 <span style="font-weight:400">(비우면 기본 설명 · 검색 결과에 표시, 80~160자 권장)</span>
+  <textarea id="seodesc" rows="3" style="width:100%;margin-top:4px;font:13px 'IBM Plex Sans KR',sans-serif;padding:8px 10px;border:1px solid #ddd;border-radius:5px">${esc(d.desc||'')}</textarea></label>
+ <div><button class="btn red" onclick="saveSeo()">저장 — 전 페이지 반영</button>
+ ${d.updated?`<span class="hint" style="display:inline;margin-left:10px">마지막 저장 ${esc((d.updated||'').slice(0,16).replace('T',' '))} UTC · ${esc(d.by_admin||'')}</span>`:''}</div></div>`;
+}catch(e){$('#seobox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+async function saveSeo(){try{
+ await api('/admin/api/seo/save',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({naver:$('#seonaver').value,google:$('#seogoogle').value,desc:$('#seodesc').value})});
+ toast('저장 완료 — 소유확인 메타가 전 페이지에 반영되었습니다');loadSeo()}catch(e){toast(e.message)}}
 
 async function loadCS(){try{const d=await api('/admin/api/cs');
  const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':v==='거절'?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
@@ -2286,7 +2313,7 @@ init();
 
 _PDP_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>%(name)s — MAPDAL SEOUL</title>
-<meta property="og:title" content="%(name)s"><meta property="og:description" content="MAPDAL SEOUL — Shop Seongsu, from Anywhere">%(og)s
+<meta property="og:title" content="%(name)s"><meta property="og:description" content="MAPDAL SEOUL — Shop Seongsu, from Anywhere">%(og)s%(seo)s
 <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
 <style>:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2;--amber:#FFB000}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans KR',sans-serif;background:var(--paper);color:var(--black)}
@@ -2404,6 +2431,29 @@ def pdp(pid: str):
                      % (pct, format(sale, ',')))
     else:
         pricehtml = '<div class="price">₩%s</div>' % format(sale, ',')
+    # SEO — canonical(own→정적 페이지 · k2g→앨범상세 · mp→자기 자신) + Product 스키마
+    if pid.startswith('k2g::'):
+        canon = '%s/album-detail?uid=%s' % (SITE_ORIGIN, pid[5:])
+    elif '::' in pid and not pid.startswith('mp::'):
+        canon = SITE_ORIGIN + '/' + pid.split('::')[0].replace('.html', '')
+    else:
+        canon = SITE_ORIGIN + '/p/' + pid
+    sdesc = re.sub(r'\s+', ' ', str(r.get('descr') or '')).strip()[:160] or (
+        '%s — MAPDAL SEOUL 성수 공식 온라인 스토어. 국내·해외배송(DDP) 지원.' % str(r.get('name') or '')[:60])
+    img_abs = img if img.startswith('http') else ((SITE_ORIGIN + img) if img.startswith('/') else OG_IMAGE_URL)
+    prod_ld = {'@context': 'https://schema.org', '@type': 'Product',
+               'name': str(r.get('name') or ''), 'image': img_abs, 'description': sdesc,
+               'url': canon, 'brand': {'@type': 'Brand', 'name': 'MAPDAL SEOUL'}}
+    if sale > 0:
+        prod_ld['offers'] = {'@type': 'Offer', 'priceCurrency': 'KRW', 'price': sale,
+                             'availability': _seo_avail(soldout), 'url': canon}
+    _su, _sn = _seo_section_of(cat)
+    seohtml = ('\n<meta name="description" content="%s">' % h(sdesc)
+               + '<link rel="canonical" href="%s">' % canon
+               + '<meta property="og:url" content="%s">' % canon
+               + '<meta property="og:locale" content="ko_KR">'
+               + _jsonld(prod_ld)
+               + _jsonld(_seo_breadcrumb(_su, _sn, str(r.get('name') or '')[:60], canon)))
     return HTMLResponse(_PDP_HTML % {
         'name': h(r.get('name')), 'pricehtml': pricehtml,
         'bcls': 'no' if soldout else 'ok',
@@ -2413,6 +2463,7 @@ def pdp(pid: str):
         'og': ('<meta property="og:image" content="%s"><meta name="twitter:card" content="summary_large_image">'
                % h(img if img.startswith('http') else
                    ('https://mapdal.kr' + img if img.startswith('/') else OG_IMAGE_URL))),
+        'seo': seohtml,
         'cathtml': cathtml, 'galhtml': galhtml, 'detailhtml': detailhtml,
         'pid': h(pid), 'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false'})
 
@@ -3957,12 +4008,300 @@ def _inject_og(html):
     hm = _OG_HEAD_RE.search(html)
     return (html[:hm.end()] + block + html[hm.end():]) if hm else html
 
-def _inject_auth(html):
+# ═══════════════════ ⑨ SEO — 네이버·구글·다음(카카오) 검색엔진 최적화 ═══════════
+# 파이프라인(_inject_auth) 안에서 경로별로 canonical·og:url·description·robots·
+# JSON-LD(Organization/Product/Breadcrumb)를 서버 사이드 주입하고, /robots.txt·
+# /sitemap.xml(전 상품 + K2G 앨범 4,900여 종)을 동적 생성한다. 소유확인 메타
+# (naver/google-site-verification)는 관리자 [SEO] 탭에서 저장 → 전 페이지 반영.
+SITE_ORIGIN = 'https://mapdal.kr'
+_K2G_IMG_BASE = 'https://www.kpop2gether.com/shopimages/912enter/'
+
+# 검색 노출 제외(결제·계정·검색결과·관리 화면) — 클린 경로 기준
+_SEO_NOINDEX = {'/cart', '/checkout', '/order-complete', '/account', '/search',
+                '/hero-admin', '/admin-hero'}
+# /home 과 동일 문서를 서빙하는 별칭 파일 → canonical 을 /home 으로 통일
+_SEO_HOME_ALIAS_FILES = {'mapdal_home_mockup_v1.html', 'index.html'}
+
+# 주요 페이지 meta description (150자 내외 · 미지정 페이지는 사이트 기본 설명)
+_SEO_PAGE_DESC = {
+    '/home': '성수동 K-컬처 플래그십 맵달서울(MAPDAL SEOUL) 공식 온라인 스토어. K-POP 음반·포토카드 굿즈, 컵떡볶이·김밥 K-FOOD, 어패럴·리빙까지 — Shop Seongsu, from Anywhere. 국내·해외배송(DDP) 지원.',
+    '/shop': 'MAPDAL SEOUL 공식 SHOP — 굿즈/MD · K-FOOD · 어패럴 · 리빙/홈 전 카테고리. 성수 플래그십에서 전 세계로, 3만원 이상 무료배송.',
+    '/kpop': 'K-POP 최신 음반·앨범 온라인 구매 — 팬사인회·영상통화 이벤트 응모와 특전까지. KPOP2GETHER×맵달SEOUL 공식 앨범 스토어, 판매량 차트 집계 반영.',
+    '/kfood': '맵달 K-FOOD — 컵떡볶이, 김밥 6종, BOWL 6종. 성수 매장의 맛을 콜드체인 배송으로 집앞까지. MAPDAL SEOUL 공식몰.',
+    '/new-drops': '이번 주 신상 드롭 — 새로 나온 K-POP 앨범·굿즈·K-FOOD를 한눈에. MAPDAL SEOUL NEW/DROPS.',
+    '/bestsellers': '지금 가장 많이 팔리는 맵달 베스트셀러 — 앨범·굿즈·K-FOOD 인기 상품 모음.',
+    '/collections': '맵달 컬렉션 아카이브 — 스타라이트, 네온서울, 래빗클럽 등 시즌 컬렉션 모음.',
+    '/collection-starlight': '스타라이트 컬렉션 — 한정반 앨범과 연계 굿즈. MAPDAL SEOUL.',
+    '/collection-neon-seoul': '네온서울 컬렉션 — 바이닐 LP와 시티팝 무드 굿즈. MAPDAL SEOUL.',
+    '/collection-rabbit-club': '래빗클럽 컬렉션 — 티셔츠·캐릭터 굿즈 라인. MAPDAL SEOUL.',
+    '/collection-glow-seoul': '글로우 서울 컬렉션 — MAPDAL SEOUL 시즌 한정 라인.',
+    '/collection-han-river': '한강 컬렉션 — 피크닉 매트 등 리빙 굿즈 라인. MAPDAL SEOUL.',
+    '/collection-sports-day': '스포츠 데이 컬렉션 — 볼캡·타월 등 응원 굿즈. MAPDAL SEOUL.',
+    '/collection-archive': '지난 시즌 컬렉션 아카이브 — MAPDAL SEOUL.',
+    '/journal': '맵달 저널 — 성수 플래그십 소식, 드롭 비하인드, K-컬처 스토리.',
+    '/mapdal-seoul': '맵달SEOUL 성수 플래그십 — 서울 성동구 성수이로16길 5, 825평 K-컬처 복합공간. 미디어홀·팬덤홀·KPOP2GETHER 앨범 스토어, 매일 11:00–21:00.',
+    '/gift-sets': '맵달 기프트 세트 — 선물하기 좋은 굿즈·K-FOOD 패키지 모음. MAPDAL SEOUL.',
+    '/seongsu-limited': '성수 한정 — 맵달SEOUL 플래그십에서만 만나는 리미티드 에디션.',
+    '/support': 'MAPDAL SEOUL 고객센터 — 주문·배송·교환/반품 안내와 1:1 문의.',
+    '/shipping': '배송 안내 — 국내 배송·해외 배송(DDP) 조건, 3만원 이상 무료배송, 콜드체인 K-FOOD 배송 정책.',
+    '/returns': '교환/반품 안내 — 신청 방법, 가능 기간, 환불 절차 안내. MAPDAL SEOUL.',
+    '/partnership': '파트너십·입점 문의 — K-culture IP 이벤트·커머스 협업 제안. MAPDAL SEOUL.',
+    '/ir': 'IR·뉴스룸 — 맵달서울성수 투자 정보와 보도자료.',
+    '/album-detail': 'K-POP 앨범 상세 — KPOP2GETHER×맵달SEOUL 공식 앨범 스토어.',
+}
+
+def seo_conf():
+    """관리자 저장값(site_settings key='seo'). 없으면 빈 값 — 소유확인 메타 미출력."""
+    try:
+        r = one('SELECT value, updated, by_admin FROM site_settings WHERE key=?', ('seo',))
+    except Exception:
+        r = None
+    d = (jload(r.get('value'), {}) if r else {}) or {}
+    return {'naver': str(d.get('naver') or '').strip()[:120],
+            'google': str(d.get('google') or '').strip()[:120],
+            'desc': str(d.get('desc') or '').strip()[:300],
+            'updated': (r or {}).get('updated') or '', 'by_admin': (r or {}).get('by_admin') or ''}
+
+@admin_router.get('/admin/api/seo')
+def api_seo_get(request: Request):
+    get_actor(request)
+    c = seo_conf()
+    c['origin'] = SITE_ORIGIN
+    return c
+
+@admin_router.post('/admin/api/seo/save')
+def api_seo_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, 'SEO 설정')
+    def _code(v):  # 소유확인 코드: 태그 전체를 붙여넣어도 content 값만 추출
+        s = str(v or '').strip()
+        m = re.search(r'content=["\']([^"\']+)["\']', s)
+        if m: s = m.group(1)
+        return re.sub(r'[^A-Za-z0-9_-]', '', s)[:120]
+    conf = {'naver': _code(body.get('naver')), 'google': _code(body.get('google')),
+            'desc': re.sub(r'\s+', ' ', str(body.get('desc') or '')).strip()[:300]}
+    _setting_put('seo', conf, a['name'])
+    _sitemap_cache['xml'] = None
+    audit(a, 'SEO저장', '', 'naver:%s · google:%s' % ('설정' if conf['naver'] else '-', '설정' if conf['google'] else '-'))
+    return {'ok': True}
+
+def _jsonld(obj):
+    s = json.dumps(obj, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
+    return '<script type="application/ld+json">%s</script>' % s
+
+def _seo_avail(soldout):
+    return 'https://schema.org/OutOfStock' if soldout else 'https://schema.org/InStock'
+
+def _seo_breadcrumb(section_url, section_name, name, url):
+    items = [{'@type': 'ListItem', 'position': 1, 'name': 'MAPDAL SEOUL', 'item': SITE_ORIGIN + '/home'}]
+    if section_url:
+        items.append({'@type': 'ListItem', 'position': 2, 'name': section_name, 'item': SITE_ORIGIN + section_url})
+    items.append({'@type': 'ListItem', 'position': len(items) + 1, 'name': name, 'item': url})
+    return {'@context': 'https://schema.org', '@type': 'BreadcrumbList', 'itemListElement': items}
+
+def _seo_section_of(cat):
+    if cat == 'album': return '/kpop', 'KPOP(음반)'
+    if cat == 'kfood': return '/kfood', 'K-FOOD'
+    return '/shop', 'SHOP'
+
+def _seo_home_ld():
+    org = {'@context': 'https://schema.org', '@type': 'Organization',
+           'name': 'MAPDAL SEOUL', 'alternateName': '맵달서울성수',
+           'url': SITE_ORIGIN + '/', 'logo': OG_IMAGE_URL,
+           'address': {'@type': 'PostalAddress', 'streetAddress': '성수이로16길 5',
+                       'addressLocality': '성동구', 'addressRegion': '서울', 'addressCountry': 'KR'}}
+    site = {'@context': 'https://schema.org', '@type': 'WebSite',
+            'name': 'MAPDAL SEOUL', 'url': SITE_ORIGIN + '/', 'inLanguage': 'ko'}
+    return _jsonld(org) + _jsonld(site)
+
+def _seo_own_product_ld(page, canonical):
+    """정적 상품 페이지(product-*.html) → DB의 page::옵션 행들로 Product 스키마 생성."""
+    try:
+        if not _state['pcols'] or not _state['pname'] or not _state['pprice']:
+            return ''
+        extra = (', img' if 'img' in _state['pcols'] else '') + \
+                (', category' if 'category' in _state['pcols'] else '')
+        # DB의 own ID는 'product-x.html::opt' 형식, 클린 URL 경로는 '.html' 없음 → 양쪽 매칭
+        rs = rows('SELECT %s AS name, %s AS price, soldout, stock%s FROM products '
+                  'WHERE id LIKE ? OR id LIKE ?'
+                  % (_state['pname'], _state['pprice'], extra),
+                  (page + '::%', page + '.html::%'))
+    except Exception:
+        return ''
+    prices = [num(r.get('price')) for r in rs if num(r.get('price')) > 0]
+    if not rs or not prices:
+        return ''
+    base = str(rs[0].get('name') or '').split(' — ')[0].strip() or page
+    instock = any(not num(r.get('soldout')) for r in rs)
+    img = next((str(r.get('img') or '') for r in rs if str(r.get('img') or '').strip()), '')
+    if img and img.startswith('/'): img = SITE_ORIGIN + img
+    prod = {'@context': 'https://schema.org', '@type': 'Product', 'name': base,
+            'image': img or OG_IMAGE_URL, 'url': canonical,
+            'brand': {'@type': 'Brand', 'name': 'MAPDAL SEOUL'},
+            'offers': {'@type': 'AggregateOffer', 'priceCurrency': 'KRW',
+                       'lowPrice': min(prices), 'highPrice': max(prices),
+                       'offerCount': len(prices), 'availability': _seo_avail(not instock)}}
+    cat = ''
+    try: cat = norm_cat(rs[0].get('category'))
+    except Exception: pass
+    su, sn = _seo_section_of(cat if cat else ('kfood' if page.startswith(('product-kimbap', 'product-bowl', 'product-tteokbokki')) else ''))
+    return _jsonld(prod) + _jsonld(_seo_breadcrumb(su, sn, base, canonical))
+
+def _seo_album_block(uid):
+    """/album-detail?uid=… 전용: 제목·설명·canonical·og·Product 스키마 (앨범별)."""
+    try:
+        r = one('SELECT %s AS name, %s AS price, list_price, img, soldout FROM products WHERE id=?'
+                % (_state['pname'], _state['pprice']), ('k2g::' + uid,))
+    except Exception:
+        r = None
+    if not r:
+        return None
+    name = re.sub(r'\s+', ' ', str(r.get('name') or '')).strip()
+    if not name:
+        return None
+    price = num(r.get('price'))
+    img = str(r.get('img') or '').strip()
+    img_url = (_K2G_IMG_BASE + img) if img and not img.startswith('http') else (img or OG_IMAGE_URL)
+    canonical = '%s/album-detail?uid=%s' % (SITE_ORIGIN, uid)
+    desc = '%s — 정품 K-POP 앨범. %sKPOP2GETHER×맵달SEOUL 공식 스토어, 판매량 차트 집계 반영.' % (
+        name[:80], ('판매가 ₩%s. ' % format(price, ',')) if price > 0 else '')
+    prod = {'@context': 'https://schema.org', '@type': 'Product', 'name': name,
+            'image': img_url, 'url': canonical, 'category': 'K-POP Album',
+            'brand': {'@type': 'Brand', 'name': 'KPOP2GETHER'}}
+    if price > 0:
+        prod['offers'] = {'@type': 'Offer', 'priceCurrency': 'KRW', 'price': price,
+                          'availability': _seo_avail(num(r.get('soldout'))), 'url': canonical}
+    parts = ['<meta name="description" content="%s">' % _og_esc(desc),
+             '<link rel="canonical" href="%s">' % canonical,
+             '<meta property="og:url" content="%s">' % canonical,
+             '<meta property="og:image" content="%s">' % _og_esc(img_url),
+             _jsonld(prod),
+             _jsonld(_seo_breadcrumb('/kpop', 'KPOP(음반)', name[:60], canonical))]
+    return {'title': name, 'block': '\n'.join(parts)}
+
+def _seo_insert_after_title(html, block):
+    i = html.lower().find('</title>')
+    if i >= 0:
+        j = i + len('</title>')
+        return html[:j] + '\n' + block + html[j:]
+    hm = _OG_HEAD_RE.search(html)
+    return (html[:hm.end()] + '\n' + block + html[hm.end():]) if hm else html
+
+def _seo_apply(html, path='', uid=None):
+    """경로 기반 SEO 주입 — _inject_og 이전에 실행되어 제목/설명이 og에도 반영된다."""
+    if not path or 'mpSeo' in html or '<head' not in html[:4000].lower():
+        return html
+    parts = ['<!--mpSeo-->']
+    # ① 결제·계정 등 — 색인 제외
+    if path in _SEO_NOINDEX:
+        return _seo_insert_after_title(html, parts[0] + '<meta name="robots" content="noindex,nofollow">')
+    conf = seo_conf()
+    if conf['naver']:
+        parts.append('<meta name="naver-site-verification" content="%s">' % conf['naver'])
+    if conf['google']:
+        parts.append('<meta name="google-site-verification" content="%s">' % conf['google'])
+    # ② 앨범 상세(?uid=) — 앨범별 제목·설명·스키마
+    if path == '/album-detail' and uid:
+        ab = _seo_album_block(uid)
+        if ab:
+            html = _OG_TITLE_RE.sub('<title>%s — MAPDAL SEOUL</title>' % _og_esc(ab['title'][:120]), html, count=1)
+            parts.append(ab['block'])
+            if 'og:locale' not in html:
+                parts.append('<meta property="og:locale" content="ko_KR">')
+            return _seo_insert_after_title(html, '\n'.join(parts))
+    canonical = SITE_ORIGIN + path
+    # ③ 설명 — 페이지별 사전 → 홈 설명(관리자 설정) → 사이트 기본
+    if 'name="description"' not in html:
+        desc = _SEO_PAGE_DESC.get(path) or ''
+        if path == '/home' and conf['desc']:
+            desc = conf['desc']
+        parts.append('<meta name="description" content="%s">' % _og_esc(desc or OG_DESC_DEFAULT))
+    if 'rel="canonical"' not in html:
+        parts.append('<link rel="canonical" href="%s">' % canonical)
+    if 'og:url' not in html:
+        parts.append('<meta property="og:url" content="%s">' % canonical)
+    if 'og:locale' not in html:
+        parts.append('<meta property="og:locale" content="ko_KR">')
+    # ④ 구조화 데이터
+    if path == '/home':
+        parts.append(_seo_home_ld())
+    elif path.startswith('/product-'):
+        parts.append(_seo_own_product_ld(path[1:], canonical))
+    return _seo_insert_after_title(html, '\n'.join(p for p in parts if p))
+
+# ── robots.txt · sitemap.xml (반드시 catch-all 라우트보다 먼저 등록) ──────
+_ROBOTS_TXT = '''User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+Disallow: /auth/
+Disallow: /cart
+Disallow: /checkout
+Disallow: /order-complete
+Disallow: /account
+Disallow: /search
+Disallow: /hero-admin
+
+Sitemap: %s/sitemap.xml
+''' % SITE_ORIGIN
+
+@admin_router.api_route('/robots.txt', methods=['GET', 'HEAD'])
+def robots_txt(request: Request):
+    hdr = {'Cache-Control': 'public, max-age=3600'}
+    if request.method == 'HEAD':
+        return Response(b'', media_type='text/plain', headers=hdr)
+    return Response(_ROBOTS_TXT, media_type='text/plain; charset=utf-8', headers=hdr)
+
+_sitemap_cache = {'t': 0.0, 'xml': None}
+
+def _sitemap_xml():
+    if _sitemap_cache['xml'] is not None and time.time() - _sitemap_cache['t'] < 600:
+        return _sitemap_cache['xml']
+    locs = [SITE_ORIGIN + '/home']
+    removed = set()
+    try: removed = _own_removed_pages()
+    except Exception: pass
+    try:
+        files = sorted(f for f in os.listdir(STATIC_DIR) if _PAGE_RE.fullmatch(f))
+    except Exception:
+        files = []
+    for f in files:
+        if f in _SEO_HOME_ALIAS_FILES:
+            continue
+        slug = f[:-5]
+        if ('/' + slug) in _SEO_NOINDEX or slug in removed:
+            continue
+        locs.append(SITE_ORIGIN + '/' + slug)
+    locs.append(SITE_ORIGIN + '/kpop')
+    try:
+        ensure_ready()
+        for r in rows("SELECT id FROM products WHERE id LIKE ? ORDER BY id", ('mp::%',)):
+            locs.append(SITE_ORIGIN + '/p/' + str(r['id']))
+        for r in rows("SELECT id FROM products WHERE id LIKE ? ORDER BY COALESCE(sort_order,999999999), id", ('k2g::%',)):
+            locs.append(SITE_ORIGIN + '/album-detail?uid=' + str(r['id'])[5:])
+    except Exception:
+        pass                                          # DB 미준비 시 페이지만이라도 제공 (fail-open)
+    esc = lambda u: u.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+           + ''.join('<url><loc>%s</loc></url>\n' % esc(u) for u in locs)
+           + '</urlset>\n')
+    _sitemap_cache.update(t=time.time(), xml=xml)
+    return xml
+
+@admin_router.api_route('/sitemap.xml', methods=['GET', 'HEAD'])
+def sitemap_xml(request: Request):
+    hdr = {'Cache-Control': 'public, max-age=600'}
+    if request.method == 'HEAD':
+        return Response(b'', media_type='application/xml', headers=hdr)
+    return Response(_sitemap_xml(), media_type='application/xml; charset=utf-8', headers=hdr)
+
+def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html)
     html = _inject_shop_products(html)
     html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
     html, patched = _patch_legacy_footer(html)
+    html = _seo_apply(html, path, uid)
     html = _inject_og(html)
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
@@ -3975,6 +4314,8 @@ def _inject_auth(html):
     i = html.lower().rfind('</body>')
     return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
 
+# ── 관리자: 문의/상품Q&A/취소·반품·교환 요청 처리 + 포인트 ──
+@admin_router.get('/admin/api/cs')
 # ── 관리자: 문의/상품Q&A/취소·반품·교환 요청 처리 + 포인트 ──
 @admin_router.get('/admin/api/cs')
 def api_cs(request: Request):
@@ -4552,21 +4893,28 @@ def kpop_page():
         if not os.path.isfile(fp):
             return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center"><h2>KPOP(음반) 준비 중입니다</h2><a href="/">MAPDAL SEOUL 홈으로</a>', status_code=503)
         html = open(fp, 'rb').read().decode('utf-8', errors='replace')
-    return HTMLResponse(_inject_auth(_KPOP_MARK + html), headers={'Cache-Control': 'no-cache'})
+    return HTMLResponse(_inject_auth(_KPOP_MARK + html, '/kpop'), headers={'Cache-Control': 'no-cache'})
 
 # ═══════ 정적 서빙 대체 (편집본 우선 · 반드시 모듈 마지막 라우트) ═══════
 import mimetypes
 
 @admin_router.get('/{spath:path}')
-def serve_site(spath: str):
+def serve_site(spath: str, request: Request):
     if not spath or spath.startswith(('admin', 'api/', 'auth/', 'p/')):
         raise HTTPException(404)
     name = os.path.basename(spath)
+    seo_path, seo_uid = '', None                     # SEO: 클린 경로 (+앨범 uid)
+    if name.endswith('.html') and '/' not in spath:
+        seo_path = '/home' if name in _SEO_HOME_ALIAS_FILES else '/' + name[:-5]
+        if seo_path == '/album-detail':
+            u = (request.query_params.get('uid') or '').strip()
+            if re.fullmatch(r'[A-Za-z0-9_-]{1,40}', u):
+                seo_uid = u
     if name.endswith('.html') and _PAGE_RE.fullmatch(name) and '/' not in spath:
         try:
             ensure_ready()
             ov = one('SELECT html FROM page_edits WHERE path=?', (name,))
-            if ov: return HTMLResponse(_inject_auth(ov['html']), headers={'Cache-Control': 'no-cache'})
+            if ov: return HTMLResponse(_inject_auth(ov['html'], seo_path, seo_uid), headers={'Cache-Control': 'no-cache'})
         except Exception:
             pass
     fp = os.path.realpath(os.path.join(STATIC_DIR, spath))
@@ -4576,5 +4924,5 @@ def serve_site(spath: str):
     mt = mimetypes.guess_type(fp)[0] or 'application/octet-stream'
     data = open(fp, 'rb').read()
     if mt == 'text/html':
-        return HTMLResponse(_inject_auth(data.decode('utf-8', errors='replace')), headers={'Cache-Control': 'no-cache'})
+        return HTMLResponse(_inject_auth(data.decode('utf-8', errors='replace'), seo_path, seo_uid), headers={'Cache-Control': 'no-cache'})
     return Response(data, media_type=mt)

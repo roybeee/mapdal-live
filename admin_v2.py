@@ -4344,7 +4344,7 @@ def _checkout_apply(html):
         '<label class="radio-item on"><input type="radio" name="pay" checked><span class="rd"><b>신용/체크카드</b><small>국내 전 카드사</small></span></label>',
         '<label class="radio-item on"><input type="radio" name="pay" value="CARD" checked>'
         '<span class="rd"><b>신용·체크카드 · 간편결제</b>'
-        '<small>카카오페이 · 네이버페이 · 토스페이 · 국내 전 카드사</small></span></label>', 1)
+        '<small>카카오페이 · 네이버페이 · 페이코 · 삼성페이 · 국내 전 카드사</small></span></label>', 1)
     # 중복된 간편결제 라디오 제거 (위 통합 항목에 포함)
     html = html.replace(
         '<label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>카카오페이 · 네이버페이 · 토스페이</b></span></label>',
@@ -4372,6 +4372,11 @@ def _checkout_apply(html):
     html = html.replace(
         '<script src="https://js.tosspayments.com/v2/standard"></script>',
         '<script src="https://stdpay.inicis.com/stdjs/INIStdPay.js" charset="UTF-8"></script>', 1)
+
+    # ── [5-1] 결제 안내 문구: 토스페이먼츠 → KG이니시스 브랜딩 ──
+    html = html.replace(
+        '토스페이먼츠 안전결제 · 카드/간편결제 지원',
+        'KG이니시스 안전결제 · 카드 · 계좌이체 · 간편결제 지원', 1)
 
     # ── [6] 결제 실행부: 토스 requestPayment → INIStdPay 폼 POST ──
     #   /api/orders 응답의 od.inicis(서버 서명 파라미터)로 히든폼 생성 후 INIStdPay.pay().

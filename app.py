@@ -5,8 +5,8 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 - 동시 주문 안전: 트랜잭션 + 행 잠금(FOR UPDATE), 재고 원자적 차감
 - 결제 승인 멱등 처리 (중복 승인 방지)
 """
-import os, json, secrets, datetime, base64
-import urllib.request, urllib.error
+import os, json, secrets, datetime, base64, hashlib
+import urllib.request, urllib.error, urllib.parse
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
@@ -16,8 +16,14 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.getenv('DATABASE_URL', '').replace('postgres://', 'postgresql://', 1)
 IS_PG = DATABASE_URL.startswith('postgresql')
 
-TOSS_CLIENT_KEY = os.getenv('TOSS_CLIENT_KEY', 'test_ck_D5GePWvyJnrK0W0k6q8gLzN97Eoq')
-TOSS_SECRET_KEY = os.getenv('TOSS_SECRET_KEY', 'test_sk_zXLkKEypNArWmo50nX3lmeaxYG5R')
+# KG이니시스 INIStdPay — 계약 완료 시 아래 3개 환경변수를 실계약 값으로 교체
+#   INICIS_MID     : 상점아이디 (상점관리자 발급)
+#   INICIS_SIGNKEY : 웹결제 Sign Key (상점정보>계약정보>KEY정보>웹결제 Sign Key)
+#   INICIS_INIAPI  : INIAPI Key (취소/환불용 · 상점정보>계약정보>부가정보>INIAPI key)
+# 기본값은 이니시스 공식 테스트 상점 값 (INIpayTest) — 실결제 발생 안 함.
+INICIS_MID     = os.getenv('INICIS_MID', 'INIpayTest')
+INICIS_SIGNKEY = os.getenv('INICIS_SIGNKEY', 'SU5JTElURV9UUklQTEVERVNfS0VZU1RS')
+INICIS_INIAPI  = os.getenv('INICIS_INIAPI', 'ItEQKi3rY7uvDS8l')
 ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', 'mapdal-admin-2026')
 FREE_SHIP_OVER, SHIP_FEE = 30000, 3000
 
@@ -174,9 +180,32 @@ async def clean_urls(request, call_next):
     return await call_next(request)
 
 # ── API ─────────────────────────────────────────────────────────
+# KG이니시스 INIStdPay(표준결제창) 연동
+#   흐름: [1] /api/orders 주문생성 + STEP1 서명파라미터 반환
+#         [2] checkout.html이 INIStdPay.pay() 로 결제창 호출
+#         [3] KG → /inicis/return (STEP2 인증결과 POST) 수신
+#         [4] 서버가 authUrl 로 STEP3 승인요청 → 0000 이면 PAID → /order-complete 리다이렉트
+#   서명(SHA-256, NVP·알파벳순·&연결·공백/후행& 제외) — KG 공식 테스트벡터로 검증됨.
+def _ini_hash(s: str) -> str:
+    return hashlib.sha256(s.encode('utf-8')).hexdigest()
+
+def _ini_signature(params: dict) -> str:
+    """대상 필드를 알파벳순 정렬 → key=value & 연결(후행& 없음) → SHA-256 hex."""
+    plain = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
+    return _ini_hash(plain)
+
+def _ini_idc_host_ok(idc_name: str, url: str) -> bool:
+    """STEP2에서 받은 idc_name(fc/ks/stg)과 authUrl 호스트 접두가 일치하는지 검증(보안필수)."""
+    try:
+        host = urllib.parse.urlparse(url).hostname or ''
+    except Exception:
+        return False
+    return bool(idc_name) and host.startswith(idc_name) and host.endswith('inicis.com')
+
 @app.get('/api/config')
 def config():
-    return {'clientKey': TOSS_CLIENT_KEY, 'freeShipOver': FREE_SHIP_OVER, 'shipFee': SHIP_FEE}
+    return {'pg': 'inicis', 'mid': INICIS_MID,
+            'freeShipOver': FREE_SHIP_OVER, 'shipFee': SHIP_FEE}
 
 @app.post('/api/orders')
 async def create_order(req: Request):
@@ -184,7 +213,7 @@ async def create_order(req: Request):
     items, buyer = body.get('items') or [], body.get('buyer') or {}
     ship = body.get('shipMethod', 'standard')
     if not items: raise HTTPException(400, '장바구니가 비어 있습니다')
-    if body.get('intl'): raise HTTPException(400, '해외 배송(DDP) 온라인 결제는 준비중입니다. global@mealzip.kr로 문의해 주세요.')
+    if body.get('intl'): raise HTTPException(400, '현재 국내 배송만 지원합니다')
     for f in ('name', 'phone'):
         if not buyer.get(f): raise HTTPException(400, '받는 분 이름/연락처를 입력해 주세요')
     if ship != 'pickup' and not buyer.get('addr1'):
@@ -214,39 +243,114 @@ async def create_order(req: Request):
                 amount, json.dumps(buyer, ensure_ascii=False),
                 json.dumps(resolved, ensure_ascii=False), ship))
     name0 = resolved[0]['n'][:28]
-    return {'orderId': order_id, 'amount': amount,
-            'orderName': name0 + (f' 외 {len(resolved)-1}건' if len(resolved) > 1 else ''),
-            'sub': sub, 'shipFee': ship_fee}
+    order_name = name0 + (f' 외 {len(resolved)-1}건' if len(resolved) > 1 else '')
 
-@app.post('/api/payments/confirm')
-async def confirm(req: Request):
-    body = await req.json()
-    pk, oid, amt = body.get('paymentKey'), body.get('orderId'), int(body.get('amount', 0))
+    # ── INIStdPay STEP1 서명 파라미터 생성 (oid=order_id, price=amount) ──
+    ts = str(int(datetime.datetime.now().timestamp() * 1000))
+    price = str(amount)
+    signature = _ini_signature({'oid': order_id, 'price': price, 'timestamp': ts})
+    verification = _ini_signature({'oid': order_id, 'price': price,
+                                   'signKey': INICIS_SIGNKEY, 'timestamp': ts})
+    mkey = _ini_hash(INICIS_SIGNKEY)
+    origin = str(req.base_url).rstrip('/')
+    inicis = {
+        'version': '1.0', 'mid': INICIS_MID, 'oid': order_id, 'price': price,
+        'timestamp': ts, 'use_chkfake': 'Y', 'signature': signature,
+        'verification': verification, 'mKey': mkey, 'currency': 'WON',
+        'goodname': order_name, 'buyername': (buyer.get('name') or '맵달 고객')[:30],
+        'buyertel': (buyer.get('phone') or ''), 'buyeremail': (buyer.get('email') or ''),
+        'gopaymethod': '', 'acceptmethod': 'centerCd(Y):below1000',
+        'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/checkout?closed=1',
+    }
+    return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
+            'sub': sub, 'shipFee': ship_fee, 'inicis': inicis}
+
+@app.post('/inicis/return')
+async def inicis_return(req: Request):
+    """STEP2 인증결과 수신 → STEP3 승인요청 → 성공 시 PAID 후 완료페이지로 리다이렉트."""
+    form = await req.form()
+    result_code = form.get('resultCode', '')
+    oid = form.get('orderNumber', '') or form.get('oid', '')
+    auth_token = form.get('authToken', '')
+    auth_url = form.get('authUrl', '')
+    idc_name = form.get('idc_name', '')
+    net_cancel_url = form.get('netCancelUrl', '')
+
+    def _fail(msg):
+        m = urllib.parse.quote(msg[:80])
+        return RedirectResponse(f'/checkout?fail=1&msg={m}', status_code=303)
+
+    if result_code != '0000':
+        return _fail(form.get('resultMsg', '인증 실패'))
+    if not (oid and auth_token and auth_url):
+        return _fail('인증 응답 파라미터 누락')
+    # 보안: authUrl 이 이니시스 도메인 + idc_name 일치 확인
+    if not _ini_idc_host_ok(idc_name, auth_url):
+        return _fail('승인 URL 검증 실패')
+
     with db() as c:
-        row = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
-    if not row: raise HTTPException(404, '주문을 찾을 수 없습니다')
-    if row['status'] == 'PAID':          # 멱등: 이미 승인됨
-        return {'status': 'PAID', 'orderId': oid, 'amount': row['amount'],
-                'method': row['pay_method'], 'receipt': row['receipt_url']}
-    if int(row['amount']) != amt:
-        raise HTTPException(400, '결제 금액이 주문 금액과 일치하지 않습니다')
-    auth = base64.b64encode(f'{TOSS_SECRET_KEY}:'.encode()).decode()
-    q = urllib.request.Request('https://api.tosspayments.com/v1/payments/confirm',
-        data=json.dumps({'paymentKey': pk, 'orderId': oid, 'amount': amt}).encode(),
-        headers={'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'})
+        order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not order:
+        return _fail('주문을 찾을 수 없습니다')
+    if order['status'] == 'PAID':                    # 멱등: 이미 승인
+        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+    # ── STEP3 승인요청 ──
+    ts = str(int(datetime.datetime.now().timestamp() * 1000))
+    sign = _ini_signature({'authToken': auth_token, 'timestamp': ts})
+    veri = _ini_signature({'authToken': auth_token, 'signKey': INICIS_SIGNKEY, 'timestamp': ts})
+    payload = urllib.parse.urlencode({
+        'mid': INICIS_MID, 'authToken': auth_token, 'timestamp': ts,
+        'signature': sign, 'verification': veri, 'charset': 'UTF-8', 'format': 'JSON',
+    }).encode('utf-8')
+    reqx = urllib.request.Request(auth_url, data=payload,
+        headers={'Content-Type': 'application/x-www-form-urlencoded'})
     try:
-        with urllib.request.urlopen(q, timeout=25) as r:
-            res = json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        err = json.loads(e.read().decode())
+        with urllib.request.urlopen(reqx, timeout=25) as r:
+            res = json.loads(r.read().decode('utf-8'))
+    except Exception as e:
+        # 승인 통신 실패 → 망취소 시도 후 실패 처리
+        _ini_net_cancel(net_cancel_url, auth_token)
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
-        raise HTTPException(400, err.get('message', '결제 승인 실패'))
-    receipt = (res.get('receipt') or {}).get('url', ''); method = res.get('method', '')
-    with db() as c:                      # 중복 승인 레이스 방지 가드
+        return _fail('승인 통신 오류')
+
+    if res.get('resultCode') != '0000':
+        with db() as c:
+            c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        return _fail(res.get('resultMsg', '승인 실패'))
+
+    # 금액 위변조 검증: 승인금액(TotPrice) == 주문금액
+    tot = int(str(res.get('TotPrice', '0')).replace(',', '') or 0)
+    if tot != int(order['amount']):
+        _ini_net_cancel(net_cancel_url, auth_token)
+        with db() as c:
+            c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        return _fail('결제 금액 불일치')
+
+    tid = res.get('tid', ''); method = res.get('payMethod', '')
+    with db() as c:                                  # 중복 승인 레이스 방지 가드
         c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
-               "WHERE order_id=? AND status<>'PAID'", (pk, method, receipt, oid))
-    return {'status': 'PAID', 'orderId': oid, 'amount': amt, 'method': method, 'receipt': receipt}
+               "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
+    return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+def _ini_net_cancel(net_cancel_url: str, auth_token: str):
+    """승인 처리 중 예외 발생 시 망취소(인증결과 응답 후 10분 이내)."""
+    if not net_cancel_url or not auth_token:
+        return
+    try:
+        ts = str(int(datetime.datetime.now().timestamp() * 1000))
+        sign = _ini_signature({'authToken': auth_token, 'timestamp': ts})
+        veri = _ini_signature({'authToken': auth_token, 'signKey': INICIS_SIGNKEY, 'timestamp': ts})
+        payload = urllib.parse.urlencode({
+            'mid': INICIS_MID, 'authToken': auth_token, 'timestamp': ts,
+            'signature': sign, 'verification': veri, 'charset': 'UTF-8', 'format': 'JSON',
+        }).encode('utf-8')
+        reqx = urllib.request.Request(net_cancel_url, data=payload,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        urllib.request.urlopen(reqx, timeout=15).read()
+    except Exception:
+        pass   # 망취소 실패는 로깅만 (여기선 무시) — 재고/주문은 FAILED로 남음
 
 @app.get('/api/orders/{order_id}')
 def get_order(order_id: str):

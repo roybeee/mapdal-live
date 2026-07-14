@@ -2232,7 +2232,7 @@ function fpCalc(){
  const sale=dc>0?Math.max(0,Math.floor(Math.floor((base*(100-dc)+50)/100)/10)*10):base;
  const w=n=>'₩'+Number(n).toLocaleString('ko-KR');
  $('#fsale').innerHTML=dc>0
-  ?w(sale)+' <span style="color:#E8332A;font-family:\'Black Han Sans\'">-'+dc+'%</span> <span style="color:#999;font-family:\'IBM Plex Sans KR\';font-size:12px;font-weight:400;text-decoration:line-through">'+base.toLocaleString('ko-KR')+'원</span>'
+  ?w(sale)+' <span style="color:#E8332A;font-family:\'Black Han Sans\'">-'+dc+'%</span>'
   :w(base);
  return {base,dc,sale};
 }
@@ -2300,7 +2300,7 @@ main{max-width:860px;margin:0 auto;padding:28px 18px 80px}
 .ph img{width:100%%;height:100%%;object-fit:cover}
 h1{font-size:22px;line-height:1.35;margin-bottom:10px}
 .price{font-family:'IBM Plex Mono';font-size:26px;font-weight:600;margin:12px 0 4px}
-.price .pwas{display:block;font-family:'IBM Plex Sans KR';font-size:13px;font-weight:400;color:#999;text-decoration:line-through;margin-bottom:2px}
+
 .price .ppct{font-family:'Black Han Sans';font-weight:400;color:var(--red);margin-right:10px}
 .badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;margin-bottom:14px}
 .ok{background:#e9f7ee;color:#0a7d38}.no{background:#fff2f1;color:#c0392b}
@@ -2395,13 +2395,13 @@ def pdp(pid: str):
     body_html = render_blocks(r.get('detail_html'))
     if body_html.strip():
         detailhtml = '<div class="detail"><h2>상세 정보</h2>%s</div>' % body_html
-    # 가격 표시 — 할인 시 정가(취소선) 위 / 할인율(빨강)·할인가 아래 (K2G 앨범상세와 동일 규격)
+    # 통일 규격: 정가(취소선) 폐기 — 할인율(빨강)·할인가만 표기
     sale, was = num(r.get('price')), num(r.get('list_price'))
     pct = derived_pct(was, sale)
     if pct:
-        pricehtml = ('<div class="price disc"><span class="pwas">%s원</span>'
+        pricehtml = ('<div class="price disc">'
                      '<span class="ppct">%d%%</span>₩%s</div>'
-                     % (format(was, ','), pct, format(sale, ',')))
+                     % (pct, format(sale, ',')))
     else:
         pricehtml = '<div class="price">₩%s</div>' % format(sale, ',')
     return HTMLResponse(_PDP_HTML % {
@@ -3475,7 +3475,7 @@ CARD_CSS_SNIPPET = r"""<style id="mpCardCss">
 /* mp 카드 할인 표시(정가/할인율/할인가) — K2G 가격 블록과 좌측 정렬·행 배치 정합 */
 #shopGrid .col-card .price-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
 #shopGrid .col-card .k2g-price{text-align:left}
-#shopGrid .col-card .k2g-price .was{font-size:11px;color:#87867F;text-decoration:line-through}
+
 #shopGrid .col-card .k2g-price .now{display:flex;gap:6px;align-items:baseline}
 #shopGrid .col-card .k2g-price .pct{font-family:'Black Han Sans',sans-serif;font-size:15px;color:#E8332A}
 #shopGrid .col-card .k2g-price .amt{font-family:'IBM Plex Mono',monospace;font-size:13.5px;font-weight:500}
@@ -3545,11 +3545,11 @@ def _mp_shop_cards():
         sale, was = num(r.get('price')), num(r.get('list_price'))
         pct = derived_pct(was, sale)
         if pct:
-            # K2G 카드와 동일한 표시: 정가(취소선) 위, 아래 할인율(빨강)+할인가
-            pr_html = ('<span class="k2g-price" style="margin-top:0"><span class="was">%s원</span>'
+            # 통일 규격: 정가(취소선) 폐기 — 할인율(빨강)+할인가만 표기
+            pr_html = ('<span class="k2g-price" style="margin-top:0">'
                        '<span class="now"><span class="pct">%d%%</span>'
                        '<span class="amt">₩%s</span></span></span>'
-                       % (format(was, ','), pct, format(sale, ',')))
+                       % (pct, format(sale, ',')))
         else:
             pr_html = '<span class="price">₩%s</span>' % format(sale, ',')
         cards.append('<a class="col-card" data-cat="%s" href="/p/%s">%s'

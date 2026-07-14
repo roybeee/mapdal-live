@@ -4185,9 +4185,14 @@ def _fb_toolbar_html(mode):
 # [Q4] JS — 원본 sync() 말미에서 호출되는 확장 훅. 원본 전역(F,Q,K2G,VIEW,ptr,
 #   albumEligible,renderBatch,K2G_FIRST 등)을 그대로 사용. 앨범은 VIEW 정렬/필터 후
 #   재렌더, 자체상품(col-card)은 DOM 정렬. 개수는 표시중 항목 합산.
-_FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.2 */(function(){
+_FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(function(){
   var T=document.getElementById('mpTools'); if(!T) return;
   var MODE=T.dataset.mode, grid=document.getElementById('shopGrid');
+  // 최초 카탈로그 순번을 별도 보존한다. 품절 플래그(r[5])가 바뀌어도
+  // 신상품순 위치와 다른 정렬의 동순위 위치는 절대 달라지지 않는다.
+  var originalOrder={};
+  if(typeof K2G!=='undefined') K2G.forEach(function(r,i){originalOrder[String(r[0])]=i;});
+  function opos(r){var n=originalOrder[String(r[0])];return typeof n==='number'?n:999999999;}
   function pnum(el){ // col-card 가격 텍스트(₩4,500~)→숫자
     var t=(el.querySelector('.price')||{}).textContent||''; 
     var m=t.replace(/[^0-9]/g,''); return m?parseInt(m,10):0; }
@@ -4219,10 +4224,10 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.2 */(func
       var types=eventTypes(r[2]);
       return selected.some(function(type){return types.indexOf(type)!==-1;});
     });
-    if(s==='asc')  v.sort(function(a,b){return (a[4]||0)-(b[4]||0);});
-    else if(s==='desc') v.sort(function(a,b){return (b[4]||0)-(a[4]||0);});
-    else if(s==='name') v.sort(function(a,b){return (a[2]||'').localeCompare(b[2]||'','ko');});
-    // 'new' = 원본 순서(최신 우선 데이터셋) 유지
+    if(s==='asc')  v.sort(function(a,b){return ((a[4]||0)-(b[4]||0))||(opos(a)-opos(b));});
+    else if(s==='desc') v.sort(function(a,b){return ((b[4]||0)-(a[4]||0))||(opos(a)-opos(b));});
+    else if(s==='name') v.sort(function(a,b){return (a[2]||'').localeCompare(b[2]||'','ko')||(opos(a)-opos(b));});
+    else v.sort(function(a,b){return opos(a)-opos(b);}); // 'new': 품절과 무관한 원본 순서
     return v;
   };
   // 자체상품 카드 정렬(표시중인 것만) — grid 내 col-card 재배치

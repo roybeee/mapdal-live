@@ -250,7 +250,7 @@ nav.main a.active-page{border-bottom-color:var(--red);color:var(--red)}
 .buy .brand{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--red);margin-bottom:8px}
 .buy h1{font-size:22px;font-weight:700;line-height:1.4}
 .price-block{margin-top:14px}
-.price-block .was{font-size:14px;color:var(--steel);text-decoration:line-through}
+
 .price-block .now{display:flex;align-items:baseline;gap:10px;margin-top:2px}
 .price-block .pct{font-family:var(--disp);font-size:26px;color:var(--red)}
 .price-block .amt{font-family:var(--disp);font-size:30px}
@@ -527,7 +527,6 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
     <div class="brand">KPOP2GETHER × 맵달SEOUL · 4F</div>
     <h1 id="pName"></h1>
     <div class="price-block">
-      <div class="was" id="pWas"></div>
       <div class="now"><span class="pct" id="pPct"></span><span class="amt" id="pNow"></span></div>
     </div>
     <div class="viewers"><span id="vCount">88</span>명이 보고 있어요</div>
@@ -600,7 +599,6 @@ document.getElementById('evFlavor').textContent=t?t[1]:'ALBUM';
 if(t)document.getElementById('eventBox').innerHTML=`<div class="event-box"><span class="eb-t">EVENT · ${t[1]}</span><h4>${t[2]}</h4><p>${t[3]} 이벤트 상품은 이벤트 종료 후 발송될 수 있습니다.</p></div>`;
 // 가격
 const pct=r[3]&&r[4]?Math.round((1-r[4]/r[3])*100):0;
-if(r[3])document.getElementById('pWas').textContent=fmt(r[3]);
 document.getElementById('pPct').textContent=pct?pct+'%':'';
 document.getElementById('pNow').textContent=r[4]?fmt(r[4]):'가격 문의';
 // 수량·합계

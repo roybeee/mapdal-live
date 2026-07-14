@@ -251,7 +251,7 @@ nav.main a.active-page{border-bottom-color:var(--red);color:var(--red)}
 .k2g-body{padding:12px 14px 16px;display:flex;flex-direction:column;flex:1}
 .k2g-body h4{font-size:12px;font-weight:600;line-height:1.45;flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .k2g-price{margin-top:10px}
-.k2g-price .was{font-size:11px;color:var(--steel);text-decoration:line-through}
+
 .k2g-price .now{display:flex;gap:6px;align-items:baseline}
 .k2g-price .pct{font-family:var(--disp);font-size:15px;color:var(--red)}
 .k2g-price .amt{font-family:var(--mono);font-size:13.5px;font-weight:500}
@@ -408,7 +408,7 @@ function cardHTML(r){
     ${r[5]?'<span class="k2g-badge" style="background:#777">품절</span>':(t?`<span class="k2g-badge ${t[0]}">${t[1]}</span>`:'')}
     <span class="k2g-cover"><img loading="lazy" referrerpolicy="no-referrer" src="${K2G_IMG}${r[1]}" alt=""></span>
     <span class="k2g-body"><h4>${r[2].replace(/</g,'&lt;')}</h4>
-    <span class="k2g-price">${r[3]?`<span class="was">${fmt(r[3])}원</span>`:''}
+    <span class="k2g-price">
     <span class="now">${pct?`<span class="pct">${pct}%</span>`:''}<span class="amt">${r[4]?'₩'+fmt(r[4]):'가격 문의'}</span></span></span></span></a>`;}
 function albumEligible(){return F==='all'||F==='album';}
 function renderBatch(n){

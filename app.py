@@ -24,6 +24,10 @@ IS_PG = DATABASE_URL.startswith('postgresql')
 INICIS_MID     = os.getenv('INICIS_MID', 'INIpayTest')
 INICIS_SIGNKEY = os.getenv('INICIS_SIGNKEY', 'SU5JTElURV9UUklQTEVERVNfS0VZU1RS')
 INICIS_INIAPI  = os.getenv('INICIS_INIAPI', 'ItEQKi3rY7uvDS8l')
+# 결제 returnUrl/closeUrl 도메인 — 이니시스는 요청페이지와 도메인 일치를 검증(V023).
+#   Cloudflare/Render 프록시 뒤에서는 req.base_url이 실제 도메인과 달라질 수 있으므로
+#   SITE_ORIGIN 환경변수로 실도메인을 고정하는 것이 가장 안전. 미설정 시 헤더로 추론.
+SITE_ORIGIN    = os.getenv('SITE_ORIGIN', 'https://mapdal.kr').rstrip('/')
 ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', 'mapdal-admin-2026')
 FREE_SHIP_OVER, SHIP_FEE = 30000, 3000
 
@@ -189,6 +193,18 @@ async def clean_urls(request, call_next):
 def _ini_hash(s: str) -> str:
     return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
+def _req_origin(req: Request) -> str:
+    """결제 return/close URL용 origin — 프록시 뒤 실도메인 우선순위로 결정.
+       1) SITE_ORIGIN 환경변수(권장·고정)  2) X-Forwarded-Proto/Host 헤더  3) req.base_url."""
+    if SITE_ORIGIN:
+        return SITE_ORIGIN
+    h = req.headers
+    host = h.get('x-forwarded-host') or h.get('host')
+    proto = (h.get('x-forwarded-proto') or '').split(',')[0].strip() or 'https'
+    if host:
+        return f'{proto}://{host}'.rstrip('/')
+    return str(req.base_url).rstrip('/')
+
 def _ini_signature(params: dict) -> str:
     """대상 필드를 알파벳순 정렬 → key=value & 연결(후행& 없음) → SHA-256 hex."""
     plain = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
@@ -252,7 +268,7 @@ async def create_order(req: Request):
     verification = _ini_signature({'oid': order_id, 'price': price,
                                    'signKey': INICIS_SIGNKEY, 'timestamp': ts})
     mkey = _ini_hash(INICIS_SIGNKEY)
-    origin = str(req.base_url).rstrip('/')
+    origin = _req_origin(req)
     inicis = {
         'version': '1.0', 'mid': INICIS_MID, 'oid': order_id, 'price': price,
         'timestamp': ts, 'use_chkfake': 'Y', 'signature': signature,

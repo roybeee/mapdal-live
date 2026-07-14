@@ -3806,18 +3806,23 @@ ready(function(){
  }).catch(function(){});
 });})();</script>"""
 
-CARD_CSS_SNIPPET = r"""<style id="mpCardCss">
-/* 앨범 카드 제목 폰트 통일 — 직접등록(mp) 앨범 카드도 K2G 카드(h4 12px/600·2줄)와 동일 */
+CARD_CSS_SNIPPET = r"""<style id="mpCardCss">/* mpCardCss v20260715.4 */
+/* 직접등록·수집 앨범 카드 정보영역 공통 규격: 아티스트 → 상품명 → 가격 → 상태 */
+#shopGrid .col-card[data-cat="album"] .col-body,
+#shopGrid .k2g-card .k2g-body{padding:10px 12px 14px;display:flex;flex-direction:column;align-items:flex-start;min-height:116px;font-family:var(--body),'Noto Sans KR',sans-serif}
+#shopGrid .card-artist{display:block;color:#718895;font-size:11.5px;font-weight:500;line-height:1.3;margin-bottom:4px}
 #shopGrid .col-card[data-cat="album"] .col-body h3{
-  font-size:12px;font-weight:600;line-height:1.45;min-height:35px;margin-bottom:4px;
+  font-family:var(--body),'Noto Sans KR',sans-serif;font-size:12.5px;font-weight:700;line-height:1.38;letter-spacing:-.025em;min-height:35px;margin:0;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-/* mp 카드 할인 표시(정가/할인율/할인가) — K2G 가격 블록과 좌측 정렬·행 배치 정합 */
-#shopGrid .col-card .price-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
-#shopGrid .col-card .k2g-price{text-align:left}
+#shopGrid .k2g-card .k2g-body h4{font-family:var(--body),'Noto Sans KR',sans-serif;font-size:12.5px;font-weight:700;line-height:1.38;letter-spacing:-.025em;min-height:35px;margin:0}
+#shopGrid .col-card .price-row{display:block;margin-top:7px}
+#shopGrid .col-card .k2g-price,#shopGrid .k2g-card .k2g-price{text-align:left;margin-top:7px}
 
 #shopGrid .col-card .k2g-price .now{display:flex;gap:6px;align-items:baseline}
-#shopGrid .col-card .k2g-price .pct{font-family:'Black Han Sans',sans-serif;font-size:15px;color:#E8332A}
-#shopGrid .col-card .k2g-price .amt{font-family:'IBM Plex Mono',monospace;font-size:13.5px;font-weight:500}
+#shopGrid .k2g-price .pct{font-family:var(--body),'Noto Sans KR',sans-serif;font-size:15px;font-weight:700;color:#E8332A}
+#shopGrid .k2g-price .amt,#shopGrid .col-card .price{font-family:var(--body),'Noto Sans KR',sans-serif;font-size:15px;font-weight:700;letter-spacing:-.02em}
+#shopGrid .card-state{display:inline-flex;align-items:center;margin-top:7px;padding:3px 6px;border-radius:3px;background:#050505;color:#fff;font-family:var(--body),'Noto Sans KR',sans-serif;font-size:8.5px;font-weight:700;line-height:1.25;letter-spacing:.02em}
+#shopGrid .card-state.sold{background:#777}
 </style>"""
 
 def _patch_legacy_footer(html):
@@ -3861,6 +3866,14 @@ def _mp_shop_cards():
         return ''
     def h(x):
         return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+    def artist_of(name):
+        clean = re.sub(r'^(?:\s*【[^】]+】)+\s*', '', str(name or '')).strip()
+        lead = (clean.split(' - ', 1)[0] or clean).strip()
+        par = re.search(r'\(([^)]*[가-힣][^)]*)\)', lead)
+        if par:
+            return par.group(1).strip()
+        ko = re.search(r'[가-힣][가-힣&·\s]*', lead)
+        return (ko.group(0).strip() if ko else (lead.split()[0] if lead else 'KPOP'))
     cards = []
     for i, r in enumerate(rs):
         name = str(r.get('name') or r['id'])
@@ -3892,10 +3905,11 @@ def _mp_shop_cards():
         else:
             pr_html = '<span class="price">₩%s</span>' % format(sale, ',')
         cards.append('<a class="col-card" data-cat="%s" href="/p/%s">%s'
-                     '<div class="col-body"><h3>%s</h3><div class="price-row">'
-                     '%s<span class="add">%s</span></div></div></a>'
-                     % (h(cat), h(r['id']), cover, h(name),
-                        pr_html, '품절' if soldout else '담기 +'))
+                     '<div class="col-body"><span class="card-artist">%s</span><h3>%s</h3>'
+                     '<div class="price-row">%s</div><span class="card-state add%s">%s</span>'
+                     '</div></a>'
+                     % (h(cat), h(r['id']), cover, h(artist_of(name)), h(name), pr_html,
+                        ' sold' if soldout else '', 'SOLD OUT' if soldout else 'NEW'))
     return '<!-- mpShopDyn -->' + ''.join(cards) + '<!-- /mpShopDyn -->'
 
 _own_rm_cache = {'t': 0.0, 'set': None}
@@ -4243,7 +4257,7 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(func
         var okQ=(typeof Q==='undefined'||!Q||text.toLowerCase().includes(Q));
         var types=eventTypes(text);
         var okE=!selected.length||selected.some(function(type){return types.indexOf(type)!==-1;});
-        var sold=/품절/.test(((c.querySelector('.add')||{}).textContent||''));
+        var sold=/품절|SOLD OUT/i.test(((c.querySelector('.add')||{}).textContent||''));
         c.style.display=okF&&okQ&&okE&&(!hide||!sold)?'':'none';
       });
     }

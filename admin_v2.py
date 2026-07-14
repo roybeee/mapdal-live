@@ -4143,6 +4143,7 @@ _FB_TOOLBAR_CSS = (
     '#mpTools .chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer;'
     'font-size:12.5px;color:var(--ink);user-select:none}'
     '#mpTools .chk input{width:15px;height:15px;accent-color:var(--red);cursor:pointer}'
+    '#mpTools .event-filters{display:inline-flex;align-items:center;gap:12px;flex-wrap:wrap}'
     '#mpTools select{font-family:var(--body);font-size:12.5px;color:var(--ink);'
     'padding:7px 30px 7px 12px;border:1px solid var(--line);border-radius:6px;'
     'background:#fff url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' '
@@ -4156,12 +4157,16 @@ _FB_TOOLBAR_CSS = (
 
 # 도구모음 마크업 — filter-bar 다음, shopGrid 앞에 삽입. data-mode로 페이지 구분.
 def _fb_toolbar_html(mode):
-    # 품절제외·행사상품 체크박스는 앨범(=행사/품절 상태 존재) 목록에만 노출.
+    # 품절제외·행사유형 체크박스는 앨범(=행사/품절 상태 존재) 목록에만 노출.
     chks = ''
     if mode == 'kpop':
         chks = (
             '<label class="chk"><input type="checkbox" id="mpFhide">품절 제외</label>'
-            '<label class="chk"><input type="checkbox" id="mpFevt">행사상품만 (영통·팬싸)</label>'
+            '<span class="event-filters" role="group" aria-label="행사 유형">'
+            '<label class="chk"><input type="checkbox" id="mpFcall">FANCALL</label>'
+            '<label class="chk"><input type="checkbox" id="mpFsign">팬싸인회</label>'
+            '<label class="chk"><input type="checkbox" id="mpFlucky">럭키드로우</label>'
+            '</span>'
         )
     return (
         '<div id="mpTools" data-mode="' + mode + '">'
@@ -4187,14 +4192,33 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">(function(){
     var t=(el.querySelector('.price')||{}).textContent||''; 
     var m=t.replace(/[^0-9]/g,''); return m?parseInt(m,10):0; }
   function cname(el){ return ((el.querySelector('h3,h4')||{}).textContent||'').trim(); }
+  // 상품명에 명시된 행사 유형만 분류한다. "Lucky Man", "Drawstring" 같은
+  // 일반 앨범명은 럭키드로우로 오인하지 않도록 결합어 패턴을 사용한다.
+  function eventTypes(name){
+    var n=String(name||''), types=[];
+    if(/럭키\s*드로우|럭드|LUCKY[\s_-]*DRAW/i.test(n)) types.push('luckydraw');
+    if(/대면\s*사인회|팬\s*사인회|팬싸인회|팬싸|FAN[\s_-]*SIGN/i.test(n)) types.push('fansign');
+    if(/영상\s*통화|영통|FAN[\s_-]*CALL|FANCALL/i.test(n)) types.push('fancall');
+    return types;
+  }
+  function selectedTypes(){
+    var selected=[];
+    if((document.getElementById('mpFcall')||{}).checked) selected.push('fancall');
+    if((document.getElementById('mpFsign')||{}).checked) selected.push('fansign');
+    if((document.getElementById('mpFlucky')||{}).checked) selected.push('luckydraw');
+    return selected;
+  }
   // 원본 VIEW(앨범 데이터셋)에 정렬/필터 적용본을 만들어 되돌려줌
   window.__mpBuildView=function(base){
     var v=base.slice(), s=(document.getElementById('mpSort')||{}).value||'new';
     var hide=(document.getElementById('mpFhide')||{}).checked;
-    var evt=(document.getElementById('mpFevt')||{}).checked;
+    var selected=selectedTypes();
     if(hide) v=v.filter(function(r){return !r[5];});          // r[5]=품절
-    if(evt)  v=v.filter(function(r){var t=(typeof k2gTag==='function')?k2gTag(r[2]):null;
-                                    return t&&(t[0]==='fansign'||t[0]==='video');});
+    // 미선택은 전체, 복수 선택은 행사 유형 합집합(OR)
+    if(selected.length) v=v.filter(function(r){
+      var types=eventTypes(r[2]);
+      return selected.some(function(type){return types.indexOf(type)!==-1;});
+    });
     if(s==='asc')  v.sort(function(a,b){return (a[4]||0)-(b[4]||0);});
     else if(s==='desc') v.sort(function(a,b){return (b[4]||0)-(a[4]||0);});
     else if(s==='name') v.sort(function(a,b){return (a[2]||'').localeCompare(b[2]||'','ko');});
@@ -4206,14 +4230,25 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">(function(){
     var s=(document.getElementById('mpSort')||{}).value||'new';
     var cards=[].slice.call(grid.querySelectorAll('.col-card'));
     if(!cards.length) return;
+    // DB 자체상품도 K2G와 같은 행사/품절 규칙으로 표시 상태를 계산한다.
+    if(MODE==='kpop'){
+      var selected=selectedTypes(), hide=(document.getElementById('mpFhide')||{}).checked;
+      cards.forEach(function(c){
+        var text=(c.textContent||''), okF=(typeof F==='undefined'||F==='all'||c.dataset.cat===F);
+        var okQ=(typeof Q==='undefined'||!Q||text.toLowerCase().includes(Q));
+        var types=eventTypes(text);
+        var okE=!selected.length||selected.some(function(type){return types.indexOf(type)!==-1;});
+        var sold=/품절/.test(((c.querySelector('.add')||{}).textContent||''));
+        c.style.display=okF&&okQ&&okE&&(!hide||!sold)?'':'none';
+      });
+    }
     var vis=cards.filter(function(c){return c.style.display!=='none';});
     if(s==='new'){ // 원래 문서순 복원
       vis.sort(function(a,b){return (+a.dataset.mpseq||0)-(+b.dataset.mpseq||0);});
     } else if(s==='asc'){ vis.sort(function(a,b){return pnum(a)-pnum(b);}); }
     else if(s==='desc'){ vis.sort(function(a,b){return pnum(b)-pnum(a);}); }
     else if(s==='name'){ vis.sort(function(a,b){return cname(a).localeCompare(cname(b),'ko');}); }
-    var lm=document.getElementById('lmWrap');
-    vis.forEach(function(c){ grid.insertBefore(c, lm||null); });
+    vis.forEach(function(c){ grid.appendChild(c); });
   }
   function count(){
     var n=0;

@@ -248,6 +248,7 @@ nav.main a.active-page{border-bottom-color:var(--red);color:var(--red)}
 .k2g-badge{position:absolute;top:10px;left:10px;z-index:5;font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;padding:4px 7px;color:#fff;background:var(--ink)}
 .k2g-badge.fansign{background:var(--red)}
 .k2g-badge.event{background:#4A1D96}
+.k2g-badge.luckydraw{background:#B36B00}
 .k2g-body{padding:12px 14px 16px;display:flex;flex-direction:column;flex:1}
 .k2g-body h4{font-size:12px;font-weight:600;line-height:1.45;flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .k2g-price{margin-top:10px}
@@ -396,8 +397,9 @@ const K2G_DET='https://www.kpop2gether.com/shop/shopdetail.html?branduid=';
 const K2G_FIRST=40,K2G_STEP=100;
 let F='album',Q='',VIEW=K2G,ptr=0;
 function k2gTag(n){
-  if(/대면 ?사인회|팬 ?사인회/.test(n))return['fansign','사인회'];
-  if(/영상통화/.test(n))return['video','영상통화'];
+  if(/럭키\s*드로우|럭드|LUCKY[\s_-]*DRAW/i.test(n))return['luckydraw','럭키드로우'];
+  if(/대면\s*사인회|팬\s*사인회|팬싸인회|팬싸|FAN[\s_-]*SIGN/i.test(n))return['fansign','팬싸인회'];
+  if(/영상\s*통화|영통|FAN[\s_-]*CALL|FANCALL/i.test(n))return['video','FANCALL'];
   if(/스페셜 이벤트/.test(n))return['video','EVENT'];
   if(/【세트】/.test(n))return['setb','세트'];
   return null;}

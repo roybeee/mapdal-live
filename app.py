@@ -276,7 +276,7 @@ async def create_order(req: Request):
         'goodname': order_name, 'buyername': (buyer.get('name') or '맵달 고객')[:30],
         'buyertel': (buyer.get('phone') or ''), 'buyeremail': (buyer.get('email') or ''),
         'gopaymethod': '', 'acceptmethod': 'centerCd(Y):below1000',
-        'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/checkout?closed=1',
+        'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/inicis/close',
     }
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
             'sub': sub, 'shipFee': ship_fee, 'inicis': inicis}
@@ -349,6 +349,17 @@ async def inicis_return(req: Request):
         c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
                "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+@app.api_route('/inicis/close', methods=['GET', 'POST'])
+async def inicis_close(req: Request):
+    """결제창 닫기 URL(closeUrl) — 쿼리스트링 없는 순수 경로(V023 회피).
+       결제 팝업/레이어를 닫고 결제 페이지로 복귀시킨다."""
+    return HTMLResponse(
+        "<!doctype html><meta charset='utf-8'><title>결제 취소</title>"
+        "<script>try{if(window.opener){window.close();}"
+        "else{location.replace('/checkout');}}catch(e){location.replace('/checkout');}</script>"
+        "<body style=\"font-family:sans-serif;padding:40px;text-align:center;color:#141414\">"
+        "결제를 취소했습니다. 창이 닫히지 않으면 <a href='/checkout'>여기</a>를 눌러 주세요.</body>")
 
 def _ini_net_cancel(net_cancel_url: str, auth_token: str):
     """승인 처리 중 예외 발생 시 망취소(인증결과 응답 후 10분 이내)."""

@@ -3531,13 +3531,17 @@ def _mp_shop_cards():
         tag = (badge or _MP_CAT_TAG.get(cat, 'MAPDAL')) + (' · SOLD OUT' if soldout else '')
         gray = ';filter:grayscale(.85);opacity:.75' if soldout else ''
         img = (r.get('img') or '').strip()
+        # 커버는 K2G 카드(.k2g-cover{aspect-ratio:1/1})와 동일한 1:1 정방형.
+        # 인라인 height:auto가 정적 CSS(데스크톱 340px/모바일 190px)를 무효화하고
+        # aspect-ratio가 폭 기준 정사각형을 강제 → center/cover로 중앙 크롭(=object-fit:cover 동일).
+        _SQ = 'height:auto;aspect-ratio:1/1'
         if _MP_IMG_OK.fullmatch(img):
-            cover = ('<div class="col-cover" style="background:#EDECE7 url(\'%s\') center/cover no-repeat;height:240px%s">'
-                     '<span class="tag">%s</span></div>') % (h(img), gray, h(tag))
+            cover = ('<div class="col-cover" style="background:#EDECE7 url(\'%s\') center/cover no-repeat;%s%s">'
+                     '<span class="tag">%s</span></div>') % (h(img), _SQ, gray, h(tag))
         else:
-            cover = ('<div class="col-cover" style="background:%s;height:240px%s">'
+            cover = ('<div class="col-cover" style="background:%s;%s%s">'
                      '<span class="tag">%s</span><span class="big" style="font-size:44px">%s</span></div>'
-                     ) % (_MP_COVERS[i % len(_MP_COVERS)], gray, h(tag), h(name[:2]))
+                     ) % (_MP_COVERS[i % len(_MP_COVERS)], _SQ, gray, h(tag), h(name[:2]))
         sale, was = num(r.get('price')), num(r.get('list_price'))
         pct = derived_pct(was, sale)
         if pct:

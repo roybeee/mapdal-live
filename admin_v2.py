@@ -491,6 +491,8 @@ def ensure_ready():
     except Exception: pass
     try: _migrate_lifestyle_page_edits() # DB 편집본이 정적 파일을 덮는 경우의 화면 문구도 전환
     except Exception: pass
+    try: _migrate_storefront_header_page_edits() # DB 편집본에도 개편된 상단 헤더를 멱등 반영
+    except Exception: pass
     try: _account_migrate() # 기존 회원을 단일 고객 ID·동의·포인트 원장 구조로 안전하게 백필
     except Exception as e: print('account migration skipped:', e)
 
@@ -2622,6 +2624,39 @@ def _migrate_lifestyle_page_edits():
             run('UPDATE page_edits SET html=?,updated=?,by_admin=? WHERE path=?',
                 (new, now_iso(), '시스템 명칭전환', row['path']))
 
+def _migrate_storefront_header_page_edits():
+    """관리자에서 저장한 HTML이 정적 파일을 덮어써도 새 상단 헤더를 유지한다."""
+    global_bar = re.compile(
+        r'\s*<!-- \uAE00\uB85C\uBC8C \uBC14 -->\s*<div class="global-bar">.*?</div>\s*</div>\s*', re.S)
+    global_css = re.compile(
+        r'/\* ---------- \uC0C1\uB2E8 \uAE00\uB85C\uBC8C \uBC14 ---------- \*/.*?'
+        r'(?=/\* ---------- \uD5E4\uB354 / \uBA54\uAC00\uBA54\uB274 ---------- \*/)', re.S)
+    replacements = (
+        ('.header-inner{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:64px;max-width:1440px;margin:0 auto}',
+         '.header-inner{display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:78px;max-width:1520px;margin:0 auto}'),
+        ('.logo{font-family:var(--disp);font-size:26px;',
+         '.logo{font-family:var(--disp);font-size:31px;'),
+        ('nav.main a.top{font-size:13px;font-weight:600;letter-spacing:.08em;padding:0 14px',
+         'nav.main a.top{font-size:14px;font-weight:600;letter-spacing:.08em;padding:0 17px'),
+        ('.util{display:flex;gap:18px;font-size:13px;font-weight:600;align-items:center}',
+         '.util{display:flex;gap:20px;font-size:14px;font-weight:600;align-items:center}'),
+        ('.util a{font-size:13px;font-weight:600}',
+         '.util a{font-size:14px;font-weight:600}'),
+        ('.util .cart{background:var(--ink);color:#fff;border-radius:20px;padding:6px 14px;font-size:12px}',
+         '.util .cart{background:var(--ink);color:#fff;border-radius:22px;padding:8px 17px;font-size:12.5px}'),
+        ('position:sticky;top:64px;background:var(--paper);z-index:50}',
+         'position:sticky;top:78px;background:var(--paper);z-index:50}'),
+    )
+    for row in rows("SELECT path,html FROM page_edits"):
+        old = row.get('html') or ''
+        new = global_bar.sub('\n', old)
+        new = global_css.sub('', new)
+        for before, after in replacements:
+            new = new.replace(before, after)
+        if new != old:
+            run('UPDATE page_edits SET html=?,updated=?,by_admin=? WHERE path=?',
+                (new, now_iso(), '시스템 헤더개편', row['path']))
+
 def _catalog_review_reasons(g, variants=None):
     meta = jload(g.get('metadata'), {}) or {}
     reasons = list(meta.get('review_reasons') or [])
@@ -3532,12 +3567,12 @@ _PDP_HTML = '''<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 body{font-family:var(--body);background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased}
 a{color:inherit;text-decoration:none}img{display:block;max-width:100%%}.mono{font-family:var(--mono)}
 header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1px solid var(--line)}
-.header-inner{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:64px;max-width:1440px;margin:0 auto}
-.logo{font-family:var(--disp);font-size:26px;letter-spacing:.02em;color:var(--ink);line-height:1}
+.header-inner{display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:78px;max-width:1520px;margin:0 auto}
+.logo{font-family:var(--disp);font-size:31px;letter-spacing:.02em;color:var(--ink);line-height:1}
 .logo em{color:var(--red);font-style:normal}
-.util{display:flex;gap:18px;font-size:13px;font-weight:600;align-items:center}
-.util a{font-size:13px;font-weight:600}.util a:hover{color:var(--red)}
-.util .cart{background:var(--ink);color:#fff;border-radius:20px;padding:6px 14px;font-size:12px}
+.util{display:flex;gap:20px;font-size:14px;font-weight:600;align-items:center}
+.util a{font-size:14px;font-weight:600}.util a:hover{color:var(--red)}
+.util .cart{background:var(--ink);color:#fff;border-radius:22px;padding:8px 17px;font-size:12.5px}
 .crumb{max-width:1440px;margin:0 auto;padding:18px 48px 0;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--steel)}
 .crumb a:hover{color:var(--red)}
 .pdp{max-width:1440px;margin:0 auto;padding:28px 48px 56px;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:48px;align-items:start}
@@ -3593,7 +3628,7 @@ header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1
 .ben-row .bd{display:none;padding:0 2px 14px 98px;font-size:12px;color:var(--steel);line-height:1.7}
 .ben-row.open .bd{display:block}
 .pdp-tabs{padding:36px 0 8px}
-.tab-bar{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line);position:sticky;top:64px;background:var(--paper);z-index:50}
+.tab-bar{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line);position:sticky;top:78px;background:var(--paper);z-index:50}
 .tab-bar button{padding:16px;border:none;background:transparent;font-family:var(--body);font-size:14.5px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:var(--steel)}
 .tab-bar button.on{border-bottom-color:var(--ink);color:var(--ink)}
 .tab-panel{display:none;padding:40px 0 8px}.tab-panel.on{display:block}
@@ -3614,7 +3649,7 @@ footer p{font-size:12.5px;line-height:1.8;max-width:340px}
 .foot-base{border-top:1px solid #2A2A28;font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;
 max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
 .foot-base a{color:var(--amber)}
-@media(max-width:1024px){.pdp{grid-template-columns:1fr;gap:28px}.buy{position:static;max-height:none}}
+@media(max-width:1024px){.pdp{grid-template-columns:1fr;gap:28px}.buy{position:static;max-height:none}.header-inner{height:62px;padding:0 12px}.logo{font-size:23px}.tab-bar{top:62px}}
 @media(max-width:640px){.crumb{padding:14px 20px 0}.pdp{padding:20px 20px 40px}.gal-main{min-height:380px;padding:36px 20px 60px}.foot-inner,.foot-base{padding-left:20px;padding-right:20px}.qna-wrap{padding:0 20px 40px}}
 </style></head><body>
 <header><div class="header-inner">
@@ -5152,21 +5187,20 @@ MOBNAV_SNIPPET = r"""<style id="mpMobNav">
 @media(max-width:1024px){
  html,body{overflow-x:clip}
  #mpCatBar{display:flex}
- .header-inner{padding:0 12px;height:54px}
- .logo{font-size:21px;white-space:nowrap}
+ .header-inner{padding:0 12px;height:62px}
+ .logo{font-size:23px;white-space:nowrap}
  .util{gap:10px;min-width:0}
  .util a{white-space:nowrap;font-size:12px}
  .util a.cart{padding:5px 10px;font-size:11px}
- .global-bar{flex-wrap:wrap;row-gap:2px;padding:5px 12px;font-size:10px;line-height:1.5}
- .global-bar>*:first-child{white-space:nowrap}
- .global-bar .right{margin-left:auto;gap:10px}
+ .tab-bar{top:62px!important}
 }
 @media(max-width:400px){
- .logo{font-size:18px}
+ .logo{font-size:20px}
  .util{gap:8px}
  .util a{font-size:11px}
  .util a.cart{padding:4px 8px}
- .header-inner{padding:0 10px}
+ .header-inner{padding:0 10px;height:58px}
+ .tab-bar{top:58px!important}
  #mpCatBar a{font-size:12px;letter-spacing:.04em}
 }
 /* ── 모바일 상품 그리드 (SHOP) ── */

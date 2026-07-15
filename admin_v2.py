@@ -1059,6 +1059,7 @@ def api_inventory(request: Request):
     if dept in _DEPT_KEYS: where.append('g.department=?'); args.append(dept)
     filt = p.get('filter') or ''
     if filt == 'out': where.append("((b.is_tracked=1 AND b.on_hand-b.reserved<=0) OR (b.is_tracked=0 AND b.external_status='OUT'))")
+    elif filt == 'tracked_out': where.append('b.is_tracked=1 AND b.on_hand-b.reserved<=0')
     elif filt == 'under5': where.append('b.is_tracked=1 AND b.on_hand-b.reserved<5')
     elif filt == 'low': where.append('b.is_tracked=1 AND b.on_hand-b.reserved>0 AND b.on_hand-b.reserved<=b.reorder_point')
     elif filt == 'incoming': where.append('b.is_tracked=1 AND b.incoming>0')
@@ -1659,6 +1660,9 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 .product-tab{border:0;background:transparent;padding:10px 18px;font:inherit;font-weight:700;color:#777;cursor:pointer;border-bottom:3px solid transparent}
 .product-tab.on{color:var(--black);border-color:var(--red)}
 .p-summary{grid-template-columns:repeat(6,minmax(120px,1fr))}.p-summary .card{padding:11px 13px}.p-summary .card .v{font-size:18px}
+.p-summary .drill{font:inherit;color:inherit;text-align:left;cursor:pointer;position:relative;transition:transform .12s,border-color .12s,box-shadow .12s}
+.p-summary .drill:hover,.p-summary .drill:focus{transform:translateY(-2px);border-color:#999;box-shadow:0 5px 16px rgba(0,0,0,.08);outline:none}
+.p-summary .drill:after{content:'목록 보기 →';display:block;font-size:10px;font-weight:700;color:#777;margin-top:7px}
 .pview{display:none}.pview.on{display:block}.toolbar.grow input[type=text]{min-width:230px;flex:1}
 .group-list{display:flex;flex-direction:column;gap:9px}.group-card{background:#fff;border:1px solid var(--line)}
 .group-card.needs-review{border-left:4px solid var(--amber)}.group-head{display:grid;grid-template-columns:auto 74px minmax(260px,1fr) 150px 120px auto;gap:10px;align-items:center;padding:12px 14px;cursor:pointer}
@@ -1702,7 +1706,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div id="pv-inventory" class="pview">
    <div class="toolbar grow"><input id="inventoryQ" type="text" placeholder="상품명 · SKU · 기존ID" onkeydown="if(event.key==='Enter')loadInventory(1)">
    <select id="inventoryDept" onchange="loadInventory(1)"><option value="">대분류 전체</option><option>KPOP</option><option>KFOOD</option><option>KBEAUTY</option><option>KFASHION</option><option>LIFESTYLE</option></select>
-   <select id="inventoryFilter" onchange="loadInventory(1)"><option value="">재고 전체</option><option value="out">품절/판매불가</option><option value="under5">재고 5개 미만</option><option value="low">안전재고 이하</option><option value="incoming">입고예정 있음</option><option value="tracked">수량관리 상품</option><option value="external">외부연동 상품</option></select>
+   <select id="inventoryFilter" onchange="loadInventory(1)"><option value="">재고 전체</option><option value="out">품절/판매불가 전체</option><option value="tracked_out">품절 (수량관리)</option><option value="under5">재고 5개 미만</option><option value="low">안전재고 이하</option><option value="incoming">입고예정 있음</option><option value="tracked">수량관리 상품</option><option value="external">외부연동 상품</option></select>
    <select id="inventorySort" onchange="loadInventory(1)"><option value="stock_asc">가용재고 적은순</option><option value="stock_desc">가용재고 많은순</option><option value="updated_desc">최근 조정순</option><option value="name_asc">상품 이름순</option></select>
    <button class="btn" onclick="loadInventory(1)">검색</button><button class="btn ghost" onclick="resetInventory()">초기화</button><button class="btn ghost" id="inventoryCsv" onclick="location.href='/admin/api/catalog.csv'">CSV</button></div>
    <div class="hint" style="margin-bottom:10px">가용재고 = 실재고 − 예약재고. K2G 외부연동 상품은 수량 0으로 오인하지 않고 연동 상태로 별도 표시됩니다.</div>
@@ -1874,12 +1878,18 @@ function productMode(mode){PMODE=mode;['catalog','inventory','review'].forEach(m
  loadProductSummary();if(mode==='catalog')loadCatalog(catalogPage);else if(mode==='inventory')loadInventory(inventoryPage);else loadReview(reviewPage)}
 async function loadProductSummary(){try{const d=await api('/admin/api/catalog/summary');
  $('#reviewCount').textContent=d.review?'('+d.review+')':'';
- $('#productSummary').innerHTML=`<div class="card"><div class="k">상품그룹</div><div class="v">${d.groups.toLocaleString()}</div><div class="s">SKU ${d.skus.toLocaleString()}개</div></div>
- <div class="card ${d.review?'alert':''}"><div class="k">검토 필요</div><div class="v">${d.review.toLocaleString()}</div><div class="s">메타데이터 확인</div></div>
- <div class="card ${d.out?'alert':''}"><div class="k">품절</div><div class="v">${d.out.toLocaleString()}</div><div class="s">수량관리 SKU</div></div>
- <div class="card"><div class="k">재고 부족</div><div class="v">${d.low.toLocaleString()}</div><div class="s">안전재고 이하</div></div>
- <div class="card"><div class="k">입고 예정</div><div class="v">${d.incoming.toLocaleString()}</div><div class="s">총 수량</div></div>
- <div class="card"><div class="k">외부 연동</div><div class="v">${d.external.toLocaleString()}</div><div class="s">수량 미관리</div></div>`}catch(e){$('#productSummary').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+ $('#productSummary').innerHTML=`<button class="card drill" onclick="summaryDrill('groups')" aria-label="전체 상품그룹 목록 보기"><div class="k">상품그룹</div><div class="v">${d.groups.toLocaleString()}</div><div class="s">SKU ${d.skus.toLocaleString()}개</div></button>
+ <button class="card drill ${d.review?'alert':''}" onclick="summaryDrill('review')" aria-label="검토 필요 상품 목록 보기"><div class="k">검토 필요</div><div class="v">${d.review.toLocaleString()}</div><div class="s">메타데이터 확인</div></button>
+ <button class="card drill ${d.out?'alert':''}" onclick="summaryDrill('out')" aria-label="품절 상품 목록 보기"><div class="k">품절</div><div class="v">${d.out.toLocaleString()}</div><div class="s">수량관리 SKU</div></button>
+ <button class="card drill" onclick="summaryDrill('low')" aria-label="재고 부족 상품 목록 보기"><div class="k">재고 부족</div><div class="v">${d.low.toLocaleString()}</div><div class="s">안전재고 이하</div></button>
+ <button class="card drill" onclick="summaryDrill('incoming')" aria-label="입고 예정 상품 목록 보기"><div class="k">입고 예정</div><div class="v">${d.incoming.toLocaleString()}</div><div class="s">총 수량</div></button>
+ <button class="card drill" onclick="summaryDrill('external')" aria-label="외부 연동 상품 목록 보기"><div class="k">외부 연동</div><div class="v">${d.external.toLocaleString()}</div><div class="s">수량 미관리</div></button>`}catch(e){$('#productSummary').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function summaryDrill(kind){
+ if(kind==='groups'){$('#catalogQ').value='';$('#catalogDept').value='';$('#catalogSource').value='';$('#catalogStatus').value='';$('#catalogIssue').value='';productMode('catalog')}
+ else if(kind==='review'){$('#reviewQ').value='';$('#reviewDept').value='';productMode('review')}
+ else{$('#inventoryQ').value='';$('#inventoryDept').value='';$('#inventoryFilter').value=(kind==='out'?'tracked_out':kind);$('#inventorySort').value='stock_asc';productMode('inventory')}
+ setTimeout(()=>{const v=$('#pv-'+PMODE);if(v)v.scrollIntoView({behavior:'smooth',block:'start'})},80)
+}
 function reviewChips(g){return (g.review_reasons||[]).map(x=>`<span class="meta-chip warn">${esc(x)}</span>`).join('')}
 function variantRows(g){return (g.variants||[]).map(v=>{const inv=v.tracked
  ?`<span class="inv-status ${(v.available||0)<=0?'out':(v.available||0)<=v.reorder_point?'low':'ok'}">가용 ${v.available} / 실재고 ${v.on_hand}</span>`

@@ -10,7 +10,7 @@ v2 전체 기능 + ① 고객(회원) CRM  ② 알림톡/SMS 발송(솔라피)  
 알림 발송 환경변수(솔라피): SOLAPI_API_KEY, SOLAPI_API_SECRET, SOLAPI_SENDER(발신번호),
  SOLAPI_PF_ID(카카오채널 pfId — 알림톡용). 미설정 시 발송 대신 로그만 기록(DRY).
 """
-import os, re, json, sqlite3, base64, hashlib, hmac, secrets, datetime, time, socket
+import os, re, json, sqlite3, base64, hashlib, hmac, secrets, datetime, time, socket, calendar
 import urllib.request, urllib.error, urllib.parse
 from fastapi import APIRouter, HTTPException, Request, Body, UploadFile, File
 from fastapi.responses import HTMLResponse, Response, JSONResponse
@@ -161,6 +161,26 @@ def num(x):
 def now_iso(): return datetime.datetime.utcnow().isoformat(timespec='seconds')
 def kst_now(): return datetime.datetime.utcnow() + datetime.timedelta(hours=9)
 def kst_today(): return kst_now().date()
+def is_new_product(created_at, now=None):
+    """등록 시각부터 달력 기준 2개월 동안만 NEW로 본다."""
+    if not created_at:
+        return False
+    try:
+        made = datetime.datetime.fromisoformat(str(created_at).strip().replace('Z', '+00:00'))
+        if made.tzinfo is not None:
+            made = made.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        now = now or datetime.datetime.utcnow()
+        month_index = made.month - 1 + 2
+        year, month = made.year + month_index // 12, month_index % 12 + 1
+        day = min(made.day, calendar.monthrange(year, month)[1])
+        return made <= now < made.replace(year=year, month=month, day=day)
+    except Exception:
+        return False
+
+_BADGE_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+def badge_color(value):
+    value = str(value or '').strip()
+    return value.upper() if _BADGE_COLOR_RE.fullmatch(value) else '#050505'
 def jload(s, d):
     try: return json.loads(s) if s else d
     except Exception: return d
@@ -368,7 +388,7 @@ def ensure_ready():
             try: run("ALTER TABLE member_likes ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
     pcx = _cols('products')
-    for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge'):
+    for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -1862,6 +1882,10 @@ def api_product_create(request: Request, body: dict = Body(...)):
         cols.append('category'); vals.append(norm_cat(body.get('category')))
     if 'badge' in _state['pcols']:
         cols.append('badge'); vals.append((body.get('badge') or '').strip()[:30])
+    if 'badge_color' in _state['pcols']:
+        cols.append('badge_color'); vals.append(badge_color(body.get('badge_color')))
+    if 'created_at' in _state['pcols']:
+        cols.append('created_at'); vals.append(now_iso())
     if 'detail_html' in _state['pcols']:
         # detail_blocks(JSON) 우선, 없으면 레거시 detail_html 텍스트 허용
         blocks = body.get('detail_blocks')
@@ -2002,7 +2026,7 @@ def api_product_detail_get(request: Request):
     if not pid: raise HTTPException(400, 'id required')
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'list_price'):
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'list_price'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -2025,6 +2049,8 @@ def api_product_detail_get(request: Request):
         'img': r.get('img') or '', 'descr': r.get('descr') or '',
         'category': norm_cat(r.get('category')),
         'badge': (r.get('badge') or '').strip(),
+        'badge_color': badge_color(r.get('badge_color')),
+        'created_at': r.get('created_at') or '',
         'detail_blocks': blocks,
         'gallery': r.get('gallery') or '',
         'categories': [{'value': k, 'label': l} for k, l in PRODUCT_CATEGORIES],
@@ -2048,6 +2074,7 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         'detail_html': ('detail_html', 100000, None),
         'category': ('category', 40, norm_cat),
         'badge': ('badge', 30, None),
+        'badge_color': ('badge_color', 7, badge_color),
         'gallery': ('gallery', None, _clean_gallery),
     }
     for k, (col, limit, fn) in field_map.items():
@@ -2173,9 +2200,12 @@ h2{font-size:19px;margin-bottom:18px}
  </div>
  <div class="row2">
   <div class="f"><label id="fslabel">초기 재고 *</label><input type="number" id="fs" min="0" placeholder="100"></div>
-  <div class="f"><label>카드 배지 <span style="font-weight:400;color:#aaa">— SHOP 카드 좌상단 표기</span></label>
+  <div class="f"><label>카드 배지 <span style="font-weight:400;color:#aaa">— NEW 오른쪽에 표기</span></label>
    <input type="text" id="fb" list="badgeOpts" maxlength="30" placeholder="비우면 카테고리명이 표기됩니다">
    <datalist id="badgeOpts"><option value="BEST"><option value="NEW"><option value="LIMITED"><option value="EVENT"><option value="GIFT"><option value="성수 한정"><option value="세트"><option value="사인회"><option value="영상통화"><option value="예약판매"></datalist></div>
+ </div>
+ <div class="f"><label>카드 배지 배경색</label>
+  <div style="display:flex;align-items:center;gap:10px"><input type="color" id="fbc" value="#050505" style="width:54px;height:40px;padding:2px;border:1px solid #ccc;background:#fff;cursor:pointer"><span style="font-size:12px;color:#888">배지의 글자색은 흰색으로 고정됩니다.</span></div>
  </div>
  <div class="f"><label>짧은 설명</label><textarea id="fd" rows="3" placeholder="목록·상단 요약 설명 (선택)"></textarea></div>
 </div>
@@ -2296,7 +2326,7 @@ async function init(){
   const _dc=Number(d.discount_pct)||0;
   if(d.price!=null)$('#fp').value=_dc>0?(d.list_price||d.price):d.price;
   $('#fdc').value=_dc;fpCalc();
-  $('#fs').value=d.stock;$('#fd').value=d.descr;$('#fb').value=d.badge||'';
+  $('#fs').value=d.stock;$('#fd').value=d.descr;$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
   renderBlocks();
@@ -2316,12 +2346,12 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),detail_blocks:_blocks})});
+     img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),detail_blocks:_blocks})});
+    img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks})});
   toast('저장되었습니다');
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
@@ -3806,12 +3836,12 @@ ready(function(){
  }).catch(function(){});
 });})();</script>"""
 
-CARD_CSS_SNIPPET = r"""<style id="mpCardCss">/* mpCardCss v20260715.4 */
-/* 직접등록·수집 앨범 카드 정보영역 공통 규격: 아티스트 → 상품명 → 가격 → 상태 */
-#shopGrid .col-card[data-cat="album"] .col-body,
+CARD_CSS_SNIPPET = r"""<style id="mpCardCss">/* mpCardCss v20260715.6 */
+/* KPOP·SHOP 카드 정보영역 공통 규격: 아티스트/브랜드 → 상품명 → 가격 → 상태 */
+#shopGrid .col-card .col-body,
 #shopGrid .k2g-card .k2g-body{padding:10px 12px 14px;display:flex;flex-direction:column;align-items:flex-start;min-height:116px;font-family:var(--body),'Noto Sans KR',sans-serif}
 #shopGrid .card-artist{display:block;color:#718895;font-size:11.5px;font-weight:500;line-height:1.3;margin-bottom:4px}
-#shopGrid .col-card[data-cat="album"] .col-body h3{
+#shopGrid .col-card .col-body h3{
   font-family:var(--body),'Noto Sans KR',sans-serif;font-size:12.5px;font-weight:700;line-height:1.38;letter-spacing:-.025em;min-height:35px;margin:0;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 #shopGrid .k2g-card .k2g-body h4{font-family:var(--body),'Noto Sans KR',sans-serif;font-size:12.5px;font-weight:700;line-height:1.38;letter-spacing:-.025em;min-height:35px;margin:0}
@@ -3821,8 +3851,10 @@ CARD_CSS_SNIPPET = r"""<style id="mpCardCss">/* mpCardCss v20260715.4 */
 #shopGrid .col-card .k2g-price .now{display:flex;gap:6px;align-items:baseline}
 #shopGrid .k2g-price .pct{font-family:var(--body),'Noto Sans KR',sans-serif;font-size:15px;font-weight:700;color:#E8332A}
 #shopGrid .k2g-price .amt,#shopGrid .col-card .price{font-family:var(--body),'Noto Sans KR',sans-serif;font-size:15px;font-weight:700;letter-spacing:-.02em}
-#shopGrid .card-state{display:inline-flex;align-items:center;margin-top:7px;padding:3px 6px;border-radius:3px;background:#050505;color:#fff;font-family:var(--body),'Noto Sans KR',sans-serif;font-size:8.5px;font-weight:700;line-height:1.25;letter-spacing:.02em}
+#shopGrid .card-badges{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:7px}
+#shopGrid .card-state{display:inline-flex;align-items:center;margin:0;padding:3px 6px;border-radius:3px;background:#050505;color:#fff;font-family:var(--body),'Noto Sans KR',sans-serif;font-size:8.5px;font-weight:700;line-height:1.25;letter-spacing:.02em}
 #shopGrid .card-state.sold{background:#777}
+#shopGrid .card-state.card-label{background:var(--badge-bg,#050505)}
 </style>"""
 
 def _patch_legacy_footer(html):
@@ -3856,7 +3888,7 @@ def _mp_shop_cards():
             sel += ', %s AS price' % _state['pprice']
         if 'list_price' in _state['pcols']:
             sel += ', list_price'
-        for c in ('img', 'category', 'badge'):
+        for c in ('img', 'category', 'badge', 'badge_color', 'created_at'):
             if c in _state['pcols']:
                 sel += ', ' + c
         rs = rows('SELECT %s FROM products WHERE id LIKE ? ORDER BY id' % sel, ('mp::%',))
@@ -3880,7 +3912,8 @@ def _mp_shop_cards():
         cat = norm_cat(r.get('category'))
         soldout = bool(num(r.get('soldout')) or num(r.get('stock')) <= 0)
         badge = str(r.get('badge') or '').strip()
-        tag = (badge or _MP_CAT_TAG.get(cat, 'MAPDAL')) + (' · SOLD OUT' if soldout else '')
+        label = badge or _MP_CAT_TAG.get(cat, 'MAPDAL')
+        color = badge_color(r.get('badge_color'))
         gray = ';filter:grayscale(.85);opacity:.75' if soldout else ''
         img = (r.get('img') or '').strip()
         # 커버는 K2G 카드(.k2g-cover{aspect-ratio:1/1})와 동일한 1:1 정방형.
@@ -3889,11 +3922,11 @@ def _mp_shop_cards():
         _SQ = 'height:auto;aspect-ratio:1/1'
         if _MP_IMG_OK.fullmatch(img):
             cover = ('<div class="col-cover" style="background:#EDECE7 url(\'%s\') center/cover no-repeat;%s%s">'
-                     '<span class="tag">%s</span></div>') % (h(img), _SQ, gray, h(tag))
+                     '</div>') % (h(img), _SQ, gray)
         else:
             cover = ('<div class="col-cover" style="background:%s;%s%s">'
-                     '<span class="tag">%s</span><span class="big" style="font-size:44px">%s</span></div>'
-                     ) % (_MP_COVERS[i % len(_MP_COVERS)], _SQ, gray, h(tag), h(name[:2]))
+                     '<span class="big" style="font-size:44px">%s</span></div>'
+                     ) % (_MP_COVERS[i % len(_MP_COVERS)], _SQ, gray, h(name[:2]))
         sale, was = num(r.get('price')), num(r.get('list_price'))
         pct = derived_pct(was, sale)
         if pct:
@@ -3904,12 +3937,19 @@ def _mp_shop_cards():
                        % (pct, format(sale, ',')))
         else:
             pr_html = '<span class="price">₩%s</span>' % format(sale, ',')
+        states = []
+        if is_new_product(r.get('created_at')):
+            states.append('<span class="card-state new">NEW</span>')
+        if label:
+            states.append('<span class="card-state card-label" style="--badge-bg:%s">%s</span>' % (color, h(label)))
+        if soldout:
+            states.append('<span class="card-state add sold">SOLD OUT</span>')
+        badges_html = '<div class="card-badges">%s</div>' % ''.join(states)
         cards.append('<a class="col-card" data-cat="%s" href="/p/%s">%s'
                      '<div class="col-body"><span class="card-artist">%s</span><h3>%s</h3>'
-                     '<div class="price-row">%s</div><span class="card-state add%s">%s</span>'
+                     '<div class="price-row">%s</div>%s'
                      '</div></a>'
-                     % (h(cat), h(r['id']), cover, h(artist_of(name)), h(name), pr_html,
-                        ' sold' if soldout else '', 'SOLD OUT' if soldout else 'NEW'))
+                     % (h(cat), h(r['id']), cover, h(artist_of(name)), h(name), pr_html, badges_html))
     return '<!-- mpShopDyn -->' + ''.join(cards) + '<!-- /mpShopDyn -->'
 
 _own_rm_cache = {'t': 0.0, 'set': None}
@@ -4047,7 +4087,7 @@ def _k2g_migrate_from_static():
     removed = _k2g_removed_set()
     nm, pr = _state['pname'] or 'name', _state['pprice'] or 'price'
     existing = {r['id']: r for r in rows(
-        "SELECT id, img, list_price, sort_order, soldout FROM products WHERE id LIKE ?", ('k2g::%',))}
+        "SELECT id, img, list_price, sort_order, soldout, created_at FROM products WHERE id LIKE ?", ('k2g::%',))}
     ops = []
     for i, row in enumerate(arr):
         if not isinstance(row, list) or len(row) < 5:
@@ -4061,9 +4101,12 @@ def _k2g_migrate_from_static():
         pid = 'k2g::' + uid
         ex = existing.get(pid)
         if ex is None:
-            ops.append(('INSERT INTO products(id, %s, %s, stock, soldout, img, category, list_price, sort_order) '
-                        'VALUES(?,?,?,0,?,?,?,?,?)' % (nm, pr),
-                        (pid, name[:300], sale, sold, img[:300], 'album', was, i)))
+            cols = ['id', nm, pr, 'stock', 'soldout', 'img', 'category', 'list_price', 'sort_order']
+            vals = [pid, name[:300], sale, 0, sold, img[:300], 'album', was, i]
+            if 'created_at' in _state['pcols']:
+                cols.append('created_at'); vals.append(now_iso())
+            ops.append(('INSERT INTO products(%s) VALUES(%s)' %
+                        (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals)))
         else:
             sets, args = [], []
             if not (ex.get('img') or '').strip():
@@ -4085,14 +4128,14 @@ def _k2g_cache_bust():
     _k2g_cat_cache['body'] = None
 
 def _k2g_catalog_json():
-    """k2g:: 상품 → 사이트 인라인 배열 형식 [uid, img, name, 정가, 판매가, 품절]의
+    """k2g:: 상품 → [uid, img, name, 정가, 판매가, 품절, NEW, 배지, 배지색]의
     JSON 문자열. 60초 캐시 + 쓰기 API가 즉시 무효화. <script> 내 삽입 안전 처리."""
     if _k2g_cat_cache['body'] is not None and time.time() - _k2g_cat_cache['t'] < 60:
         return _k2g_cat_cache['body']
     ensure_ready()
     if not _state['pcols'] or not _state['pname'] or not _state['pprice']:
         return None
-    rs = rows("SELECT id, %s AS name, %s AS price, list_price, img, soldout FROM products "
+    rs = rows("SELECT id, %s AS name, %s AS price, list_price, img, soldout, created_at, badge, badge_color FROM products "
               "WHERE id LIKE ? ORDER BY COALESCE(sort_order, 999999999), id"
               % (_state['pname'], _state['pprice']), ('k2g::%',))
     if not rs:
@@ -4101,7 +4144,9 @@ def _k2g_catalog_json():
     for r in rs:
         sale, was = num(r.get('price')), num(r.get('list_price'))
         out.append([r['id'][5:], str(r.get('img') or ''), str(r.get('name') or ''),
-                    was if was > sale else 0, sale, 1 if num(r.get('soldout')) else 0])
+                    was if was > sale else 0, sale, 1 if num(r.get('soldout')) else 0,
+                    1 if is_new_product(r.get('created_at')) else 0,
+                    str(r.get('badge') or '').strip(), badge_color(r.get('badge_color'))])
     body = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
     body = body.replace('</', '<\\/').replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
     _k2g_cat_cache.update(t=time.time(), body=body)
@@ -4211,6 +4256,37 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(func
     var t=(el.querySelector('.price')||{}).textContent||''; 
     var m=t.replace(/[^0-9]/g,''); return m?parseInt(m,10):0; }
   function cname(el){ return ((el.querySelector('h3,h4')||{}).textContent||'').trim(); }
+  // SHOP의 기존 정적 카드도 KPOP과 같은 정보 구조로 보정한다.
+  function decorateCards(){
+    [].slice.call(grid.querySelectorAll('.col-card')).forEach(function(c){
+      var body=c.querySelector('.col-body'); if(!body) return;
+      var title=(body.querySelector('h3')||{}).textContent||'';
+      var tagEl=c.querySelector('.tag'),tagText=((tagEl||{}).textContent||'').trim();
+      if(!body.querySelector('.card-artist')){
+        var tag=tagText.replace(/\s*·.*$/,'').trim();
+        var clean=title.replace(/^(?:\s*【[^】]+】)+\s*/,'').trim();
+        var lead=(clean.split(' - ')[0]||clean).trim(), par=lead.match(/\(([^)]+)\)/);
+        var ko=lead.match(/[가-힣][가-힣&·\s]*/);
+        var artist=(par&&/[가-힣]/.test(par[1]))?par[1].trim():(ko?ko[0].trim():(lead.split(/\s+/)[0]||tag));
+        var label=(tag&&!/^ALBUM$/i.test(tag))?tag:(artist||tag||'MAPDAL');
+        var el=document.createElement('span'); el.className='card-artist'; el.textContent=label;
+        body.insertBefore(el,body.querySelector('h3'));
+      }
+      if(!body.querySelector('.card-badges')){
+        var row=document.createElement('div');row.className='card-badges';
+        var add=body.querySelector('.add');
+        var sold=(add&&/품절|SOLD OUT/i.test(add.textContent||''))||/품절|SOLD OUT/i.test(tagText);
+        if(add&&add.parentNode)add.parentNode.removeChild(add);
+        var label=tagText.replace(/\s*·?\s*(?:품절|SOLD OUT)\s*/ig,'').trim();
+        if(label){
+          var lb=document.createElement('span');lb.className='card-state card-label';lb.textContent=label;row.appendChild(lb);
+        }
+        if(sold){var so=document.createElement('span');so.className='card-state add sold';so.textContent='SOLD OUT';row.appendChild(so);}
+        if(row.childNodes.length)body.appendChild(row);
+      }
+      if(tagEl&&tagEl.parentNode)tagEl.parentNode.removeChild(tagEl);
+    });
+  }
   // 상품명에 명시된 행사 유형만 분류한다. "Lucky Man", "Drawstring" 같은
   // 일반 앨범명은 럭키드로우로 오인하지 않도록 결합어 패턴을 사용한다.
   function eventTypes(name){
@@ -4280,7 +4356,8 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(func
       n += VIEW.length;
     var el=document.getElementById('mpCnt'); if(el) el.textContent=n.toLocaleString('ko-KR');
   }
-  // col-card 원문서순 기록(정렬 후 복원용)
+  // 기존 SHOP 카드의 마크업 통일 후 원문서순 기록(정렬 후 복원용)
+  decorateCards();
   [].slice.call(grid.querySelectorAll('.col-card')).forEach(function(c,i){ c.dataset.mpseq=i; });
   // 원본 sync() 말미 훅: 앨범 재렌더는 sync가 담당하므로 여기선 카드정렬+개수만.
   window.__mpApplyExtra=function(){ sortCards(); count(); };

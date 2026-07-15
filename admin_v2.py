@@ -388,7 +388,7 @@ def ensure_ready():
             try: run("ALTER TABLE member_likes ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
     pcx = _cols('products')
-    for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at'):
+    for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -1869,6 +1869,105 @@ def api_product_categories(request: Request):
     a = get_actor(request); need(a, 0)
     return {'categories': [{'value': k, 'label': l} for k, l in PRODUCT_CATEGORIES]}
 
+def _related_id_list(raw):
+    """related_ids 저장값을 중복 없는 상품 ID 목록으로 정규화한다."""
+    if isinstance(raw, str):
+        try: raw = json.loads(raw or '[]')
+        except Exception: raw = []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for value in raw:
+        value = str(value or '').strip()
+        if value and len(value) <= 180 and value not in out:
+            out.append(value)
+    return out
+
+def _related_clean(raw, pid=''):
+    ids = [x for x in _related_id_list(raw) if x != pid][:12]
+    if not ids:
+        return []
+    marks = ','.join(['?'] * len(ids))
+    found = {r['id'] for r in rows('SELECT id FROM products WHERE id IN (%s)' % marks, tuple(ids))}
+    return [x for x in ids if x in found]
+
+def _related_set(pid, raw):
+    """한 상품의 관련상품을 저장하고 상대 상품에도 역방향 연결을 동기화한다."""
+    cur = one('SELECT related_ids FROM products WHERE id=?', (pid,))
+    if not cur:
+        raise HTTPException(404, '상품을 찾을 수 없습니다')
+    old_ids = _related_id_list(cur.get('related_ids'))
+    new_ids = _related_clean(raw, pid)
+    peer_ids = list(dict.fromkeys(old_ids + new_ids))
+    peers = {}
+    if peer_ids:
+        marks = ','.join(['?'] * len(peer_ids))
+        peers = {r['id']: _related_id_list(r.get('related_ids')) for r in rows(
+            'SELECT id, related_ids FROM products WHERE id IN (%s)' % marks, tuple(peer_ids))}
+    # 선택된 상대 상품이 이미 12개로 꽉 찬 경우 한쪽만 연결되는 상태를 만들지 않는다.
+    for rid in new_ids:
+        rel = peers.get(rid, [])
+        if pid not in rel and len(rel) >= 12:
+            raise HTTPException(400, '관련상품 한도(12개)가 찬 상품이 있습니다: ' + rid)
+    ops = [('UPDATE products SET related_ids=? WHERE id=?',
+            (json.dumps(new_ids, ensure_ascii=False, separators=(',', ':')), pid))]
+    for rid in peer_ids:
+        rel = peers.get(rid, [])
+        if rid in new_ids and pid not in rel:
+            rel.append(pid)
+        if rid not in new_ids:
+            rel = [x for x in rel if x != pid]
+        ops.append(('UPDATE products SET related_ids=? WHERE id=?',
+                    (json.dumps(rel, ensure_ascii=False, separators=(',', ':')), rid)))
+    runmany(ops)
+    return new_ids
+
+def _related_unlink_deleted(pid, raw):
+    ops = []
+    for rid in _related_id_list(raw):
+        peer = one('SELECT related_ids FROM products WHERE id=?', (rid,))
+        if not peer: continue
+        rel = [x for x in _related_id_list(peer.get('related_ids')) if x != pid]
+        ops.append(('UPDATE products SET related_ids=? WHERE id=?',
+                    (json.dumps(rel, ensure_ascii=False, separators=(',', ':')), rid)))
+    if ops: runmany(ops)
+
+def _related_admin_item(r):
+    img = str(r.get('img') or '').strip()
+    if img and str(r['id']).startswith('k2g::') and not img.startswith(('http://', 'https://', '/')):
+        img = 'https://www.kpop2gether.com/shopimages/912enter/' + img
+    return {'id': r['id'], 'name': r.get('name') or r['id'],
+            'img': img, 'price': num(r.get('price')),
+            'soldout': bool(num(r.get('soldout')) or num(r.get('stock')) <= 0)}
+
+def _related_items(ids):
+    ids = _related_id_list(ids)
+    if not ids: return []
+    nm, pr = _state['pname'] or 'id', _state['pprice'] or 'price'
+    marks = ','.join(['?'] * len(ids))
+    rs = rows('SELECT id, %s AS name, %s AS price, stock, soldout, img FROM products WHERE id IN (%s)'
+              % (nm, pr, marks), tuple(ids))
+    by_id = {r['id']: _related_admin_item(r) for r in rs}
+    return [by_id[x] for x in ids if x in by_id]
+
+@admin_router.get('/admin/api/products/related-options')
+def api_related_options(request: Request):
+    a = get_actor(request); need(a, 1, '관련상품 조회')
+    q = (request.query_params.get('query') or '').strip()
+    current = (request.query_params.get('id') or '').strip()
+    nm, pr = _state['pname'] or 'id', _state['pprice'] or 'price'
+    where, args = [], []
+    if current:
+        where.append('id<>?'); args.append(current)
+    if q:
+        where.append('(id LIKE ? OR %s LIKE ?)' % nm); args += ['%' + q + '%', '%' + q + '%']
+    w = (' WHERE ' + ' AND '.join(where)) if where else ''
+    order = ('CASE WHEN created_at IS NULL THEN 1 ELSE 0 END, created_at DESC, id DESC'
+             if 'created_at' in _state['pcols'] else 'id DESC')
+    rs = rows('SELECT id, %s AS name, %s AS price, stock, soldout, img FROM products%s ORDER BY %s LIMIT 30'
+              % (nm, pr, w, order), tuple(args))
+    return {'rows': [_related_admin_item(r) for r in rs]}
+
 # ── 이미지 업로드 (대표 이미지 + 상세페이지 이미지 블록 공용) ──────────────
 @admin_router.post('/admin/api/upload')
 async def api_upload(request: Request, file: UploadFile = File(...)):
@@ -1931,6 +2030,8 @@ def api_product_create(request: Request, body: dict = Body(...)):
         cols.append('badge_color'); vals.append(badge_color(body.get('badge_color')))
     if 'created_at' in _state['pcols']:
         cols.append('created_at'); vals.append(now_iso())
+    if 'related_ids' in _state['pcols']:
+        cols.append('related_ids'); vals.append('[]')
     if 'detail_html' in _state['pcols']:
         # detail_blocks(JSON) 우선, 없으면 레거시 detail_html 텍스트 허용
         blocks = body.get('detail_blocks')
@@ -1939,6 +2040,12 @@ def api_product_create(request: Request, body: dict = Body(...)):
     if 'gallery' in _state['pcols']:
         cols.append('gallery'); vals.append(_clean_gallery(body.get('gallery')))
     run('INSERT INTO products(%s) VALUES(%s)' % (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals))
+    if 'related_ids' in _state['pcols'] and body.get('related_ids') is not None:
+        try:
+            _related_set(pid, body.get('related_ids'))
+        except Exception:
+            run('DELETE FROM products WHERE id=?', (pid,))
+            raise
     audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s' % (
         name, format(price, ','), (' · 할인 %d%% → 판매 ₩%s' % (dc, format(disc_price(price, dc), ','))) if dc else '',
         stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류')))
@@ -1953,9 +2060,12 @@ def api_product_delete(request: Request, body: dict = Body(...)):
     pid = str(body.get('id') or '').strip()
     if not pid:
         raise HTTPException(400, '상품 ID가 없습니다')
-    r = one('SELECT %s AS name FROM products WHERE id=?' % (_state['pname'] or 'id'), (pid,))
+    r = one('SELECT %s AS name%s FROM products WHERE id=?' %
+            ((_state['pname'] or 'id'), (', related_ids' if 'related_ids' in _state['pcols'] else '')), (pid,))
     if not r:
         raise HTTPException(404, '상품을 찾을 수 없습니다')
+    if 'related_ids' in _state['pcols']:
+        _related_unlink_deleted(pid, r.get('related_ids'))
     run('DELETE FROM products WHERE id=?', (pid,))
     try: run('DELETE FROM member_restock WHERE product_id=?', (pid,))
     except Exception: pass
@@ -2071,7 +2181,7 @@ def api_product_detail_get(request: Request):
     if not pid: raise HTTPException(400, 'id required')
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'list_price'):
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids', 'list_price'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -2096,6 +2206,8 @@ def api_product_detail_get(request: Request):
         'badge': (r.get('badge') or '').strip(),
         'badge_color': badge_color(r.get('badge_color')),
         'created_at': r.get('created_at') or '',
+        'related_ids': _related_id_list(r.get('related_ids')),
+        'related_products': _related_items(r.get('related_ids')),
         'detail_blocks': blocks,
         'gallery': r.get('gallery') or '',
         'categories': [{'value': k, 'label': l} for k, l in PRODUCT_CATEGORIES],
@@ -2148,9 +2260,12 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         sets.append('stock=?'); args.append(s)
         sets.append('soldout=?'); args.append(1 if s == 0 else 0)
         log.append('stock')
-    if not sets and not priced: raise HTTPException(400, '변경할 값 없음')
+    related_changed = 'related_ids' in body and 'related_ids' in _state['pcols']
+    if not sets and not priced and not related_changed: raise HTTPException(400, '변경할 값 없음')
     if sets:
         run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
+    if related_changed:
+        _related_set(pid, body.get('related_ids')); log.append('related_ids')
     try: _k2g_cache_bust()
     except Exception: pass
     audit(a, '상품상세수정', pid, '수정 항목: ' + ', '.join(log))
@@ -2222,6 +2337,14 @@ h2{font-size:19px;margin-bottom:18px}
 .blk-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;font-size:12px;color:#555}
 .blk-ctrl{display:flex;gap:4px}
 .blk textarea,.blk input{width:100%;font:inherit;font-size:14px;padding:8px 10px;border:1px solid #ddd}
+.rel-search{display:flex;gap:7px}.rel-search input{flex:1;font:inherit;padding:10px 12px;border:1px solid #ccc}
+.rel-results{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;max-height:230px;overflow:auto}
+.rel-opt,.rel-item{display:grid;grid-template-columns:46px 1fr auto;gap:9px;align-items:center;border:1px solid #e3e1db;background:#fff;padding:7px;text-align:left}
+.rel-opt{cursor:pointer;font:inherit}.rel-opt:hover{border-color:var(--black);background:#faf9f6}.rel-opt:disabled{opacity:.45;cursor:not-allowed}
+.rel-opt img,.rel-item img{width:46px;height:46px;object-fit:cover;background:#eee}.rel-ph{width:46px;height:46px;background:#eee;display:flex;align-items:center;justify-content:center;font-size:10px;color:#999}
+.rel-name{font-size:12px;font-weight:700;line-height:1.35}.rel-id{font:9px 'IBM Plex Mono';color:#999;margin-top:3px;word-break:break-all}
+.rel-selected{display:flex;flex-direction:column;gap:6px;margin-top:12px}.rel-item{grid-template-columns:46px 1fr auto}.rel-ctrl{display:flex;gap:3px}
+@media(max-width:640px){.rel-results{grid-template-columns:1fr}}
 .hint{font-size:11.5px;color:#888;line-height:1.7;margin-top:8px}
 .savebar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #ddd;padding:12px 18px;display:flex;gap:10px;justify-content:center;z-index:50}
 .savebar .in{width:100%;max-width:820px;display:flex;gap:10px;justify-content:flex-end;align-items:center}
@@ -2265,6 +2388,12 @@ h2{font-size:19px;margin-bottom:18px}
  <input id="blkImgInput" type="file" accept="image/*" multiple style="display:none" onchange="onBlkImg(this.files)">
  <div style="display:flex;gap:8px;margin-top:12px"><button class="btn sm" type="button" onclick="addImgBlk()">＋ 이미지 추가</button><button class="btn sm" type="button" onclick="addTextBlk()">＋ 글 추가</button></div>
  <div class="hint">이미지와 글을 원하는 순서로 쌓아 게시판 글처럼 구성하세요. ↑↓로 순서 변경, 이미지는 여러 장 한꺼번에 선택할 수 있습니다.</div>
+</div>
+<div class="card"><h3>관련 상품</h3>
+ <div class="rel-search"><input id="relQ" type="text" placeholder="상품명 또는 상품 ID 검색" onkeydown="if(event.key==='Enter'){event.preventDefault();relSearch()}" oninput="relTyping()"><button class="btn sm" type="button" onclick="relSearch()">검색</button></div>
+ <div id="relResults" class="rel-results"></div>
+ <div id="relSelected" class="rel-selected"></div>
+ <div class="hint">최대 12개 · 선택 순서대로 상세페이지에 표시됩니다. 연결은 상대 상품에도 자동 반영되며 ↑↓ 버튼으로 노출 순서를 바꿀 수 있습니다.</div>
 </div>
 </main>
 <div class="savebar"><div class="in">
@@ -2324,6 +2453,23 @@ function setMainImg(u){$('#fi').value=u||'';
 })();
 
 let _blocks=[];
+let _related=[],_relTimer=0;
+function relImg(p){return p.img?`<img src="${esc(p.img)}" alt="">`:'<span class="rel-ph">NO IMG</span>'}
+function renderRelated(){
+ const host=$('#relSelected');
+ if(!_related.length){host.innerHTML='<div class="hint" style="padding:12px;text-align:center;border:1px dashed #ddd">연결된 관련 상품이 없습니다.</div>';return;}
+ host.innerHTML=_related.map((p,i)=>`<div class="rel-item">${relImg(p)}<div><div class="rel-name">${esc(p.name)}</div><div class="rel-id">${esc(p.id)}${p.soldout?' · 품절':''}</div></div><div class="rel-ctrl"><button class="btn sm ghost" type="button" onclick="relMove(${i},-1)" ${i===0?'disabled':''}>↑</button><button class="btn sm ghost" type="button" onclick="relMove(${i},1)" ${i===_related.length-1?'disabled':''}>↓</button><button class="btn sm ghost" type="button" onclick="relRemove(${i})">삭제</button></div></div>`).join('');
+}
+function relMove(i,d){const j=i+d;if(j<0||j>=_related.length)return;const t=_related[i];_related[i]=_related[j];_related[j]=t;renderRelated()}
+function relRemove(i){_related.splice(i,1);renderRelated()}
+function relAdd(p){if(_related.some(x=>x.id===p.id))return;if(_related.length>=12)return toast('관련 상품은 최대 12개까지 선택할 수 있습니다');_related.push(p);renderRelated();relSearch()}
+function relTyping(){clearTimeout(_relTimer);_relTimer=setTimeout(relSearch,350)}
+async function relSearch(){
+ const q=$('#relQ').value.trim(),url='/admin/api/products/related-options?query='+encodeURIComponent(q)+'&id='+encodeURIComponent(PAGE.id||'');
+ try{const d=await api(url),chosen=new Set(_related.map(x=>x.id));
+  $('#relResults').innerHTML=d.rows.map((p,i)=>`<button class="rel-opt" type="button" ${chosen.has(p.id)?'disabled':''} onclick="relAdd(window._relFound[${i}])">${relImg(p)}<span><span class="rel-name">${esc(p.name)}</span><span class="rel-id">${esc(p.id)}${p.soldout?' · 품절':''}</span></span><b style="font-size:16px">＋</b></button>`).join('')||'<div class="hint">검색 결과가 없습니다.</div>';window._relFound=d.rows;
+ }catch(e){if(e.message!=='세션 만료')toast(e.message)}
+}
 function renderBlocks(){
  const host=$('#blkList');
  if(!_blocks.length){host.innerHTML='<div class="hint" style="padding:16px;text-align:center">아래 버튼으로 이미지나 글을 추가하세요.</div>';return;}
@@ -2359,8 +2505,8 @@ function fpCalc(){
 async function init(){
  $('#fc').innerHTML=catOptions('');
  if(PAGE.mode==='new'){
-  $('#h2title').textContent='신규 상품 등록';$('#ptitle').textContent='상품 등록';
-  $('#saveBtn').textContent='등록';renderBlocks();return;
+ $('#h2title').textContent='신규 상품 등록';$('#ptitle').textContent='상품 등록';
+  $('#saveBtn').textContent='등록';renderBlocks();renderRelated();return;
  }
  $('#h2title').textContent='상품 상세 편집';$('#ptitle').textContent='상세 편집';
  $('#fslabel').textContent='재고 *';
@@ -2374,7 +2520,7 @@ async function init(){
   $('#fs').value=d.stock;$('#fd').value=d.descr;$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
-  renderBlocks();
+  _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
   const v=$('#viewBtn');v.href=d.url;v.style.display='';
   $('#stat').textContent=d.soldout?'상태: 품절':'상태: 판매중';
   if(new URLSearchParams(location.search).get('created')==='1'){toast('등록 완료! 상세 내용을 이어서 편집할 수 있습니다.');history.replaceState(null,'','/admin/products/edit?id='+encodeURIComponent(PAGE.id));}
@@ -2391,12 +2537,12 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks})});
+     img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks})});
+    img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
   toast('저장되었습니다');
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
@@ -2494,6 +2640,56 @@ def _pdp_meta_html(cat):
                  '<span class="chev">⌄</span></div><div class="bd">%s</div></div>'
                  ) % (head, hl, rest, detail)
     return bdgs, m['brand'], bens
+
+def _related_public_item(item):
+    pid = str(item.get('id') or '')
+    out = dict(item)
+    out['url'] = ('/album-detail?uid=' + urllib.parse.quote(pid[5:], safe='')
+                  if pid.startswith('k2g::') else '/p/' + urllib.parse.quote(pid, safe=''))
+    return out
+
+@admin_router.get('/api/products/related')
+def api_public_related(request: Request):
+    """상품 상세페이지 관련상품 위젯용 공개 데이터."""
+    try: ensure_ready()
+    except Exception: pass
+    pid = (request.query_params.get('product_id') or '').strip()
+    if not pid or len(pid) > 180 or 'related_ids' not in _state['pcols']:
+        return {'rows': []}
+    nm, pr = _state['pname'] or 'id', _state['pprice'] or 'price'
+    r = one('SELECT id, %s AS name, %s AS price, stock, soldout, img, related_ids FROM products WHERE id=?'
+            % (nm, pr), (pid,))
+    if not r:
+        return {'rows': []}
+    related = _related_items(r.get('related_ids'))
+    if not related:
+        return {'rows': []}
+    return {'rows': [_related_public_item(_related_admin_item(r))] +
+                    [_related_public_item(x) for x in related]}
+
+_RELATED_WIDGET_SNIPPET = r'''<style id="mpRelatedCss">
+.mp-related{margin:18px 0 2px}.mp-rel-title{font-size:13px;font-weight:700;margin-bottom:9px}
+.mp-rel-thumbs{display:flex;gap:8px;overflow-x:auto;padding:1px 1px 8px;scrollbar-width:thin}
+.mp-rel-thumb{position:relative;flex:0 0 78px;width:78px;height:78px;border:2px solid transparent;border-radius:8px;background:#eee;overflow:hidden;padding:2px;transition:border-color .15s}
+.mp-rel-thumb:hover,.mp-rel-thumb:focus,.mp-rel-thumb.current{border-color:#E8332A;outline:none}
+.mp-rel-thumb img{width:100%;height:100%;object-fit:cover;border-radius:5px}.mp-rel-ph{display:flex;width:100%;height:100%;align-items:center;justify-content:center;background:#e7e5df;color:#777;font:700 9px 'IBM Plex Mono',monospace}
+.mp-rel-thumb.sold:after{content:'SOLD OUT';position:absolute;left:4px;right:4px;bottom:4px;padding:3px 1px;border-radius:2px;background:rgba(20,20,20,.84);color:#fff;text-align:center;font:700 7px 'IBM Plex Sans KR',sans-serif}
+.mp-rel-name{position:relative;background:#141414;color:#fff;border-radius:7px;padding:11px 12px;text-align:center;font-size:12.5px;font-weight:700;line-height:1.35;min-height:40px}
+.mp-rel-name:before{content:'';position:absolute;left:30px;top:-8px;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:8px solid #141414}
+@media(max-width:640px){.mp-rel-thumb{flex-basis:70px;width:70px;height:70px}.mp-rel-name{font-size:11.5px}}
+</style><script id="mpRelatedJs">(function(){
+ function pidOf(){try{if(location.pathname.indexOf('/p/')===0)return decodeURIComponent(location.pathname.slice(3));if(location.pathname==='/album-detail'||location.pathname==='/album-detail.html'){var u=new URLSearchParams(location.search).get('uid');return u?'k2g::'+u:''}}catch(e){}return''}
+ function eh(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+ var pid=pidOf();if(!pid)return;
+ fetch('/api/products/related?product_id='+encodeURIComponent(pid)).then(function(r){return r.json()}).then(function(d){
+  if(!d.rows||d.rows.length<2)return;var title=document.querySelector('.buy h1');if(!title)return;
+  var box=document.createElement('section');box.className='mp-related';box.setAttribute('aria-label','관련상품');
+  var cards=d.rows.map(function(p){var media=p.img?'<img loading="lazy" src="'+eh(p.img)+'" alt="">':'<span class="mp-rel-ph">MAPDAL</span>';return '<a class="mp-rel-thumb'+(p.id===pid?' current':'')+(p.soldout?' sold':'')+'" href="'+eh(p.url)+'" data-name="'+eh(p.name)+'" aria-label="'+eh(p.name)+'">'+media+'</a>'}).join('');
+  box.innerHTML='<div class="mp-rel-title">관련상품</div><div class="mp-rel-thumbs">'+cards+'</div><div class="mp-rel-name"></div>';
+  title.insertAdjacentElement('afterend',box);var bar=box.querySelector('.mp-rel-name'),base=d.rows[0].name;bar.textContent=base;
+  box.querySelectorAll('.mp-rel-thumb').forEach(function(a){a.addEventListener('mouseenter',function(){bar.textContent=a.dataset.name});a.addEventListener('focus',function(){bar.textContent=a.dataset.name});a.addEventListener('mouseleave',function(){bar.textContent=base});a.addEventListener('blur',function(){bar.textContent=base})});
+ }).catch(function(){});
+})();</script>'''
 
 _PDP_HTML = '''<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0"><title>%(name)s — MAPDAL SEOUL</title>
@@ -2717,7 +2913,7 @@ fetch('/api/pqna?product_id='+encodeURIComponent(PID)).then(function(r){return r
  el.innerHTML=d.rows.map(function(x){return '<div style="border-bottom:1px solid #eee;padding:10px 2px;color:#141414">'+
  '<div style="font-weight:700">Q. '+esc(x.q)+' <span style="color:#aaa;font-weight:400;font-size:11px">'+esc(x.name)+' · '+esc(x.at)+'</span></div>'+
  '<div style="margin-top:6px;background:#faf9f5;padding:9px;white-space:pre-wrap">A. '+esc(x.a)+'</div></div>'}).join('')}).catch(function(){});
-</script></body></html>'''
+</script>%(relatedsnippet)s</body></html>'''
 
 @admin_router.get('/p/{pid:path}', response_class=HTMLResponse)
 def pdp(pid: str):
@@ -2828,7 +3024,8 @@ def pdp(pid: str):
         'flavor': flavor, 'badges': badges_html, 'brand': h(brand_line),
         'benefits': benefits_html, 'viewers': viewers,
         'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
-        'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false'})
+        'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
+        'relatedsnippet': _RELATED_WIDGET_SNIPPET})
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 def _burl(request: Request):
@@ -5165,6 +5362,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpMobNav' not in html: add += MOBNAV_SNIPPET
     if 'mpTickerJs' not in html: add += TICKER_SNIPPET
     if 'mpCardCss' not in html: add += CARD_CSS_SNIPPET
+    if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')

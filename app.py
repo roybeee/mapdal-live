@@ -481,6 +481,17 @@ th,td{{border:1px solid #ddd;padding:8px 10px}}th{{background:#141414;color:#fff
 
 @app.get('/healthz')
 def healthz():
+    """Render 배포용 liveness: 웹 프로세스가 응답하면 항상 200을 반환한다.
+
+    DB는 서버 기동 후 백그라운드에서 재연결하므로, 이 경로에서 DB 준비를
+    요구하면 Render가 정상 컨테이너를 배포 실패로 오판할 수 있다.
+    """
+    return {'ok': True, 'service': 'mapdal-seoul',
+            'db_ready': DB_READY, 'db': 'pg' if IS_PG else 'sqlite'}
+
+@app.get('/readyz')
+def readyz():
+    """운영 모니터링용 readiness: DB 실제 연결까지 확인한다."""
     if not DB_READY:
         raise HTTPException(503, 'db connecting')
     with db() as c: c.one('SELECT 1 AS ok')

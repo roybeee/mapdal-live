@@ -444,7 +444,6 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
           <label class="radio-item on"><input type="radio" name="pay" checked><span class="rd"><b>신용/체크카드</b><small>국내 전 카드사</small></span></label>
           <label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>카카오페이 · 네이버페이 · 토스페이</b></span></label>
           <label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>PayPal · Alipay · 해외 카드</b><small>해외 배송 주문 권장</small></span></label>
-          <label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>맵달 포인트 전액 사용</b><small>보유 2,000P</small></span></label>
         </div>
         <div class="agree"><input type="checkbox" id="ag1" checked><span>주문 상품 정보 및 결제에 동의합니다 (필수) — 냉동식품 단순 변심 반품 불가 고지 확인</span></div>
         <div class="agree"><input type="checkbox" checked><span>개인정보 수집·이용 및 해외 배송 시 통관 정보 제공에 동의합니다 (필수)</span></div>
@@ -456,7 +455,6 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <div class="sum-row"><span>상품 금액</span><span id="ckSub">₩0</span></div>
       <div class="sum-row"><span>배송비</span><span id="ckShip" class="free">무료</span></div>
       <div class="sum-row" id="ddpRow" style="display:none"><span>관세·세금 (DDP)</span><span>₩12,400</span></div>
-      <div class="sum-row"><span>포인트 적립 예정</span><span id="ckPt" style="color:var(--red)">0P</span></div>
       <div class="sum-row total"><span class="tl">최종 결제 금액</span><span class="tv" id="grand">₩49,200</span></div>
       <button class="btn-full" id="payBtn" style="background:var(--red);color:#fff;margin-top:16px">₩<span id="btnAmt">0</span> 결제하기</button>
       <p style="font-size:11px;color:var(--steel);margin-top:14px;line-height:1.6" id="payNote">토스페이먼츠 안전결제 · 카드/간편결제 지원<br><span style="color:var(--red)">현재 테스트 모드 — 실제 과금되지 않습니다 (라이브 키 전환 시 실결제)</span></p>
@@ -508,7 +506,6 @@ function renderSum(){
   document.getElementById('ckSub').textContent=fmt(sub);
   document.getElementById('ckShip').textContent=ship?fmt(ship):'무료';
   document.getElementById('ckShip').className=ship?'':'free';
-  document.getElementById('ckPt').textContent=Math.floor(sub*0.05).toLocaleString('ko-KR')+'P';
   document.getElementById('grand').textContent=fmt(total);
   document.getElementById('btnAmt').textContent=total.toLocaleString('ko-KR');
   const btn=document.getElementById('payBtn');

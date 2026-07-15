@@ -10,7 +10,7 @@ import urllib.request, urllib.error, urllib.parse
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.getenv('DATABASE_URL', '').replace('postgres://', 'postgresql://', 1)
@@ -109,12 +109,20 @@ def seed():
     CREATE TABLE IF NOT EXISTS orders(
       order_id TEXT PRIMARY KEY, created TEXT, status TEXT, amount INTEGER,
       buyer TEXT, items TEXT, ship_method TEXT,
-      payment_key TEXT, pay_method TEXT, receipt_url TEXT);
+      payment_key TEXT, pay_method TEXT, receipt_url TEXT,
+      customer_id TEXT, member_id TEXT, contact_phone_norm TEXT);
     CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created);
+    CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created);
     '''
     with db() as c:
         for stmt in ddl.strip().split(';'):
             if stmt.strip(): c.exec(stmt)
+        # 기존 운영 DB에도 회원 주문 직접 연결 컬럼을 멱등 추가한다.
+        for col in ('customer_id', 'member_id', 'contact_phone_norm'):
+            try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
+            except Exception: pass
+        try: c.exec('CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)')
+        except Exception: pass
         n = c.one('SELECT COUNT(*) AS n FROM products')['n']
         if n: return
         own = json.load(open(os.path.join(BASE, 'data', 'own_products.json')))
@@ -157,6 +165,23 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title='MAPDAL SEOUL API v2', lifespan=lifespan)
+
+@app.middleware('http')
+async def account_security_headers(req: Request, call_next):
+    # 브라우저 교차 사이트 상태변경 요청을 차단한다. PG/OAuth 공급자 콜백은 예외다.
+    if req.method in ('POST','PUT','PATCH','DELETE') and req.url.path not in ('/inicis/return','/auth/apple/callback'):
+        origin=(req.headers.get('origin') or '').rstrip('/')
+        fetch_site=(req.headers.get('sec-fetch-site') or '').lower()
+        if (origin and origin != SITE_ORIGIN) or fetch_site=='cross-site':
+            return JSONResponse({'detail':'허용되지 않은 요청 출처입니다'},status_code=403)
+    resp=await call_next(req)
+    resp.headers.setdefault('X-Content-Type-Options','nosniff')
+    resp.headers.setdefault('X-Frame-Options','DENY')
+    resp.headers.setdefault('Referrer-Policy','strict-origin-when-cross-origin')
+    resp.headers.setdefault('Permissions-Policy','camera=(), microphone=(), geolocation=()')
+    if req.url.path.startswith('/api/member') or req.url.path.startswith('/admin') or req.url.path=='/account':
+        resp.headers.setdefault('Cache-Control','no-store')
+    return resp
 
 # ── 클린 URL: .html 숨김 · 홈은 /home ─────────────────────────────────────
 _STATIC_DIR = os.path.join(BASE, 'static')
@@ -235,6 +260,27 @@ async def create_order(req: Request):
     if ship != 'pickup' and not buyer.get('addr1'):
         raise HTTPException(400, '배송 주소를 입력해 주세요')
 
+    # 로그인 주문은 생성 시점부터 고객/계정에 귀속한다. 전화번호 문자열 역검색은 사용하지 않는다.
+    member_id = customer_id = ''
+    try:
+        import admin_v2
+        admin_v2.ensure_ready()
+        member = admin_v2.member_of(req)
+        if member and (member.get('status') or 'ACTIVE') == 'ACTIVE':
+            member_id = member.get('id') or ''
+            customer_id = member.get('customer_id') or ''
+    except Exception:
+        pass
+    phone_norm = ''.join(ch for ch in str(buyer.get('phone') or '') if ch.isdigit())
+    if phone_norm.startswith('82'):
+        phone_norm = '0' + phone_norm[2:]
+    if not customer_id:
+        try:
+            import admin_v2
+            customer_id = admin_v2.guest_customer_ensure(buyer.get('name') or '', phone_norm)
+        except Exception:
+            customer_id = ''
+
     changed_stock_ids = []
     with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
         sub, resolved = 0, []
@@ -256,10 +302,19 @@ async def create_order(req: Request):
         ship_fee = 0 if (ship == 'pickup' or sub >= FREE_SHIP_OVER) else SHIP_FEE
         amount = sub + ship_fee
         order_id = f'MD-{datetime.datetime.now():%Y%m%d}-{secrets.token_hex(3).upper()}'
-        c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method) VALUES(?,?,?,?,?,?,?)',
+        c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) VALUES(?,?,?,?,?,?,?,?,?,?)',
                (order_id, datetime.datetime.now().isoformat(timespec='seconds'), 'PENDING',
                 amount, json.dumps(buyer, ensure_ascii=False),
-                json.dumps(resolved, ensure_ascii=False), ship))
+                json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
+                phone_norm or None))
+        if customer_id:
+            try:
+                c.exec('INSERT INTO account_order_links(order_id,customer_id,member_id,link_source,linked_at,verified_at) VALUES(?,?,?,?,?,?)',
+                       (order_id, customer_id, member_id, 'CHECKOUT_SESSION' if member_id else 'GUEST_CHECKOUT',
+                        datetime.datetime.now().isoformat(timespec='seconds'),
+                        datetime.datetime.now().isoformat(timespec='seconds')))
+            except Exception:
+                pass
     # 새 상품마스터 재고 화면도 결제 직후 동일 수량을 보도록 호환 투영을 동기화한다.
     try:
         import admin_v2

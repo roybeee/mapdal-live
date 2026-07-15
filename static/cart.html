@@ -401,8 +401,6 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <h3>주문 요약</h3>
       <div class="sum-row"><span>상품 금액</span><span id="sub">₩49,200</span></div>
       <div class="sum-row"><span>배송비</span><span id="ship" class="free">무료</span></div>
-      <div class="sum-row"><span>포인트 예상 적립 (5%)</span><span id="pt" style="color:var(--red)">2,460P</span></div>
-      <div class="sum-row"><span>쿠폰</span><span><input class="f-input" style="margin:0;padding:8px 10px;width:150px;font-size:12px" placeholder="쿠폰 코드"></span></div>
       <div class="sum-row total"><span class="tl">결제 예정 금액</span><span class="tv" id="tot">₩49,200</span></div>
       <a class="btn-full" style="background:var(--red);color:#fff;margin-top:16px;text-decoration:none;display:block;text-align:center" href="/checkout" id="orderBtn">주문하기</a>
       <a class="btn-full" style="background:#fff;color:var(--ink);border:1.5px solid var(--ink);margin-top:8px;text-decoration:none;display:block;text-align:center" href="/kfood">계속 쇼핑하기</a>
@@ -458,7 +456,6 @@ function render(){
   document.getElementById('sub').textContent=fmt(sub);
   document.getElementById('ship').textContent=ship?fmt(ship):'무료';
   document.getElementById('ship').className=ship?'':'free';
-  document.getElementById('pt').textContent=Math.floor(sub*0.05).toLocaleString('ko-KR')+'P';
   document.getElementById('tot').textContent=fmt(sub+ship);
   const ob=document.getElementById('orderBtn');
   ob.style.opacity=items.length?'1':'.45';

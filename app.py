@@ -235,6 +235,7 @@ async def create_order(req: Request):
     if ship != 'pickup' and not buyer.get('addr1'):
         raise HTTPException(400, '배송 주소를 입력해 주세요')
 
+    changed_stock_ids = []
     with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
         sub, resolved = 0, []
         for it in items:
@@ -247,6 +248,7 @@ async def create_order(req: Request):
                 if row['stock'] < q:
                     raise HTTPException(409, f'재고 부족: {row["name"][:30]} (남은 수량 {row["stock"]})')
                 c.exec('UPDATE products SET stock=stock-? WHERE id=?', (q, pid))
+                changed_stock_ids.append(pid)
                 if row['stock'] - q == 0:
                     c.exec('UPDATE products SET soldout=1 WHERE id=?', (pid,))
             sub += row['price'] * q
@@ -258,6 +260,13 @@ async def create_order(req: Request):
                (order_id, datetime.datetime.now().isoformat(timespec='seconds'), 'PENDING',
                 amount, json.dumps(buyer, ensure_ascii=False),
                 json.dumps(resolved, ensure_ascii=False), ship))
+    # 새 상품마스터 재고 화면도 결제 직후 동일 수량을 보도록 호환 투영을 동기화한다.
+    try:
+        import admin_v2
+        for pid in changed_stock_ids:
+            admin_v2.catalog_inventory_from_legacy(pid)
+    except Exception:
+        pass
     name0 = resolved[0]['n'][:28]
     order_name = name0 + (f' 외 {len(resolved)-1}건' if len(resolved) > 1 else '')
 

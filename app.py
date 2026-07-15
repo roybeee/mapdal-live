@@ -112,12 +112,12 @@ def seed():
       payment_key TEXT, pay_method TEXT, receipt_url TEXT,
       customer_id TEXT, member_id TEXT, contact_phone_norm TEXT);
     CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created);
-    CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created);
     '''
     with db() as c:
         for stmt in ddl.strip().split(';'):
             if stmt.strip(): c.exec(stmt)
         # 기존 운영 DB에도 회원 주문 직접 연결 컬럼을 멱등 추가한다.
+        # 인덱스는 반드시 컬럼 추가 후에 생성해야 구형 DB에서도 기동한다.
         for col in ('customer_id', 'member_id', 'contact_phone_norm'):
             try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
             except Exception: pass
@@ -186,6 +186,7 @@ async def account_security_headers(req: Request, call_next):
 # ── 클린 URL: .html 숨김 · 홈은 /home ─────────────────────────────────────
 _STATIC_DIR = os.path.join(BASE, 'static')
 _HOME_FILE = 'mapdal_home_mockup_v1.html'
+_DYNAMIC_CLEAN_ROUTES = {'/account'}
 
 @app.middleware('http')
 async def clean_urls(request, call_next):
@@ -194,6 +195,10 @@ async def clean_urls(request, call_next):
         if p == '/home':
             # 클린 주소 → 실제 홈 파일을 내부 매핑 (주소창은 /home 유지)
             request.scope['path'] = '/' + _HOME_FILE
+        elif p in _DYNAMIC_CLEAN_ROUTES:
+            # 동명 HTML이 있어도 회원·인증 전용 라우트를 우선한다.
+            # /account.html은 과거 편집본 호환용 리디렉션 파일일 뿐이다.
+            pass
         elif p.endswith('.html'):
             # 구식 .html 주소 → 클린 주소로 영구 이동 (주소창 정리)
             name = p.lstrip('/')

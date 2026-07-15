@@ -4027,6 +4027,17 @@ def _account_migrate():
                 run('INSERT INTO loyalty_policies VALUES(?,?,?,?,?,?)', ('SIGNUP_BONUS',1,str(SIGNUP_BONUS),now_iso(),now_iso(),'SYSTEM'))
             run("INSERT INTO site_settings(key,value,updated,by_admin) VALUES(?,?,?,?)",('POINT_POLICY_SIGNUP_ONLY_V1','done',now_iso(),'SYSTEM'))
     except Exception: pass
+    # /account는 전용 회원 라우트가 서빙한다. CMS에 남은 구형 account.html이
+    # 5%·래플·픽업 혜택을 다시 노출하지 않도록 호환 리디렉션으로 멱등 전환한다.
+    try:
+        legacy_account = one("SELECT html FROM page_edits WHERE path='account.html'")
+        if legacy_account:
+            shim_path = os.path.join(STATIC_DIR, 'account.html')
+            shim = open(shim_path, 'r', encoding='utf-8').read()
+            if (legacy_account.get('html') or '') != shim:
+                run("UPDATE page_edits SET html=?,updated=?,by_admin='SYSTEM_ACCOUNT_ROUTE' WHERE path='account.html'",
+                    (shim, now_iso()))
+    except Exception: pass
     for sql in ('CREATE INDEX IF NOT EXISTS idx_members_customer ON members(customer_id)',
                 'CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)',
                 'CREATE INDEX IF NOT EXISTS idx_auth_identities_customer ON auth_identities(customer_id)',

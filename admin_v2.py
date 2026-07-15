@@ -714,18 +714,52 @@ def api_products(request: Request):
     where, args = [], []
     if p.get('query'):
         kw = '%' + p['query'].strip() + '%'; where.append('(id LIKE ? OR %s LIKE ?)' % nm); args += [kw, kw]
-    if p.get('filter') == 'low': where.append('stock <= 5 AND soldout = 0')
-    elif p.get('filter') == 'soldout': where.append('soldout = 1')
+    filt = p.get('filter') or ''
+    if filt == 'low': where.append('stock > 0 AND stock < 5 AND soldout = 0')
+    elif filt == 'soldout': where.append('(soldout = 1 OR stock <= 0)')
+    elif filt == 'active': where.append('soldout = 0 AND stock > 0')
+    elif filt == 'new' and 'created_at' in _state['pcols']: where.append('created_at IS NOT NULL')
+    elif filt == 'discount' and pr and 'list_price' in _state['pcols']:
+        where.append('list_price IS NOT NULL AND list_price > %s' % pr)
+    elif filt == 'direct': where.append('id LIKE ?'); args.append('mp::%')
+    elif filt == 'k2g': where.append('id LIKE ?'); args.append('k2g::%')
+    elif filt == 'noimage' and 'img' in _state['pcols']:
+        where.append("(img IS NULL OR TRIM(img) = '')")
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     page = max(1, int(p.get('page', 1) or 1)); size = 30
-    total = num((one('SELECT COUNT(*) AS c FROM products' + w, tuple(args)) or {}).get('c'))
     cols = 'id, %s AS name, stock, soldout' % nm + ((', %s AS price' % pr) if pr else '') \
-           + (', list_price' if 'list_price' in _state['pcols'] else '')
-    rs = rows('SELECT %s FROM products%s ORDER BY soldout DESC, stock ASC, id LIMIT %d OFFSET %d' % (cols, w, size, (page - 1) * size), tuple(args))
+           + (', list_price' if 'list_price' in _state['pcols'] else '') \
+           + (', created_at' if 'created_at' in _state['pcols'] else '')
+    sort = p.get('sort') or 'created_desc'
+    base_price = ('COALESCE(list_price, %s)' % pr) if pr and 'list_price' in _state['pcols'] else (pr or '0')
+    created = 'created_at' if 'created_at' in _state['pcols'] else 'id'
+    order_map = {
+        'created_desc': 'CASE WHEN %s IS NULL THEN 1 ELSE 0 END, %s DESC, id DESC' % (created, created),
+        'created_asc': 'CASE WHEN %s IS NULL THEN 1 ELSE 0 END, %s ASC, id ASC' % (created, created),
+        'name_asc': '%s ASC, id ASC' % nm,
+        'name_desc': '%s DESC, id DESC' % nm,
+        'price_desc': '%s DESC, id ASC' % base_price,
+        'price_asc': '%s ASC, id ASC' % base_price,
+        'stock_asc': 'stock ASC, id ASC',
+        'stock_desc': 'stock DESC, id ASC',
+    }
+    order = order_map.get(sort, order_map['created_desc'])
+    if filt == 'new' and 'created_at' in _state['pcols']:
+        # 달력 기준 2개월(월말 보정)은 SQL 날짜 함수보다 Python 판정이 정확하다.
+        all_rows = rows('SELECT %s FROM products%s ORDER BY %s' % (cols, w, order), tuple(args))
+        all_rows = [r for r in all_rows if is_new_product(r.get('created_at'))]
+        total = len(all_rows); rs = all_rows[(page - 1) * size:page * size]
+    else:
+        total = num((one('SELECT COUNT(*) AS c FROM products' + w, tuple(args)) or {}).get('c'))
+        rs = rows('SELECT %s FROM products%s ORDER BY %s LIMIT %d OFFSET %d' %
+                  (cols, w, order, size, (page - 1) * size), tuple(args))
     return {'total': total, 'page': page, 'size': size,
             'rows': [{'id': r['id'], 'name': r.get('name') or r['id'], 'stock': num(r.get('stock')),
                       'soldout': num(r.get('soldout')), 'price': num(r.get('price')) if pr else None,
                       'list_price': num(r.get('list_price')) or None,
+                      'created_at': r.get('created_at') or '',
+                      'is_new': is_new_product(r.get('created_at')),
+                      'source': 'direct' if str(r['id']).startswith('mp::') else ('k2g' if str(r['id']).startswith('k2g::') else 'own'),
                       'pct': derived_pct(r.get('list_price'), r.get('price')) if pr else 0} for r in rs]}
 
 @admin_router.post('/admin/api/products/update')
@@ -1234,9 +1268,19 @@ button.btn.sm{padding:4px 9px;font-size:12px}button.btn:disabled{opacity:.4;curs
   <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
 <section id="t-products" style="display:none">
-  <div class="toolbar"><input id="pq" placeholder="상품명 · ID" style="width:220px">
-  <select id="pf"><option value="">전체</option><option value="low">저재고(≤5)</option><option value="soldout">품절</option></select>
+  <div class="toolbar"><input id="pq" placeholder="상품명 · ID" style="width:220px" onkeydown="if(event.key==='Enter')loadProducts(1)">
+  <select id="pf" aria-label="상품 필터" onchange="loadProducts(1)">
+   <option value="">전체 상품</option><option value="active">판매중</option><option value="soldout">품절 · 재고 0</option>
+   <option value="low">재고 부족 (1~4개)</option><option value="new">신상품 (등록 2개월 이내)</option>
+   <option value="discount">할인상품</option><option value="direct">직접등록 상품</option><option value="k2g">K2G 상품</option>
+   <option value="noimage">이미지 미등록</option></select>
+  <select id="ps" aria-label="상품 정렬" onchange="loadProducts(1)">
+   <option value="created_desc">최근 등록순</option><option value="created_asc">오래된 등록순</option>
+   <option value="name_asc">상품 이름순 (가나다)</option><option value="name_desc">상품 이름 역순</option>
+   <option value="price_desc">높은 가격순</option><option value="price_asc">낮은 가격순</option>
+   <option value="stock_asc">재고 적은순</option><option value="stock_desc">재고 많은순</option></select>
   <button class="btn" onclick="loadProducts(1)">검색</button>
+  <button class="btn ghost" onclick="resetProducts()">초기화</button>
   <button class="btn red" id="pnew" onclick="location.href='/admin/products/new'">+ 상품 등록</button>
   <span class="hint">가격(정가)·할인율은 상품 등록/상세편집에서 설정 — 매니저 이상. 등록 상품은 /p/상품ID 페이지가 자동 생성됩니다.</span></div>
   <div id="plist" class="loading">불러오는 중…</div></section>
@@ -1393,16 +1437,17 @@ async function cancelOrder(oid,refund){if(!confirm(refund?'이니시스 결제�
 
 let ppage=1;window._pk={};
 async function loadProducts(p){ppage=p;const q=new URLSearchParams({page:p});
- if($('#pq').value)q.set('query',$('#pq').value);if($('#pf').value)q.set('filter',$('#pf').value);
+ if($('#pq').value)q.set('query',$('#pq').value);if($('#pf').value)q.set('filter',$('#pf').value);if($('#ps').value)q.set('sort',$('#ps').value);
  try{const d=await api('/admin/api/products?'+q);
  $('#plist').innerHTML=`<table><tr><th>상품 ID</th><th>상품명</th><th class="right">정가</th><th class="right">재고</th><th>품절</th><th></th></tr>
  ${d.rows.map(r=>{const k=btoa(unescape(encodeURIComponent(r.id))).replace(/=/g,'');window._pk[k]=r.id;const bp=r.pct?(r.list_price||r.price):r.price;return `<tr>
- <td class="mono" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(r.id)}</td><td>${esc(r.name)}</td>
+ <td class="mono" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(r.id)}<div style="margin-top:4px;font-family:'IBM Plex Sans KR';font-size:10px;color:#888">${r.source==='direct'?'직접등록':r.source==='k2g'?'K2G':'기존상품'}${r.created_at?' · '+esc(r.created_at.slice(0,10)):''}${r.is_new?' · <b style="color:#E8332A">NEW</b>':''}</div></td><td>${esc(r.name)}</td>
  <td class="right">${r.price==null?'-':(can(2)?`<input class="stockin" style="width:88px" id="pr${k}" type="number" min="0" value="${bp}">${r.pct?`<div style="font-size:11px;color:#E8332A;white-space:nowrap;margin-top:2px">-${r.pct}% → ₩${Number(r.price).toLocaleString('ko-KR')}</div>`:''}`:(won(bp)+(r.pct?`<div style="font-size:11px;color:#E8332A;white-space:nowrap">-${r.pct}% → ${won(r.price)}</div>`:'')))}</td>
  <td class="right">${can(1)?`<input class="stockin" id="st${k}" type="number" min="0" value="${r.stock}">`:r.stock}</td>
  <td><input type="checkbox" id="so${k}" ${r.soldout?'checked':''} ${can(1)?`onchange="saveProd('${k}',true)"`:'disabled'}></td>
  <td style="white-space:nowrap">${can(1)?`<button class="btn sm" onclick="saveProd('${k}',false)">저장</button> `:''}${can(2)?`<button class="btn sm" onclick="editDetail(window._pk['${k}'])">상세편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" href="/p/${encodeURIComponent(r.id)}" target="_blank">보기</a>${can(2)?` <button class="btn sm ghost" style="color:#c0392b;border-color:#c0392b" onclick="delProd('${k}')">삭제</button>`:''}</td></tr>`}).join('')||'<tr><td colspan=6 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadProducts')}`;}catch(e){$('#plist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function resetProducts(){$('#pq').value='';$('#pf').value='';$('#ps').value='created_desc';loadProducts(1)}
 async function saveProd(k,tg){const body={id:window._pk[k],soldout:document.getElementById('so'+k).checked?1:0};
  if(!tg){body.stock=Number(document.getElementById('st'+k).value);const pr=document.getElementById('pr'+k);if(pr)body.price=Number(pr.value)}
  try{await api('/admin/api/products/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('반영되었습니다')}catch(e){toast(e.message);loadProducts(ppage)}}

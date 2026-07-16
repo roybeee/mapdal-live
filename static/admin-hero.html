@@ -94,7 +94,7 @@ var list=document.getElementById("list"),
 tok.value=sessionStorage.getItem("mzh_token")||"";
 
 function blank(){return{img:"",href:"",eyebrow:"",title:"",title2:"",sub:"",
-  cta_label:"",cta_href:"",cta2_label:"",cta2_href:"",chip:"",active:true};}
+  cta_label:"",cta_href:"",cta2_label:"",cta2_href:"",chip:"",live_visual:false,active:true};}
 
 function field(parent,labelText,key,slide,textarea){
   var l=document.createElement("label");l.textContent=labelText;parent.appendChild(l);
@@ -104,6 +104,14 @@ function field(parent,labelText,key,slide,textarea){
   el.addEventListener("input",function(){slide[key]=el.value;
     if(key==="img")syncThumb(parent.closest(".card"),el.value);});
   parent.appendChild(el);
+  return el;
+}
+function checkField(parent,labelText,key,slide){
+  var l=document.createElement("label");
+  l.style.cssText="display:flex;align-items:center;gap:8px;margin:12px 0 4px;font-weight:700";
+  var el=document.createElement("input");el.type="checkbox";el.checked=slide[key]===true;
+  el.style.width="auto";el.addEventListener("change",function(){slide[key]=el.checked;});
+  l.appendChild(el);l.appendChild(document.createTextNode(labelText));parent.appendChild(l);
   return el;
 }
 function syncThumb(card,url){
@@ -152,6 +160,7 @@ function renderList(){
     var dt=document.createElement("details");
     var sm=document.createElement("summary");sm.textContent="텍스트 오버레이 (제목·버튼·칩)";
     dt.appendChild(sm);
+    checkField(dt,"블랙 라이브 스테이지 모션 사용","live_visual",s);
     field(dt,"아이브로우 (작은 상단 라벨)","eyebrow",s);
     field(dt,"제목 1행","title",s);
     field(dt,"제목 2행 (아웃라인체)","title2",s);

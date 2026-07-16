@@ -307,6 +307,40 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 .mzh .mzh-img{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;min-height:0!important;object-fit:cover!important;object-position:center!important;margin:0!important;padding:0!important;filter:none!important;display:block!important;z-index:1}
 .mzh .mzh-slide.is-img::after{content:"";position:absolute;inset:0;z-index:1;
   background:linear-gradient(90deg,rgba(20,20,20,.28) 0%,transparent 45%)}
+/* 블랙 라이브 스테이지 — 관리자에서 슬라이드별 활성화 */
+.mzh .mzh-slide.is-live{background:#111;color:#fff}
+.mzh .mzh-slide.is-live .hero-inner{padding-right:min(48%,620px)}
+.mzh .mzh-slide.is-live .eyebrow{color:#EE3532;font-weight:700}
+.mzh .mzh-slide.is-live h1{font-size:clamp(44px,5vw,78px);max-width:720px}
+.mzh .mzh-slide.is-live h1 .hollow{color:#fff;-webkit-text-stroke:0}
+.mzh .mzh-slide.is-live .hero-inner p{color:#B9B9B5;max-width:610px}
+.mzh .mzh-slide.is-live .btn.white{background:#EE3532;color:#fff}
+.mzh .mzh-slide.is-live .btn.ghost{border-color:#5C5C58;color:#fff}
+.mzh .mzh-slide.is-live .drop-chip{position:static;margin-top:18px;background:#1B1B1B;border-left-color:#EE3532}
+.mzh-live-visual{position:absolute;z-index:2;right:max(48px,calc((100vw - 1440px)/2 + 48px));top:50%;
+  width:clamp(260px,27vw,410px);transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;
+  color:#fff;pointer-events:none}
+.mzh-live-status{align-self:flex-start;display:inline-flex;align-items:center;gap:9px;padding:8px 11px;
+  border:1px solid #383836;background:rgba(20,20,20,.9);font-family:var(--mono);font-size:10px;
+  font-weight:700;letter-spacing:.1em}
+.mzh-live-status i{display:block;width:7px;height:7px;border-radius:50%;background:#EE3532;
+  box-shadow:0 0 0 0 rgba(238,53,50,.65);animation:mzhStatus 1.5s ease-out infinite}
+.mzh-live-orb{position:relative;width:100%;aspect-ratio:1;margin:10px 0 4px;border-radius:50%;isolation:isolate}
+.mzh-live-orb::before{content:"";position:absolute;inset:9%;border-radius:50%;background:#3B2221;
+  box-shadow:inset 0 0 55px rgba(0,0,0,.3);z-index:1}
+.mzh-live-wave{position:absolute;inset:10%;border:2px solid rgba(238,53,50,.76);border-radius:50%;z-index:0;
+  animation:mzhWave 2.8s cubic-bezier(.2,.65,.3,1) infinite}
+.mzh-live-wave.w2{animation-delay:.9s}.mzh-live-wave.w3{animation-delay:1.8s}
+.mzh-live-disc{position:absolute;inset:28%;z-index:2;border-radius:50%;background:#242424;
+  box-shadow:0 18px 55px rgba(0,0,0,.42);display:grid;place-items:center}
+.mzh-live-core{width:28%;aspect-ratio:1;border-radius:50%;background:#EE3532;
+  box-shadow:0 0 0 0 rgba(238,53,50,.48);animation:mzhCore 1.5s ease-in-out infinite}
+.mzh-live-clock{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:#A9A9A4}
+@keyframes mzhWave{0%{transform:scale(.7);opacity:0}24%{opacity:.75}100%{transform:scale(1.28);opacity:0}}
+@keyframes mzhCore{0%,100%{transform:scale(.9);box-shadow:0 0 0 0 rgba(238,53,50,.38)}50%{transform:scale(1.08);box-shadow:0 0 0 12px rgba(238,53,50,0)}}
+@keyframes mzhStatus{100%{box-shadow:0 0 0 8px rgba(238,53,50,0)}}
+.mzh-slide[aria-hidden="true"] .mzh-live-wave,.mzh-slide[aria-hidden="true"] .mzh-live-core,
+.mzh-slide[aria-hidden="true"] .mzh-live-status i{animation-play-state:paused}
 /* 좌우 화살표 */
 .mzh-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:5;
   width:44px;height:44px;border:1px solid rgba(255,255,255,.45);border-radius:0;
@@ -330,10 +364,19 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
   .mzh-nav{display:none}
   .mzh .mzh-track{height:480px}
   .mzh .mzh-cap{padding:16px 20px 48px}
+  .mzh.has-live .mzh-track{height:650px}
+  .mzh .mzh-slide.is-live .hero-inner{justify-content:flex-start;padding:48px 20px 250px}
+  .mzh .mzh-slide.is-live h1{font-size:clamp(38px,12vw,54px)}
+  .mzh .mzh-slide.is-live .hero-inner p{font-size:13px;line-height:1.55}
+  .mzh .mzh-slide.is-live .drop-chip{display:none}
+  .mzh-live-visual{width:190px;right:auto;left:50%;top:auto;bottom:42px;transform:translateX(-50%)}
+  .mzh-live-status{align-self:center;font-size:9px}
+  .mzh-live-clock{font-size:9px}
 }
 @media (prefers-reduced-motion:reduce){
   .mzh .mzh-track{transition:none}
   .mzh-progress{display:none}
+  .mzh-live-wave,.mzh-live-core,.mzh-live-status i{animation:none}
 }
 </style>
 
@@ -347,7 +390,7 @@ var MZH_DEFAULT={interval_ms:3000,slides:[
   sub:"성수동 연무장길 825평 — 몰입부터 구매까지, 무대에서 벌어진 팬 경험이 매주 새로운 드롭으로 도착합니다. 현장의 열기를 그대로 배송합니다.",
   cta_label:"SUMMER DROP 07 보기",cta_href:"/new-drops",
   cta2_label:"공간 둘러보기",cta2_href:"#space",
-  chip:"NEXT DROP|07.21 (TUE) 12:00 KST|응모 마감 07.29 (WED)",active:true},
+  chip:"NEXT DROP|07.21 (TUE) 12:00 KST|응모 마감 07.29 (WED)",live_visual:true,active:true},
  {img:"/hero/hero-slide-2-vernon-the8.jpg",href:"/kpop",active:true},
  {img:"/hero/hero-slide-3-girlgroup.jpg",href:"/kpop",active:true},
  {img:"/hero/hero-slide-4-icecream.jpg",href:"/kpop",active:true},
@@ -372,10 +415,12 @@ function esc(s){return String(s==null?"":s)
 
 function slideHTML(s){
   var isImg=!!s.img;
+  var isLive=s.live_visual===true||(!isImg&&String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
   var hasText=!!(s.title||s.title2||s.eyebrow||s.sub||s.cta_label||s.cta2_label||s.chip);
   var useA=s.href&&!hasText, tagOpen, tagClose;
-  if(useA){tagOpen='<a class="mzh-slide'+(isImg?' is-img':'')+'" href="'+esc(s.href)+'">';tagClose="</a>";}
-  else{tagOpen='<div class="mzh-slide'+(isImg?' is-img':'')+'"'+(s.href?' data-href="'+esc(s.href)+'" style="cursor:pointer"':'')+'>';tagClose="</div>";}
+  var cls=(isImg?' is-img':'')+(isLive?' is-live':'');
+  if(useA){tagOpen='<a class="mzh-slide'+cls+'" href="'+esc(s.href)+'">';tagClose="</a>";}
+  else{tagOpen='<div class="mzh-slide'+cls+'"'+(s.href?' data-href="'+esc(s.href)+'" style="cursor:pointer"':'')+'>';tagClose="</div>";}
   var h="";
   if(isImg){
     h+='<img class="mzh-img" src="'+esc(s.img)+'" alt="'+esc(s.title||"프로모션 배너")+'" '+
@@ -389,6 +434,14 @@ function slideHTML(s){
         +(s.event?'<div class="mzh-cap-event">'+esc(s.event)+"</div>":"")
         +"</div>";
     }
+  }
+  if(isLive){
+    h+='<div class="mzh-live-visual" aria-label="성수 스테이지 라이브 신호">'
+      +'<div class="mzh-live-status"><i></i>LIVE NOW · SEONGSU STAGE</div>'
+      +'<div class="mzh-live-orb" aria-hidden="true"><span class="mzh-live-wave w1"></span>'
+      +'<span class="mzh-live-wave w2"></span><span class="mzh-live-wave w3"></span>'
+      +'<span class="mzh-live-disc"><span class="mzh-live-core"></span></span></div>'
+      +'<time class="mzh-live-clock" data-live-clock>LIVE KST</time></div>';
   }
   if(hasText){
     h+='<div class="hero-inner">';
@@ -419,6 +472,9 @@ function slideHTML(s){
 function render(data){
   slides=(data.slides||[]).filter(function(s){return s&&s.active!==false;});
   if(!slides.length)slides=MZH_DEFAULT.slides;
+  root.classList.toggle("has-live",slides.some(function(s){
+    return s.live_visual===true||(!s.img&&String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
+  }));
   INT=Math.max(1500,Math.min(15000,data.interval_ms||3000));
   root.style.setProperty("--mzh-int",INT+"ms");
   track.innerHTML=slides.map(slideHTML).join("");
@@ -430,8 +486,16 @@ function render(data){
   });
   var single=slides.length<2;
   prevBtn.style.display=nextBtn.style.display=dotsBox.style.display=single?"none":"";
-  idx=0;go(0,false);restart();
+  idx=0;go(0,false);updateLiveClocks();restart();
 }
+
+function updateLiveClocks(){
+  var parts=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Seoul",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(new Date());
+  var p={};parts.forEach(function(x){p[x.type]=x.value;});
+  var text="LIVE KST · "+p.year+"."+p.month+"."+p.day+" "+p.hour+":"+p.minute+":"+p.second;
+  Array.prototype.forEach.call(document.querySelectorAll("[data-live-clock]"),function(el){el.textContent=text;el.dateTime=p.year+"-"+p.month+"-"+p.day+"T"+p.hour+":"+p.minute+":"+p.second+"+09:00";});
+}
+setInterval(updateLiveClocks,1000);
 
 function go(i,user){
   idx=(i+slides.length)%slides.length;

@@ -3912,7 +3912,7 @@ def pdp(pid: str):
         _seed = 0
     viewers = 60 + (_seed % 80)
     _img_og = img if img.startswith('http') else (('https://mapdal.kr' + img) if img.startswith('/') else OG_IMAGE_URL)
-    return HTMLResponse(_PDP_HTML % {
+    return HTMLResponse(_brand_apply(_PDP_HTML % {
         'name': h(r.get('name')), 'namejs': json.dumps(str(r.get('name') or '')),
         'pricehtml': pricehtml, 'price_fmt': format(sale, ','), 'pricejs': sale,
         'bcls': 'no' if soldout else 'ok',
@@ -3928,7 +3928,7 @@ def pdp(pid: str):
         'benefits': benefits_html, 'viewers': viewers,
         'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
-        'relatedsnippet': _RELATED_WIDGET_SNIPPET})
+        'relatedsnippet': _RELATED_WIDGET_SNIPPET}))
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 SIGNUP_BONUS = 2000
@@ -4731,7 +4731,7 @@ def account_page(request: Request):
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     if m:
         mdata = {'ok': True}
-        return HTMLResponse(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False)))
+        return HTMLResponse(_brand_apply(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False))))
     g_on = bool(_genv('GOOGLE_CLIENT_ID'))
     a_on = all(_apple_conf().values())
     k_on = bool(_genv('KAKAO_CLIENT_ID'))
@@ -4741,7 +4741,7 @@ def account_page(request: Request):
               '<a class="sbtn apple%s" href="/auth/apple">&#63743; · Apple 계정으로 계속하기%s</a>'
               % ('' if g_on else ' off', '' if g_on else ' (준비 중)',
                  '' if a_on else ' off', '' if a_on else ' (준비 중)'))
-    return HTMLResponse('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
+    return HTMLResponse(_brand_apply('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
         '</head><body><div class="box"><h1>MAPDAL<span>SEOUL</span></h1><div class="sub">SIGN IN / SIGN UP</div>'
         '<div style="background:#fff3df;border-left:4px solid #FFB000;padding:9px 11px;font-size:12px;margin-bottom:14px"><b>최초 가입 2,000P</b> · 한 고객당 한 번만 지급</div>'
         + social +
@@ -4779,7 +4779,7 @@ def account_page(request: Request):
         'try{await post("/api/member/signup",{name:document.getElementById("sn").value,gender:g,phone:document.getElementById("sph").value,birth:document.getElementById("sbi").value,email:document.getElementById("se").value,password:p,terms:document.getElementById("sterms").checked,privacy:document.getElementById("sprivacy").checked,marketing:document.getElementById("smarketing").checked});location.reload()}catch(e){show(e.message)}}'
         'let RID="";async function resetSend(){try{const r=await post("/api/member/password-reset/send",{email:document.getElementById("re").value,phone:document.getElementById("rp").value});RID=r.reset_id;document.getElementById("rverify").style.display="";show(r.dry?"테스트 모드: 관리자 알림 로그에서 인증번호를 확인하세요":"인증번호를 발송했습니다")}catch(e){show(e.message)}}'
         'async function resetVerify(){try{await post("/api/member/password-reset/verify",{reset_id:RID,code:document.getElementById("rc").value,password:document.getElementById("rnw").value});alert("비밀번호가 변경되었습니다. 다시 로그인해 주세요.");mode(0)}catch(e){show(e.message)}}'
-        '</script></body></html>')
+        '</script></body></html>'))
 
 @admin_router.get('/admin/api/members')
 def api_members(request: Request):
@@ -6794,6 +6794,21 @@ def sitemap_xml(request: Request):
     # 실제 크기로 유지한다. 빈 본문(0바이트) 반환 시 구글이 '가져올 수 없음' 처리.
     return Response(_sitemap_xml(), media_type='application/xml; charset=utf-8', headers=hdr)
 
+_BRAND_CSS_LINK = '<link id="mpBrandCss" rel="stylesheet" href="/brand-system.css">'
+_BRAND_JS_TAG = '<script id="mpBrandJs" defer src="/brand-system.js"></script>'
+
+def _brand_apply(html):
+    """Attach the shared wordmark and white-canvas brand system once per document."""
+    if '<head' not in html[:4000].lower():
+        return html
+    if 'mpBrandCss' not in html:
+        i = html.lower().find('</head>')
+        html = (html[:i] + _BRAND_CSS_LINK + html[i:]) if i >= 0 else (_BRAND_CSS_LINK + html)
+    if 'mpBrandJs' not in html:
+        i = html.lower().rfind('</body>')
+        html = (html[:i] + _BRAND_JS_TAG + html[i:]) if i >= 0 else (html + _BRAND_JS_TAG)
+    return html
+
 def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html)
     html = _inject_shop_products(html)
@@ -6805,6 +6820,7 @@ def _inject_auth(html, path='', uid=None):
     html, patched = _patch_legacy_footer(html)
     html = _seo_apply(html, path, uid)
     html = _inject_og(html)
+    html = _brand_apply(html)
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET

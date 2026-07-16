@@ -48,6 +48,7 @@ DEFAULT_DATA = {
             "cta_label": "SUMMER DROP 07 보기", "cta_href": "/new-drops",
             "cta2_label": "공간 둘러보기", "cta2_href": "#space",
             "chip": "NEXT DROP|07.21 (TUE) 12:00 KST|응모 마감 07.29 (WED)",
+            "live_visual": True,
             "active": True,
         },
         {
@@ -99,6 +100,7 @@ class Slide(BaseModel):
     tag_color: str = Field("", max_length=24)     # 프리셋명 또는 #hex
     album: str = Field("", max_length=120)        # 앨범명
     event: str = Field("", max_length=160)        # 행사 이름
+    live_visual: bool = False                      # 블랙 라이브 스테이지 모션
     active: bool = True
 
     @field_validator("tag_color")
@@ -205,7 +207,20 @@ def load_data() -> dict:
     except Exception as e:  # DB 일시 장애 시에도 히어로는 떠야 함
         print(f"[hero_api] load error ({e}) — 기본값 사용")
         data = None
-    return data or DEFAULT_DATA
+    # 기존 운영 DB에는 live_visual 필드가 없을 수 있다. 저장 데이터를 훼손하지
+    # 않고 응답 시에만 보강해, 첫 브랜드 슬라이드가 배포 즉시 새 시안으로 보인다.
+    out = json.loads(json.dumps(data or DEFAULT_DATA, ensure_ascii=False))
+    slides = out.get("slides") if isinstance(out, dict) else None
+    if isinstance(slides, list):
+        for i, slide in enumerate(slides):
+            if not isinstance(slide, dict):
+                continue
+            if "live_visual" not in slide:
+                slide["live_visual"] = bool(
+                    i == 0 and not slide.get("img")
+                    and str(slide.get("title") or "").strip().upper() == "SHOP SEONGSU,"
+                )
+    return out
 
 
 def save_data(data: dict) -> None:

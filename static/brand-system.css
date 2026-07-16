@@ -1,0 +1,64 @@
+/* MAPDAL SEOUL brand system — public storefront */
+:root{
+  --red:#EE3532;
+  --paper:#FFFFFF;
+  --line:#E7E5DF;
+}
+
+html,body{background:#fff}
+
+/* Keep the public chrome white. Dark content panels (ticker, hero, floor guide)
+   remain intentional content blocks instead of becoming the page background. */
+body>header,body>.site-header,body>.mp-header{
+  background:#fff!important;
+  border-bottom-color:#E7E5DF!important;
+}
+
+.mapdal-wordmark{
+  display:inline-flex!important;
+  align-items:center;
+  width:clamp(172px,14vw,214px);
+  min-width:172px;
+  height:auto;
+  font-size:0!important;
+  line-height:0!important;
+  letter-spacing:0!important;
+  background:transparent!important;
+}
+.mapdal-wordmark img{
+  display:block!important;
+  width:100%!important;
+  height:auto!important;
+  max-width:none!important;
+  max-height:none!important;
+  object-fit:contain!important;
+  filter:none!important;
+}
+
+/* The footer is part of the white page canvas in the revised direction. */
+body>footer,#mpFooter{
+  background:#fff!important;
+  color:#565656!important;
+  border-top:1px solid #E7E5DF!important;
+}
+body>footer .foot-base,#mpFooter .mp-foot-base{
+  color:#777!important;
+  border-top-color:#E7E5DF!important;
+}
+body>footer h6,#mpFooter b{color:#141414!important}
+body>footer a,#mpFooter a{color:#343434!important}
+body>footer a:hover,#mpFooter a:hover{color:#EE3532!important}
+#mpFooter span{color:#565656!important}
+#mpFooter a[href="/privacy"]{color:#EE3532!important}
+body>footer .mapdal-wordmark{width:178px;min-width:178px}
+
+/* Logo treatment for the standalone account page. */
+.box>.mapdal-wordmark,.mp-account-brand.mapdal-wordmark{
+  width:min(230px,72vw);
+  margin:0 auto 10px;
+}
+
+@media(max-width:680px){
+  .mapdal-wordmark{width:158px;min-width:158px}
+  body>footer .mapdal-wordmark{width:158px;min-width:158px}
+}

@@ -443,6 +443,10 @@ def ensure_ready():
         if mcx and col not in mcx:
             try: run("ALTER TABLE members ADD COLUMN %s %s" % (col, typ))
             except Exception: pass
+    cpcx = _cols('customer_profiles')
+    if cpcx and 'admin_memo' not in cpcx:
+        try: run("ALTER TABLE customer_profiles ADD COLUMN admin_memo TEXT")
+        except Exception: pass
     ocx = _cols('orders')
     for col, typ in (('customer_id','TEXT'),('member_id','TEXT'),('contact_phone_norm','TEXT')):
         if ocx and col not in ocx:
@@ -730,6 +734,20 @@ def api_order_detail(oid: str, request: Request):
             'admin_memo': r.get('admin_memo') or '', 'receipt': r.get('receipt_url') or '',
             'method': r.get('method') or '',
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID')}
+
+@admin_router.get('/admin/api/orders/{oid}/receipt', response_class=HTMLResponse)
+def api_admin_order_receipt(oid: str, request: Request):
+    a=get_actor(request); need(a,0)
+    r=one('SELECT * FROM orders WHERE order_id=?',(oid,))
+    if not r: raise HTTPException(404,'not found')
+    b=jload(r.get('buyer'),{}); its=jload(r.get('items'),[])
+    def h(x): return str(x or '').replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    tr=''.join('<tr><td>%s</td><td class="r">%s</td><td class="r">%d</td><td class="r">%s</td></tr>' %
+               (h(it.get('n') or it.get('name') or it.get('id') or ''),format(num(it.get('p') or it.get('price')),','),
+                num(it.get('q') or 1),format(num(it.get('p') or it.get('price'))*num(it.get('q') or 1),',')) for it in its)
+    audit(a,'거래명세서조회',oid,'고객지원')
+    return HTMLResponse('''<!doctype html><meta charset="utf-8"><title>거래명세서 — %s</title><style>body{font-family:sans-serif;max-width:760px;margin:32px auto;padding:0 20px}h1{font-size:21px;border-bottom:3px solid #E8332A;padding-bottom:10px}table{width:100%%;border-collapse:collapse;margin:16px 0;font-size:13px}th,td{border:1px solid #ccc;padding:8px}th{background:#141414;color:#fff}.r{text-align:right}.meta{font-size:12.5px;line-height:1.9}.btn{background:#141414;color:#fff;border:0;padding:10px 18px}@media print{.btn{display:none}}</style><h1>거래명세서 <small>MAPDAL SEOUL</small></h1><div class="meta"><b>주문번호</b> %s · <b>거래일시</b> %s<br><b>주문자</b> %s (%s)</div><table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th><th class="r">금액</th></tr>%s</table><h3 class="r">합계 ₩%s</h3><button class="btn" onclick="print()">인쇄</button>''' %
+        (h(oid),h(oid),h((r.get('created') or '').replace('T',' ')),h(b.get('name')),h(b.get('phone')),tr,format(num(r.get('amount')),',')))
 
 @admin_router.post('/admin/api/orders/{oid}/fulfill')
 def api_fulfill(oid: str, request: Request, body: dict = Body(...)):
@@ -1693,7 +1711,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 .pager{display:flex;gap:6px;align-items:center;margin-top:12px;font-family:'IBM Plex Mono';font-size:12px}
 .right{text-align:right}.mono{font-family:'IBM Plex Mono'}
 .modal-bg{position:fixed;inset:0;background:rgba(20,20,20,.55);display:none;align-items:flex-start;justify-content:center;z-index:100;padding:30px 12px;overflow:auto}
-.modal{background:#fff;max-width:660px;width:100%;padding:22px}.modal h3{font-size:16px;margin-bottom:14px}
+.modal{background:#fff;max-width:660px;width:100%;padding:22px}.modal.wide{max-width:1180px}.modal h3{font-size:16px;margin-bottom:14px}
 .kv{display:grid;grid-template-columns:92px 1fr;gap:6px 10px;font-size:13px;margin-bottom:12px}.kv b{color:#777;font-size:11.5px}
 .stockin{width:70px;text-align:right}.hint{font-size:11.5px;color:#888;margin-top:8px;line-height:1.6}
 .tag{display:inline-block;background:var(--black);color:var(--amber);font-family:'IBM Plex Mono';font-size:10.5px;padding:2px 7px;margin-left:6px}
@@ -1808,9 +1826,11 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <select id="avf" onchange="loadAccounts(1)"><option value="">인증 전체</option><option value="phone">휴대폰 인증</option><option value="none">인증 없음</option></select>
   <select id="aseg" onchange="loadAccounts(1)"><option value="">구매 전체</option><option value="buyer">구매 고객</option><option value="no_order">주문 없는 가입자</option></select>
   <select id="aissue" onchange="loadAccounts(1)"><option value="">점검 전체</option><option value="duplicate">중복계정 의심</option></select>
+  <select id="asup" onchange="loadAccounts(1)"><option value="">마이페이지 업무 전체</option><option value="pending">CS 미처리</option><option value="request">취소·반품·교환</option><option value="inquiry">1:1 미답변</option><option value="pqna">상품 Q&amp;A 미답변</option><option value="restock">재입고 알림 대기</option><option value="liked">좋아요 보유</option><option value="sessions">활성 로그인</option></select>
   <label style="font-size:12px;white-space:nowrap"><input type="checkbox" id="amk" onchange="loadAccounts(1)"> 마케팅 동의</label>
   <button class="btn" onclick="loadAccounts(1)">검색</button><button class="btn ghost" onclick="resetAccounts()">초기화</button></div>
   <div class="hint" style="margin-bottom:10px">개인정보는 기본 마스킹됩니다. 원문 조회는 매니저 이상이 사유를 남긴 경우에만 감사로그와 함께 허용됩니다.</div>
+  <div id="aqcards" class="cards" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px"></div>
   <div id="clist" class="loading">통합 고객을 불러오는 중…</div></div></section>
 <section id="t-notify" style="display:none">
   <div id="nconf"></div>
@@ -1911,7 +1931,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <button class="btn ghost" onclick="closeM()">닫기</button></div>
  ${o.can_refund&&can(2)?'<div class="hint">결제취소 시 토스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
  $('#mbg').style.display='flex';}catch(e){toast(e.message)}}
-function closeM(){$('#mbg').style.display='none'}
+function closeM(){$('#mbg').style.display='none';$('#mbox').classList.remove('wide')}
 $('#mbg').addEventListener('click',e=>{if(e.target.id==='mbg')closeM()});
 async function saveFulfill(oid){try{const f=$('#mff').value;
  await api('/admin/api/orders/'+encodeURIComponent(oid)+'/fulfill',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -2020,28 +2040,47 @@ async function inventoryHistory(id){try{const d=await api('/admin/api/inventory/
 
 let accountPage=1;
 async function loadAccounts(page){accountPage=page;const q=new URLSearchParams({page});
- if($('#aq').value)q.set('query',$('#aq').value);if($('#ast').value)q.set('status',$('#ast').value);if($('#apv').value)q.set('provider',$('#apv').value);if($('#avf').value)q.set('verified',$('#avf').value);if($('#aseg').value)q.set('segment',$('#aseg').value);if($('#aissue').value)q.set('issue',$('#aissue').value);if($('#amk').checked)q.set('marketing','1');
+ if($('#aq').value)q.set('query',$('#aq').value);if($('#ast').value)q.set('status',$('#ast').value);if($('#apv').value)q.set('provider',$('#apv').value);if($('#avf').value)q.set('verified',$('#avf').value);if($('#aseg').value)q.set('segment',$('#aseg').value);if($('#aissue').value)q.set('issue',$('#aissue').value);if($('#asup').value)q.set('support',$('#asup').value);if($('#amk').checked)q.set('marketing','1');
  $('#clist').innerHTML='<div class="loading">통합 고객을 불러오는 중…</div>';try{const d=await api('/admin/api/accounts?'+q);
- $('#clist').innerHTML=`<table><tr><th>고객번호 / 고객</th><th>연락처</th><th>계정</th><th>상태</th><th class="right">주문</th><th class="right">구매액</th><th class="right">포인트</th><th>최근활동</th><th></th></tr>
+ const Q=d.queues||{};$('#aqcards').innerHTML=[['request','취소·반품',Q.request],['inquiry','1:1 미답변',Q.inquiry],['pqna','Q&A 미답변',Q.pqna],['restock','재입고 대기',Q.restock],['','잠금 계정',Q.locked]].map(x=>`<button class="card" style="text-align:left;cursor:pointer;border:${x[2]?'2px solid #E8332A':'1px solid var(--line)'}" onclick="supportFilter('${x[0]}')"><div class="k">${x[1]}</div><div class="v" style="font-size:20px">${x[2]||0}</div></button>`).join('');
+ $('#clist').innerHTML=`<table><tr><th>고객번호 / 고객</th><th>연락처</th><th>계정</th><th>상태</th><th class="right">주문</th><th class="right">구매액</th><th class="right">포인트</th><th>마이페이지</th><th>최근활동</th><th></th></tr>
  ${d.rows.map(c=>`<tr><td><b class="mono">${esc(c.customer_no)}</b><div class="group-sub">${esc(c.name)||'이름 없음'} · ${esc(c.grade)}</div></td>
  <td><span class="mono">${esc(c.phone)||'-'}</span><div class="group-sub">${esc(c.email)||'-'}</div></td><td>${c.providers.map(p=>`<span class="meta-chip">${esc(p)}</span>`).join(' ')||'-'}</td>
  <td><span class="st ${c.status==='ACTIVE'?'PAID':c.status==='LOCKED'?'FAILED':'PENDING'}">${esc(c.status)}</span>${c.marketing?' <span class="meta-chip">마케팅</span>':''}</td>
  <td class="right mono">${c.orders}</td><td class="right mono">${won(c.spend)}</td><td class="right mono"><b>${c.points.toLocaleString()}P</b></td>
- <td class="mono">${esc(c.last_order||c.last_login||'-')}</td><td><button class="btn sm ghost" onclick="openAccount('${esc(c.id)}')">상세</button></td></tr>`).join('')||'<tr><td colspan="9" class="loading">조건에 맞는 고객이 없습니다.</td></tr>'}</table>${pager(page,d,'loadAccounts')}`
+ <td style="font-size:11px;line-height:1.7">${c.support.req?'<b style="color:#E8332A">요청 '+c.support.req+'</b> ':''}${c.support.inq?'<b style="color:#E8332A">1:1 '+c.support.inq+'</b> ':''}${c.support.pqna?'<b style="color:#E8332A">Q&A '+c.support.pqna+'</b> ':''}${c.support.restock?'재입고 '+c.support.restock+' ':''}${c.support.likes?'♥ '+c.support.likes+' ':''}${c.support.sessions?'세션 '+c.support.sessions:''}</td>
+ <td class="mono">${esc(c.last_order||c.last_login||'-')}</td><td><button class="btn sm ghost" onclick="openAccount('${esc(c.id)}')">통합관리</button></td></tr>`).join('')||'<tr><td colspan="10" class="loading">조건에 맞는 고객이 없습니다.</td></tr>'}</table>${pager(page,d,'loadAccounts')}`
  }catch(e){$('#clist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
-function resetAccounts(){$('#aq').value='';$('#ast').value='';$('#apv').value='';$('#avf').value='';$('#aseg').value='';$('#aissue').value='';$('#amk').checked=false;loadAccounts(1)}
-async function openAccount(id){try{const d=await api('/admin/api/accounts/'+encodeURIComponent(id));window._account=d;const c=d.customer;
+function supportFilter(v){$('#asup').value=v;loadAccounts(1)}
+function resetAccounts(){$('#aq').value='';$('#ast').value='';$('#apv').value='';$('#avf').value='';$('#aseg').value='';$('#aissue').value='';$('#asup').value='';$('#amk').checked=false;loadAccounts(1)}
+async function openAccount(id){try{const d=await api('/admin/api/accounts/'+encodeURIComponent(id));window._account=d;const c=d.customer;$('#mbox').classList.add('wide');
  const tb=(title,head,body)=>`<div style="margin-top:16px"><h4 style="margin:0 0 7px">${title}</h4><table><tr>${head}</tr>${body||'<tr><td colspan="6" class="loading">없음</td></tr>'}</table></div>`;
  $('#mbox').innerHTML=`<h3>${esc(c.name)||'이름 없음'} <span class="tag mono">${esc(c.customer_no)}</span> <span class="st ${c.status==='ACTIVE'?'PAID':'PENDING'}">${esc(c.status)}</span></h3>
- <div class="cards" style="grid-template-columns:repeat(3,1fr)"><div class="card"><div class="k">포인트</div><div class="v" style="font-size:20px">${c.points.toLocaleString()}P</div></div><div class="card"><div class="k">가입일</div><div class="v" style="font-size:14px">${esc((c.created||'').slice(0,10))}</div></div><div class="card"><div class="k">마케팅</div><div class="v" style="font-size:14px">${c.marketing?'동의':'미동의'}</div></div></div>
+ <div class="hint">고객 마이페이지의 주문·요청·문의·좋아요·재입고·배송지·세션을 한 곳에서 조회·처리합니다.</div>
+ <div class="cards" style="grid-template-columns:repeat(6,1fr);margin-top:12px">
+ ${[['주문',d.orders.length],['미처리 CS',d.requests.filter(x=>x.status==='접수'||x.status==='처리중').length+d.inquiries.filter(x=>x.status!=='답변완료').length+d.pqna.filter(x=>x.status!=='답변완료').length],['좋아요',d.likes.length],['재입고 대기',d.restock.filter(x=>!x.notified).length],['배송지',d.addresses.length],['활성 세션',d.sessions.length]].map(x=>`<div class="card"><div class="k">${x[0]}</div><div class="v" style="font-size:20px">${x[1]}</div></div>`).join('')}</div>
+ <div style="margin-top:14px;background:#faf9f5;padding:12px"><b style="font-size:12px">CS 내부메모</b><textarea id="acmemo" rows="2" style="width:100%;margin-top:6px" placeholder="인수인계·응대내용·주의사항">${esc(c.admin_memo||'')}</textarea>${can(1)?`<button class="btn sm" style="margin-top:6px" onclick="saveAccountMemo('${esc(id)}')">메모 저장</button>`:''}</div>
+ ${tb('취소·반품·교환 요청','<th>일시</th><th>유형/주문</th><th>사유·메모</th><th>상태</th><th></th>',d.requests.map(x=>`<tr><td class="mono">${esc((x.created||'').replace('T',' '))}</td><td><b>${esc(x.type)}</b><br><a href="#" onclick="openOrder('${esc(x.order_id)}');return false" class="mono">${esc(x.order_id)}</a></td><td>${esc(x.reason)}${x.memo?'<div class="group-sub">'+esc(x.memo)+'</div>':''}</td><td>${esc(x.status)}</td><td>${can(1)?`<button class="btn sm" onclick="accountReq('${esc(x.id)}','${esc(id)}','${esc(x.status)}')">처리</button>`:''}</td></tr>`).join(''))}
+ ${tb('1:1 문의','<th>일시</th><th>제목/내용</th><th>상태</th><th>답변</th><th></th>',d.inquiries.map(x=>`<tr><td class="mono">${esc((x.created||'').replace('T',' '))}</td><td><b>${esc(x.title)}</b><div>${esc(x.body)}</div></td><td>${esc(x.status)}</td><td>${esc(x.answer||'-')}</td><td>${can(1)?`<button class="btn sm" onclick="accountAnswer('inq','${esc(x.id)}','${esc(id)}')">${x.answer?'수정':'답변'}</button>`:''}</td></tr>`).join(''))}
+ ${tb('상품 Q&A','<th>일시</th><th>상품/문의</th><th>상태</th><th>답변</th><th></th>',d.pqna.map(x=>`<tr><td class="mono">${esc((x.created||'').replace('T',' '))}</td><td><b class="mono">${esc(x.product_id)}</b><div>${esc(x.question)}</div></td><td>${esc(x.status)}</td><td>${esc(x.answer||'-')}</td><td>${can(1)?`<button class="btn sm" onclick="accountAnswer('pqna','${esc(x.id)}','${esc(id)}')">${x.answer?'수정':'답변'}</button>`:''}</td></tr>`).join(''))}
  ${tb('연락처','<th>유형</th><th>값</th><th>인증</th>',d.contacts.map(x=>`<tr><td>${esc(x.kind)}</td><td class="mono">${esc(x.value)}</td><td>${x.verified?'인증':'미인증'}</td></tr>`).join(''))}
  ${tb('연결 계정','<th>방법</th><th>이메일</th><th>최근 로그인</th>',d.identities.map(x=>`<tr><td>${esc(x.provider)}</td><td class="mono">${esc(x.email)}</td><td class="mono">${esc((x.last_login||'-').replace('T',' '))}</td></tr>`).join(''))}
- ${tb('주문','<th>주문번호</th><th>일시</th><th>상태</th><th class="right">금액</th>',d.orders.map(x=>`<tr onclick="openOrder('${esc(x.order_id)}')" style="cursor:pointer"><td class="mono">${esc(x.order_id)}</td><td class="mono">${esc((x.created||'').replace('T',' '))}</td><td>${esc(x.status)}</td><td class="right mono">${won(x.amount)}</td></tr>`).join(''))}
+ ${tb('주문·거래증빙','<th>주문번호</th><th>일시</th><th>상태</th><th class="right">금액</th><th></th>',d.orders.map(x=>`<tr><td class="mono"><a href="#" onclick="openOrder('${esc(x.order_id)}');return false">${esc(x.order_id)}</a></td><td class="mono">${esc((x.created||'').replace('T',' '))}</td><td>${esc(x.status)}</td><td class="right mono">${won(x.amount)}</td><td><a class="btn sm ghost" target="_blank" href="/admin/api/orders/${encodeURIComponent(x.order_id)}/receipt">명세서</a></td></tr>`).join(''))}
+ ${tb('배송지 (원문은 사유를 남기고 조회)','<th>구분</th><th>받는분</th><th>연락처</th><th>등록일</th><th></th>',d.addresses.map(x=>`<tr><td>${esc(x.label)} ${x.default?'<span class="meta-chip">기본</span>':''}</td><td>${esc(x.rname)}</td><td class="mono">${esc(x.phone)}</td><td class="mono">${esc((x.created||'').slice(0,10))}</td><td>${can(2)?`<button class="btn sm ghost" onclick="accountAction('${esc(id)}','delete_address','${esc(x.id)}','배송지를 삭제할까요?')">삭제</button>`:''}</td></tr>`).join(''))}
+ ${tb('좋아요','<th>일시</th><th>상품</th><th class="right">가격</th><th></th>',d.likes.map(x=>`<tr><td class="mono">${esc((x.created||'').replace('T',' '))}</td><td>${esc(x.name)}<div class="group-sub mono">${esc(x.product_id)}</div></td><td class="right mono">${x.price?won(x.price):'-'}</td><td>${can(1)?`<button class="btn sm ghost" onclick="accountAction('${esc(id)}','remove_like','${esc(x.id)}','고객 요청으로 좋아요를 삭제할까요?')">삭제</button>`:''}</td></tr>`).join(''))}
+ ${tb('재입고 알림','<th>일시</th><th>상품</th><th>상태</th><th></th>',d.restock.map(x=>`<tr><td class="mono">${esc((x.created||'').replace('T',' '))}</td><td>${esc(x.name)}<div class="group-sub mono">${esc(x.product_id)}</div></td><td>${x.notified?'발송완료':'<b style="color:#E8332A">발송대기</b>'}</td><td>${can(1)?`${x.notified?`<button class="btn sm ghost" onclick="accountAction('${esc(id)}','reset_restock','${esc(x.id)}','다시 발송대기로 바꿀까요?')">대기로</button>`:''} <button class="btn sm ghost" onclick="accountAction('${esc(id)}','cancel_restock','${esc(x.id)}','알림 신청을 해지할까요?')">해지</button>`:''}</td></tr>`).join(''))}
+ ${tb('로그인 기기·세션','<th>최근활동</th><th>IP</th><th>기기</th><th>만료</th><th></th>',d.sessions.map(x=>`<tr><td class="mono">${esc((x.last_seen||x.created||'').replace('T',' '))}</td><td class="mono">${esc(x.ip)}</td><td style="max-width:260px">${esc(x.device)}</td><td class="mono">${esc((x.expires||'').replace('T',' '))}</td><td>${can(1)?`<button class="btn sm ghost" onclick="accountAction('${esc(id)}','revoke_session','${esc(x.id)}','이 기기를 로그아웃할까요?')">종료</button>`:''}</td></tr>`).join(''))}
+ <div style="margin-top:12px"><b>관심매장</b> <span class="meta-chip">${c.fav_store?'성수 등록':'미등록'}</span>${can(1)?` <button class="btn sm ghost" onclick="accountFav('${esc(id)}',${c.fav_store?0:1})">${c.fav_store?'해제':'등록'}</button>`:''}${can(1)&&d.sessions.length?` <button class="btn sm red" onclick="accountAction('${esc(id)}','revoke_session','','이 고객의 모든 기기를 로그아웃할까요?',true)">모든 기기 종료</button>`:''}</div>
  ${tb('포인트 원장','<th>일시</th><th>유형</th><th class="right">증감</th><th class="right">잔액</th><th>사유</th>',d.points.map(x=>`<tr><td class="mono">${esc((x.created_at||'').replace('T',' '))}</td><td>${esc(x.event_type)}</td><td class="right mono">${x.amount>0?'+':''}${x.amount}</td><td class="right mono">${x.balance_after}</td><td>${esc(x.reason)}</td></tr>`).join(''))}
  ${tb('동의 이력','<th>일시</th><th>항목</th><th>상태</th><th>버전/경로</th>',d.consents.map(x=>`<tr><td class="mono">${esc((x.created_at||'').replace('T',' '))}</td><td>${esc(x.consent_type)}</td><td>${x.granted?'동의':'철회'}</td><td>${esc(x.policy_version)} · ${esc(x.source)}</td></tr>`).join(''))}
  ${d.security.length?tb('보안 이벤트','<th>일시</th><th>이벤트</th><th>IP</th><th>상세</th>',d.security.map(x=>`<tr><td class="mono">${esc((x.created_at||'').replace('T',' '))}</td><td>${esc(x.event_type)}</td><td class="mono">${esc(x.ip)}</td><td>${esc(x.detail)}</td></tr>`).join('')):''}
  <div style="display:flex;justify-content:flex-end;gap:7px;margin-top:16px;flex-wrap:wrap">${can(3)&&c.status!=='MERGED'&&c.status!=='WITHDRAWN'?`<button class="btn ghost" onclick="mergeAccount('${esc(id)}','${esc(c.customer_no)}')">다른 계정으로 병합</button>`:''}${can(2)?`<button class="btn ghost" onclick="revealAccount('${esc(id)}')">개인정보 원문 조회</button>${c.status==='ACTIVE'?`<button class="btn ghost" onclick="adjustAccountPoints('${esc(id)}','${esc(c.customer_no)}')">포인트 조정</button>`:''}<button class="btn ${c.status==='ACTIVE'?'red':'ghost'}" onclick="setAccountStatus('${esc(id)}','${c.status==='ACTIVE'?'LOCKED':'ACTIVE'}')">${c.status==='ACTIVE'?'계정 잠금':'잠금 해제'}</button>`:''}<button class="btn ghost" onclick="closeM()">닫기</button></div>`;
  $('#mbg').style.display='flex'}catch(e){toast(e.message)}}
+async function saveAccountMemo(cid){try{await api('/admin/api/accounts/'+encodeURIComponent(cid)+'/mypage-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save_memo',memo:$('#acmemo').value})});toast('메모를 저장했습니다');loadAccounts(accountPage)}catch(e){toast(e.message)}}
+async function accountAction(cid,action,id,msg,all){if(msg&&!confirm(msg))return;try{await api('/admin/api/accounts/'+encodeURIComponent(cid)+'/mypage-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,id,all:!!all})});toast('처리했습니다');openAccount(cid);loadAccounts(accountPage)}catch(e){toast(e.message)}}
+async function accountFav(cid,v){try{await api('/admin/api/accounts/'+encodeURIComponent(cid)+'/mypage-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'set_fav_store',value:v})});toast('관심매장을 반영했습니다');openAccount(cid)}catch(e){toast(e.message)}}
+async function accountAnswer(kind,qid,cid){const ans=prompt('고객에게 표시할 답변을 입력하세요');if(!ans)return;try{await api('/admin/api/cs/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id:qid,answer:ans})});toast('답변을 등록했습니다');openAccount(cid);loadAccounts(accountPage)}catch(e){toast(e.message)}}
+async function accountReq(qid,cid,cur){const st=prompt('상태: 접수 / 처리중 / 완료 / 거절',cur==='접수'?'처리중':'완료');if(!st)return;const memo=prompt('고객에게 표시할 메모 (선택)','')||'';try{await api('/admin/api/cs/req-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:qid,status:st,memo})});toast('요청을 처리했습니다');openAccount(cid);loadAccounts(accountPage)}catch(e){toast(e.message)}}
 async function revealAccount(id){const reason=prompt('개인정보 원문 조회 사유를 입력하세요');if(!reason)return;try{const d=await api('/admin/api/accounts/'+encodeURIComponent(id)+'/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});alert(d.contacts.map(x=>x.kind+': '+x.value).join('\n')+'\n\n배송지\n'+d.addresses.map(x=>'['+x.zip+'] '+x.addr1+' '+x.addr2).join('\n'))}catch(e){toast(e.message)}}
 async function mergeAccount(source,sourceNo){const target=prompt('병합 후 남길 활성 고객번호를 입력하세요\n예: CUS-2026-XXXXXXXX');if(!target)return;const confirmNo=prompt('되돌릴 수 없습니다. 병합되어 사라질 고객번호를 다시 입력하세요',sourceNo);if(confirmNo!==sourceNo)return toast('고객번호가 일치하지 않습니다');try{await api('/admin/api/accounts/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:source,target_id:target,confirm:confirmNo})});toast('계정과 주문·동의·포인트 이력을 병합했습니다');closeM();loadAccounts(accountPage)}catch(e){toast(e.message)}}
 async function setAccountStatus(id,status){if(!confirm(status==='LOCKED'?'계정을 잠그고 모든 세션을 종료할까요?':'계정 잠금을 해제할까요?'))return;try{await api('/admin/api/accounts/'+encodeURIComponent(id)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});toast('계정 상태를 변경했습니다');closeM();loadAccounts(accountPage)}catch(e){toast(e.message)}}
@@ -4772,6 +4811,20 @@ def api_accounts(request: Request):
     if p.get('segment')=='buyer': where.append('EXISTS(SELECT 1 FROM orders o WHERE o.customer_id=c.id)')
     if p.get('issue')=='duplicate':
         where.append("EXISTS(SELECT 1 FROM members m1 JOIN members m2 ON lower(m1.email)=lower(m2.email) AND m1.id<>m2.id WHERE m1.customer_id=c.id AND COALESCE(m1.email,'')<>'')")
+    support=p.get('support') or ''
+    support_where={
+        'request': "EXISTS(SELECT 1 FROM member_requests x WHERE x.customer_id=c.id AND x.status IN ('접수','처리중'))",
+        'inquiry': "EXISTS(SELECT 1 FROM member_inquiries x WHERE x.customer_id=c.id AND x.status<>'답변완료')",
+        'pqna': "EXISTS(SELECT 1 FROM member_pqna x WHERE x.customer_id=c.id AND x.status<>'답변완료')",
+        'restock': "EXISTS(SELECT 1 FROM member_restock x WHERE x.customer_id=c.id AND x.notified=0)",
+        'liked': "EXISTS(SELECT 1 FROM member_likes x WHERE x.customer_id=c.id)",
+        'sessions': "EXISTS(SELECT 1 FROM member_sessions s JOIN members m ON m.id=s.member_id WHERE m.customer_id=c.id AND s.expires>?)",
+    }
+    if support=='pending':
+        where.append("(EXISTS(SELECT 1 FROM member_requests x WHERE x.customer_id=c.id AND x.status IN ('접수','처리중')) OR EXISTS(SELECT 1 FROM member_inquiries x WHERE x.customer_id=c.id AND x.status<>'답변완료') OR EXISTS(SELECT 1 FROM member_pqna x WHERE x.customer_id=c.id AND x.status<>'답변완료'))")
+    elif support in support_where:
+        where.append(support_where[support])
+        if support=='sessions': args.append(now_iso())
     w=(' WHERE '+' AND '.join(where)) if where else ''
     page=max(1,int(p.get('page',1) or 1)); size=25
     total=num((one('SELECT COUNT(*) AS c FROM customer_profiles c'+w,tuple(args)) or {}).get('c'))
@@ -4782,13 +4835,29 @@ def api_accounts(request: Request):
         phone=one("SELECT value FROM customer_contacts WHERE customer_id=? AND kind='PHONE' AND is_primary=1",(c['id'],)) or {}
         email=one("SELECT value FROM customer_contacts WHERE customer_id=? AND kind='EMAIL' AND is_primary=1",(c['id'],)) or {}
         stats=one("SELECT COUNT(*) AS cnt,COALESCE(SUM(CASE WHEN status='PAID' THEN amount ELSE 0 END),0) AS spend,MAX(created) AS last_order FROM orders WHERE customer_id=?",(c['id'],)) or {}
+        mp=one("SELECT "
+               "(SELECT COUNT(*) FROM member_requests WHERE customer_id=? AND status IN ('접수','처리중')) AS req,"
+               "(SELECT COUNT(*) FROM member_inquiries WHERE customer_id=? AND status<>'답변완료') AS inq,"
+               "(SELECT COUNT(*) FROM member_pqna WHERE customer_id=? AND status<>'답변완료') AS pqna,"
+               "(SELECT COUNT(*) FROM member_restock WHERE customer_id=? AND notified=0) AS restock,"
+               "(SELECT COUNT(*) FROM member_likes WHERE customer_id=?) AS likes,"
+               "(SELECT COUNT(*) FROM member_sessions s JOIN members m ON m.id=s.member_id WHERE m.customer_id=? AND s.expires>?) AS sessions",
+               (c['id'],c['id'],c['id'],c['id'],c['id'],c['id'],now_iso())) or {}
         out.append({'id':c['id'],'customer_no':c.get('customer_no') or '','name':c.get('name') or '',
                     'status':c.get('status') or 'ACTIVE','grade':c.get('grade') or 'WELCOME',
                     'phone':_mask_phone(phone.get('value') or ''),'email':_mask_email(email.get('value') or ''),
                     'providers':[x['provider'] for x in ids],'last_login':max([x.get('last_login_at') or '' for x in ids] or ['']),
                     'orders':num(stats.get('cnt')),'spend':num(stats.get('spend')),'last_order':(stats.get('last_order') or '')[:10],
-                    'points':num(c.get('points_balance')),'marketing':num(c.get('marketing_ok'))})
-    return {'total':total,'page':page,'size':size,'rows':out}
+                    'points':num(c.get('points_balance')),'marketing':num(c.get('marketing_ok')),
+                    'support':{k:num(mp.get(k)) for k in ('req','inq','pqna','restock','likes','sessions')}})
+    queues={
+        'request':num((one("SELECT COUNT(*) AS c FROM member_requests WHERE status IN ('접수','처리중')") or {}).get('c')),
+        'inquiry':num((one("SELECT COUNT(*) AS c FROM member_inquiries WHERE status<>'답변완료'") or {}).get('c')),
+        'pqna':num((one("SELECT COUNT(*) AS c FROM member_pqna WHERE status<>'답변완료'") or {}).get('c')),
+        'restock':num((one("SELECT COUNT(*) AS c FROM member_restock WHERE notified=0") or {}).get('c')),
+        'locked':num((one("SELECT COUNT(*) AS c FROM customer_profiles WHERE status='LOCKED'") or {}).get('c')),
+    }
+    return {'total':total,'page':page,'size':size,'rows':out,'queues':queues}
 
 @admin_router.get('/admin/api/accounts/{cid}')
 def api_account_detail(cid: str, request: Request):
@@ -4801,14 +4870,51 @@ def api_account_detail(cid: str, request: Request):
     pts=rows('SELECT event_type,amount,balance_after,reason,created_at,by_admin FROM point_ledger WHERE customer_id=? ORDER BY created_at DESC LIMIT 100',(cid,))
     cons=rows('SELECT consent_type,policy_version,granted,source,created_at FROM consent_history WHERE customer_id=? ORDER BY created_at DESC LIMIT 100',(cid,))
     sec=rows('SELECT event_type,ip,detail,created_at FROM account_security_events WHERE customer_id=? ORDER BY created_at DESC LIMIT 100',(cid,)) if RANK.get(a['role'],0)>=2 else []
+    addresses=rows('SELECT id,label,rname,phone,is_default,created FROM member_addresses WHERE customer_id=? ORDER BY is_default DESC,created DESC LIMIT 50',(cid,))
+    likes=rows('SELECT id,product_id,page,pname,pprice,created FROM member_likes WHERE customer_id=? ORDER BY created DESC LIMIT 100',(cid,))
+    restock=rows('SELECT id,product_id,phone,created,notified FROM member_restock WHERE customer_id=? ORDER BY created DESC LIMIT 100',(cid,))
+    requests=rows('SELECT id,order_id,rtype,reason,created,status,admin_memo,updated FROM member_requests WHERE customer_id=? ORDER BY created DESC LIMIT 100',(cid,))
+    inquiries=rows('SELECT id,order_id,title,body,created,status,answer,answered_at,answered_by FROM member_inquiries WHERE customer_id=? ORDER BY created DESC LIMIT 100',(cid,))
+    pqna=rows('SELECT id,product_id,question,created,status,answer,answered_at,answered_by FROM member_pqna WHERE customer_id=? ORDER BY created DESC LIMIT 100',(cid,))
+    sessions=rows('SELECT s.id,s.created,s.expires,s.ip,s.user_agent,s.last_seen FROM member_sessions s JOIN members m ON m.id=s.member_id WHERE m.customer_id=? ORDER BY s.last_seen DESC,s.created DESC',(cid,))
+    members=rows('SELECT id,provider,email,name,phone,phone_verified,fav_store,status,last_login_at FROM members WHERE customer_id=? ORDER BY created',(cid,))
+    def product_label(pid, fallback=''):
+        if fallback: return fallback
+        try:
+            nm=_state['pname'] or 'id'; p=one('SELECT %s AS name FROM products WHERE id=?' % nm,(pid,)) or {}
+            return p.get('name') or pid
+        except Exception: return pid
+    def mask_ip(v):
+        s=str(v or '')
+        if ':' in s: return s.split(':',1)[0]+':****'
+        p=s.split('.'); return '.'.join(p[:2]+['***','***']) if len(p)==4 else s
+    req_kr={'cancel':'취소','return':'반품','exchange':'교환'}
     return {'customer':{'id':c['id'],'customer_no':c.get('customer_no'),'name':c.get('name') or '',
                         'status':c.get('status'),'grade':c.get('grade'),'points':num(c.get('points_balance')),
-                        'marketing':num(c.get('marketing_ok')),'created':c.get('created_at'),'withdrawn':c.get('withdrawn_at') or ''},
+                        'marketing':num(c.get('marketing_ok')),'created':c.get('created_at'),'withdrawn':c.get('withdrawn_at') or '',
+                        'admin_memo':c.get('admin_memo') or '',
+                        'fav_store':1 if any(num(x.get('fav_store')) for x in members) else 0},
             'contacts':[{'kind':x['kind'],'value':_mask_phone(x['value']) if x['kind']=='PHONE' else _mask_email(x['value']),
                          'verified':num(x['verified']),'primary':num(x['is_primary']),'verified_at':x.get('verified_at') or ''} for x in contacts],
             'identities':[{'provider':x['provider'],'email':_mask_email(x.get('email_norm') or ''),'verified':num(x.get('email_verified')),
                            'created':x.get('created_at') or '','last_login':x.get('last_login_at') or ''} for x in identities],
-            'orders':os,'points':pts,'consents':cons,'security':sec}
+            'orders':os,'points':pts,'consents':cons,'security':sec,
+            'addresses':[{'id':x['id'],'label':x.get('label') or '배송지','rname':((x.get('rname') or '')[:1]+'**') if x.get('rname') else '',
+                          'phone':_mask_phone(x.get('phone') or ''),'default':num(x.get('is_default')),'created':x.get('created') or ''} for x in addresses],
+            'likes':[{'id':x['id'],'product_id':x.get('product_id') or '','name':product_label(x.get('product_id') or '',x.get('pname') or ''),
+                      'page':x.get('page') or '','price':num(x.get('pprice')),'created':x.get('created') or ''} for x in likes],
+            'restock':[{'id':x['id'],'product_id':x.get('product_id') or '','name':product_label(x.get('product_id') or ''),
+                        'phone':_mask_phone(x.get('phone') or ''),'notified':num(x.get('notified')),'created':x.get('created') or ''} for x in restock],
+            'requests':[{'id':x['id'],'order_id':x.get('order_id') or '','type':req_kr.get(x.get('rtype'),x.get('rtype')),
+                         'reason':x.get('reason') or '','status':x.get('status') or '','memo':x.get('admin_memo') or '',
+                         'created':x.get('created') or '','updated':x.get('updated') or ''} for x in requests],
+            'inquiries':[dict(x) for x in inquiries], 'pqna':[dict(x) for x in pqna],
+            'sessions':[{'id':x['id'],'created':x.get('created') or '','expires':x.get('expires') or '',
+                         'last_seen':x.get('last_seen') or '','ip':mask_ip(x.get('ip')),
+                         'device':str(x.get('user_agent') or '')[:100]} for x in sessions],
+            'members':[{'id':x['id'],'provider':x.get('provider') or '','email':_mask_email(x.get('email') or ''),
+                        'name':x.get('name') or '','phone':_mask_phone(x.get('phone') or ''),'verified':num(x.get('phone_verified')),
+                        'status':x.get('status') or '','last_login':x.get('last_login_at') or ''} for x in members]}
 
 @admin_router.post('/admin/api/accounts/{cid}/reveal')
 def api_account_reveal(cid: str, request: Request, body: dict=Body(...)):
@@ -4832,6 +4938,43 @@ def api_account_status(cid: str, request: Request, body: dict=Body(...)):
     if st=='LOCKED': run('DELETE FROM member_sessions WHERE member_id IN (SELECT id FROM members WHERE customer_id=?)',(cid,))
     audit(a,'계정상태',c.get('customer_no') or cid,st)
     return {'ok':True,'status':st}
+
+@admin_router.post('/admin/api/accounts/{cid}/mypage-action')
+def api_account_mypage_action(cid: str, request: Request, body: dict=Body(...)):
+    """고객 마이페이지 지원 작업. 법적 동의이력·포인트원장은 별도 API로만 처리한다."""
+    a=get_actor(request); need(a,1,'마이페이지 고객지원')
+    c=one('SELECT customer_no,status FROM customer_profiles WHERE id=?',(cid,))
+    if not c: raise HTTPException(404,'고객을 찾을 수 없습니다')
+    action=(body.get('action') or '').strip(); rid=(body.get('id') or '').strip()
+    label=''; detail=''
+    if action=='save_memo':
+        memo=(body.get('memo') or '').strip()[:1000]
+        run('UPDATE customer_profiles SET admin_memo=?,updated_at=? WHERE id=?',(memo,now_iso(),cid))
+        label='고객메모'; detail=memo[:120]
+    elif action=='revoke_session':
+        if body.get('all'):
+            n=run('DELETE FROM member_sessions WHERE member_id IN (SELECT id FROM members WHERE customer_id=?)',(cid,)); detail='전체'
+        else:
+            n=run('DELETE FROM member_sessions WHERE id=? AND member_id IN (SELECT id FROM members WHERE customer_id=?)',(rid,cid)); detail=rid[:12]
+        label='세션종료'; detail+='·%d개' % num(n)
+    elif action in ('remove_like','cancel_restock','reset_restock','delete_address'):
+        table={'remove_like':'member_likes','cancel_restock':'member_restock','reset_restock':'member_restock','delete_address':'member_addresses'}[action]
+        if action=='delete_address': need(a,2,'고객 배송지 삭제')
+        if action=='reset_restock':
+            n=run('UPDATE member_restock SET notified=0 WHERE id=? AND customer_id=?',(rid,cid)); label='재입고알림 대기로 복원'
+        else:
+            n=run('DELETE FROM %s WHERE id=? AND customer_id=?' % table,(rid,cid))
+            label={'remove_like':'좋아요 삭제','cancel_restock':'재입고알림 해지','delete_address':'배송지 삭제'}[action]
+        if not n: raise HTTPException(404,'대상을 찾을 수 없습니다')
+        detail=rid
+    elif action=='set_fav_store':
+        v=1 if body.get('value') else 0
+        run('UPDATE members SET fav_store=?,updated_at=? WHERE customer_id=?',(v,now_iso(),cid))
+        label='관심매장'; detail='등록' if v else '해제'
+    else:
+        raise HTTPException(400,'지원하지 않는 작업입니다')
+    audit(a,label,c.get('customer_no') or cid,detail)
+    return {'ok':True,'action':action}
 
 @admin_router.post('/admin/api/accounts/merge')
 def api_accounts_merge(request: Request, body: dict=Body(...)):

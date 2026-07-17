@@ -5533,12 +5533,82 @@ def api_ticker_save(request: Request, body: dict = Body(...)):
 # ─────────────────────────────────────────────────────────────
 HOME_BLOCKS = [
     ('collections', '컬렉션 — 세계관으로 쇼핑하기'),
+    ('kpop',        'KPOP — 새로 들어온 앨범 (K2G 카탈로그 · 최신 8종 자동)'),
     ('space',       '공간 소개 — 하나의 건물, 완성되는 팬 경험 (층별 안내)'),
     ('kfood',       'K-FOOD — 분식을 배송합니다 (떡볶이·김밥·BOWL)'),
     ('journal',     '저널 & LIVE'),
     ('trust',       '신뢰 스트립 — 전 세계 배송·DDP·차트 집계 USP'),
 ]
 HOME_BLOCK_LABELS = dict(HOME_BLOCKS)
+
+_HOME_KPOP_CACHE = {'t': 0.0, 'body': None}
+
+def _home_kpop_html():
+    """홈 KPOP 코너: K2G 카탈로그 최신 앨범 8종 카드 섹션(서버 렌더 · 60초 캐시).
+    데이터 없음/실패 시 '' → 블록 자체가 노출되지 않음(무해)."""
+    try:
+        if _HOME_KPOP_CACHE['body'] is not None and time.time() - _HOME_KPOP_CACHE['t'] < 60:
+            return _HOME_KPOP_CACHE['body']
+        ensure_ready()
+        if not _state['pcols'] or not _state['pname'] or not _state['pprice']:
+            return ''
+        rs = rows("SELECT id, %s AS name, %s AS price, img, soldout, created_at "
+                  "FROM products WHERE id LIKE ? AND COALESCE(soldout,0)=0 "
+                  "ORDER BY COALESCE(created_at,'') DESC, id DESC LIMIT 16"
+                  % (_state['pname'], _state['pprice']), ('k2g::%',))
+        rs = [r for r in rs if num(r.get('price')) > 0][:8]
+        if not rs:
+            _HOME_KPOP_CACHE.update(t=time.time(), body='')
+            return ''
+        def e(x):
+            return (str(x or '').replace('&', '&amp;').replace('<', '&lt;')
+                    .replace('>', '&gt;').replace('"', '&quot;'))
+        cards = []
+        for r in rs:
+            uid = str(r['id'])[5:]
+            img = str(r.get('img') or '').strip()
+            if img and not img.startswith(('http://', 'https://', '/')):
+                img = 'https://www.kpop2gether.com/shopimages/912enter/' + img
+            href = '/album-detail?uid=' + urllib.parse.quote(uid, safe='')
+            imtag = ('<img src="%s" alt="%s" loading="lazy">' % (e(img), e(r.get('name')))
+                     if img else '<span class="kp-noimg">ALBUM</span>')
+            newtag = '<span class="kp-new">NEW</span>' if is_new_product(r.get('created_at')) else ''
+            cards.append('<a class="kp-card" href="%s"><div class="kp-img">%s%s</div>'
+                         '<div class="kp-nm">%s</div><div class="kp-pr">\u20a9%s</div></a>'
+                         % (e(href), imtag, newtag, e(r.get('name')), format(num(r.get('price')), ',')))
+        out = (
+            '<section id="kpop-home">\n'
+            '<style>'
+            '#kpop-home .kp-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}'
+            '#kpop-home .kp-card{display:block;background:#fff;border:1px solid var(--line);'
+            'padding:14px 14px 16px;text-decoration:none;color:var(--ink);position:relative;'
+            'transition:transform .15s ease,box-shadow .15s ease}'
+            '#kpop-home .kp-card:hover{transform:translateY(-3px);box-shadow:0 10px 24px rgba(20,20,20,.08)}'
+            '#kpop-home .kp-img{height:190px;display:flex;align-items:center;justify-content:center;'
+            'overflow:hidden;background:#fff;margin-bottom:12px;position:relative}'
+            '#kpop-home .kp-img img{max-width:100%;max-height:100%;object-fit:contain}'
+            '#kpop-home .kp-noimg{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--steel)}'
+            '#kpop-home .kp-new{position:absolute;top:0;left:0;background:var(--ink);color:#fff;'
+            'font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:4px 8px}'
+            '#kpop-home .kp-nm{font-size:13px;font-weight:700;line-height:1.45;min-height:38px;'
+            'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}'
+            '#kpop-home .kp-pr{font-family:var(--mono);font-size:13.5px;margin-top:8px}'
+            '@media(max-width:1024px){#kpop-home .kp-grid{grid-template-columns:repeat(2,1fr)}}'
+            '@media(max-width:640px){#kpop-home .kp-grid{gap:12px}#kpop-home .kp-img{height:150px}}'
+            '</style>\n'
+            '  <div class="sec-head">\n'
+            '    <div>\n'
+            '      <div class="kicker">KPOP \u00b7 KPOP2GETHER \u00d7 \ub9f5\ub2ecSEOUL</div>\n'
+            '      <h2>\uc0c8\ub85c \ub4e4\uc5b4\uc628 \uc568\ubc94</h2>\n'
+            '    </div>\n'
+            '    <a class="more" href="/kpop">KPOP \uc804\uccb4 \u2192</a>\n'
+            '  </div>\n'
+            '  <div class="kp-grid">' + ''.join(cards) + '</div>\n'
+            '</section>')
+        _HOME_KPOP_CACHE.update(t=time.time(), body=out)
+        return out
+    except Exception:
+        return ''
 
 def homeblocks_conf():
     """저장 순서/노출 설정. 레지스트리 기준으로 정규화(누락분은 노출 상태로 뒤에 붙음)."""
@@ -5592,7 +5662,8 @@ def _homeblocks_found(html):
         e = html.find('</section>', i)
         if s >= 0 and e > 0:
             found['collections'] = _hb_span_with_comment(html, s, e + len('</section>'))
-    for bid, marker in (('kfood', '<section id="kfood"'), ('journal', '<section id="journal"')):
+    for bid, marker in (('kfood', '<section id="kfood"'), ('journal', '<section id="journal"'),
+                        ('kpop', '<section id="kpop-home">')):
         s = html.find(marker)
         if s >= 0:
             e = html.find('</section>', s)
@@ -5610,12 +5681,23 @@ def _homeblocks_apply(html, path=''):
         if not isinstance(html, str) or 'mzHero' not in html:
             return html                       # 홈이 아니면 통과
         conf = homeblocks_conf()
-        if conf['is_default']:
-            return html                       # 저장 이력 없음 → 원본 그대로
         found = _homeblocks_found(html)
+        if conf['is_default']:
+            # 저장 이력 없음 → 원본 순서 유지, KPOP 코너만 컬렉션 뒤에 기본 삽입
+            if 'kpop' in found or 'collections' not in found:
+                return html
+            kp = _home_kpop_html()
+            if not kp:
+                return html
+            e0 = found['collections'][1]
+            return html[:e0] + '\n\n' + kp + html[e0:]
         if not found:
             return html
         pieces = {bid: html[s:e] for bid, (s, e) in found.items()}
+        if 'kpop' not in pieces:
+            kp = _home_kpop_html()
+            if kp:
+                pieces['kpop'] = kp
         first = min(s for s, _ in found.values())
         out = html
         for _bid, (s, e) in sorted(found.items(), key=lambda kv: -kv[1][0]):

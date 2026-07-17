@@ -2349,6 +2349,29 @@ async function saveTicker(){try{
 
 
 /* ── NEW/DROPS 이벤트 허브 관리 ─────────────────────────────── */
+/* 대시보드 공용 이미지 업로드 헬퍼 — 상품 편집 폼과 동일 구현 (배너 탭 업로드도 이 함수를 사용) */
+function shrinkImage(file,maxDim=1600,quality=0.85){
+ return new Promise((resolve)=>{
+  if(!/^image\//.test(file.type)||file.type==='image/gif'){resolve(file);return;}
+  const img=new Image();const url=URL.createObjectURL(file);
+  img.onload=()=>{URL.revokeObjectURL(url);
+   let{width:w,height:h}=img;
+   if(w<=maxDim&&h<=maxDim&&file.size<600*1024){resolve(file);return;}
+   const s=Math.min(1,maxDim/Math.max(w,h));const cw=Math.round(w*s),ch=Math.round(h*s);
+   const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
+   cv.getContext('2d').drawImage(img,0,0,cw,ch);
+   cv.toBlob(b=>resolve(b&&b.size<file.size?new File([b],file.name.replace(/\.\w+$/,'')+'.jpg',{type:'image/jpeg'}):file),'image/jpeg',quality);
+  };
+  img.onerror=()=>{URL.revokeObjectURL(url);resolve(file);};
+  img.src=url;
+ });
+}
+async function uploadFile(file){
+ const small=await shrinkImage(file);
+ const fd=new FormData();fd.append('file',small,small.name||'image.jpg');
+ const r=await api('/admin/api/upload',{method:'POST',body:fd});
+ return r.url;
+}
 let DR=[],DRCATS=[];
 async function loadDrops(){try{const d=await api('/admin/api/drops');DR=d.rows;DRCATS=d.cats;
  const st={ON_SALE:['판매중','#0a7a3d'],UPCOMING:['판매예정','#9a6b00'],ENDED:['판매종료','#888']};

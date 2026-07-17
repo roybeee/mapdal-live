@@ -6203,6 +6203,12 @@ def _checkout_apply(html):
         '토스페이먼츠 안전결제 · 카드/간편결제 지원',
         'KG이니시스 안전결제 · 카드 · 계좌이체 · 간편결제 지원', 1)
 
+    # ── [5-2] 결제 모드 문구: 라이브 MID면 '테스트 모드' 경고 제거 (멱등) ──
+    _test_line = ('<br><span style="color:var(--red)">현재 테스트 모드 — '
+                  '실제 과금되지 않습니다 (라이브 키 전환 시 실결제)</span>')
+    if inicis_mid() != 'INIpayTest':
+        html = html.replace(_test_line, '', 1)
+
     # ── [6] 결제 실행부: 토스 requestPayment → INIStdPay 폼 POST ──
     #   /api/orders 응답의 od.inicis(서버 서명 파라미터)로 히든폼 생성 후 INIStdPay.pay().
     #   이후 인증→승인은 서버 /inicis/return 이 처리하고 /order-complete 로 리다이렉트.
@@ -6264,6 +6270,47 @@ def _checkout_apply(html):
         "    INIStdPay.pay('mpIniForm');   // 클릭 제스처 내 동기 호출 → 팝업 차단 회피")
     if _toss_handler in html:
         html = html.replace(_toss_handler, _ini_handler, 1)
+
+    # ── [8] 배송 방법 정리: 맵달드림(당일)·성수 1F 픽업 제거 → 일반배송만 (멱등) ──
+    html = html.replace(
+        '<label class="radio-item"><input type="radio" name="ship" value="dream">'
+        '<span class="rd"><b>맵달드림 — 서울 당일배송</b><small>21시 이전 주문 당일 처리</small></span>'
+        '<span class="rp">무료 (3만 이상)</span></label>', '', 1)
+    html = html.replace(
+        '<label class="radio-item"><input type="radio" name="ship" value="pickup">'
+        '<span class="rd"><b>성수 1F 픽업</b><small>1시간 내 준비 · 현장 특전 동봉</small></span>'
+        '<span class="rp">무료 + 특전</span></label>', '', 1)
+
+    # ── [9] 결제 금액 요약: 상품별 수량조절(−/+ 1~99)·삭제(✕) — localStorage 동기화 (멱등) ──
+    if 'function mpQty(' not in html:
+        html = html.replace(
+            "function renderSum(){",
+            "function mpSaveCart(){try{localStorage.setItem(CK,JSON.stringify(items))}catch(e){}\n"
+            "  var _c=items.reduce(function(a,i){return a+(i.q||0)},0);\n"
+            "  var _el=document.querySelector('.util .cart');if(_el)_el.textContent='CART \u00b7 '+_c;}\n"
+            "function mpQty(ix,d){var it=items[ix];if(!it)return;"
+            "it.q=Math.max(1,Math.min(99,(it.q||1)+d));mpSaveCart();renderSum();}\n"
+            "function mpRm(ix){if(!items[ix])return;items.splice(ix,1);mpSaveCart();renderSum();}\n"
+            "function renderSum(){", 1)
+        _old_render = (
+            "  document.getElementById('ckItems').innerHTML=items.length\n"
+            "    ? items.map(i=>`${i.n.replace(/</g,'&lt;').slice(0,34)}${i.n.length>34?'…':''} × ${i.q}`).join('<br>')\n"
+            "    : '장바구니가 비어 있습니다 — <a href=\"/shop\" style=\"text-decoration:underline\">쇼핑하러 가기</a>';")
+        _new_render = (
+            "  document.getElementById('ckItems').innerHTML=items.length\n"
+            "    ? items.map(function(i,ix){var nm=String(i.n).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;');\n"
+            "      return '<div style=\"display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px dashed var(--line)\">'\n"
+            "      +'<span style=\"flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\" title=\"'+nm+'\">'+nm+'</span>'\n"
+            "      +'<span style=\"display:inline-flex;border:1px solid var(--line);background:#fff;flex:none\">'\n"
+            "      +'<button type=\"button\" onclick=\"mpQty('+ix+',-1)\" aria-label=\"수량 줄이기\" style=\"width:22px;height:22px;border:none;background:#fff;cursor:pointer;line-height:1\">\u2212</button>'\n"
+            "      +'<span style=\"width:26px;text-align:center;line-height:22px;font-family:var(--mono)\">'+i.q+'</span>'\n"
+            "      +'<button type=\"button\" onclick=\"mpQty('+ix+',1)\" aria-label=\"수량 늘리기\" style=\"width:22px;height:22px;border:none;background:#fff;cursor:pointer;line-height:1\">+</button></span>'\n"
+            "      +'<span style=\"font-family:var(--mono);min-width:64px;text-align:right;flex:none\">'+fmt(i.p*i.q)+'</span>'\n"
+            "      +'<button type=\"button\" onclick=\"mpRm('+ix+')\" aria-label=\"삭제\" title=\"삭제\" style=\"border:none;background:none;color:var(--steel);cursor:pointer;font-size:14px;padding:0 2px;flex:none\">\u2715</button>'\n"
+            "      +'</div>';}).join('')\n"
+            "    : '장바구니가 비어 있습니다 — <a href=\"/shop\" style=\"text-decoration:underline\">쇼핑하러 가기</a>';")
+        if _old_render in html:
+            html = html.replace(_old_render, _new_render, 1)
 
     # ── [7] 실패 시 실제 사유(msg) 표시 — 서버가 /checkout?fail=1&msg=... 로 전달 ──
     html = html.replace(

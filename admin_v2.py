@@ -729,7 +729,8 @@ def api_order_detail(oid: str, request: Request):
     return {'order_id': r['order_id'], 'created': r.get('created'), 'status': r.get('status'),
             'fulfill': r.get('fulfill') or 'NEW', 'amount': num(r.get('amount')),
             'buyer': {'name': b.get('name', ''), 'phone': b.get('phone', ''), 'zip': b.get('zip', ''),
-                      'addr': (b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()},
+                      'addr': ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
+                               + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else ''))},
             'items': items, 'ship_method': r.get('ship_method', ''), 'tracking': r.get('tracking') or '',
             'admin_memo': r.get('admin_memo') or '', 'receipt': r.get('receipt_url') or '',
             'method': r.get('method') or '',
@@ -1293,7 +1294,8 @@ def api_orders_csv(request: Request):
         lines.append(','.join(esc_csv(v) for v in [
             r.get('order_id'), (r.get('created') or '')[:19].replace('T', ' '), r.get('status'), r.get('fulfill') or 'NEW',
             num(r.get('amount')), b.get('name', ''), b.get('phone', ''), b.get('zip', ''),
-            (b.get('addr1', '') + ' ' + b.get('addr2', '')).strip(), names,
+            ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
+             + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')), names,
             sum(num(it.get('q') or 1) for it in its), r.get('ship_method', ''), r.get('tracking') or '',
             r.get('admin_memo') or '', r.get('receipt_url') or '']))
     audit(a, 'CSV다운로드', 'orders', '%d건' % len(rs))
@@ -6250,7 +6252,8 @@ def _checkout_apply(html):
         "    phone:document.getElementById('bPhone').value.trim(),\n"
         "    zip:document.getElementById('zip').value.trim(),\n"
         "    addr1:document.getElementById('addr1').value.trim(),\n"
-        "    addr2:document.getElementById('addr2').value.trim()};\n"
+        "    addr2:document.getElementById('addr2').value.trim(),\n"
+        "    memo:(typeof mpMemo==='function'?mpMemo():'')};\n"
         "  const btn=document.getElementById('payBtn');btn.disabled=true;btn.textContent='주문 생성중…';\n"
         "  try{\n"
         "    // 동기 XHR: 응답을 받은 뒤에도 클릭 제스처가 유지되어 결제창이 팝업 차단되지 않음\n"
@@ -6311,6 +6314,39 @@ def _checkout_apply(html):
             "    : '장바구니가 비어 있습니다 — <a href=\"/shop\" style=\"text-decoration:underline\">쇼핑하러 가기</a>';")
         if _old_render in html:
             html = html.replace(_old_render, _new_render, 1)
+
+    # ── [10] 배송 메모: 프리셋 선택 + 공동현관 비밀번호/직접 입력 (멱등) ──
+    if 'mpMemoSel' not in html:
+        html = html.replace(
+            '<input class="f-input" id="addr2" placeholder="상세 주소 · 공동현관 비밀번호 등 배송 메모">',
+            '<input class="f-input" id="addr2" placeholder="상세 주소 (동·호수 등)">\n'
+            '          <select class="f-input" id="mpMemoSel" style="cursor:pointer">\n'
+            '            <option value="" selected>배송 메모 선택 (선택사항)</option>\n'
+            '            <option>문 앞에 놓아주세요</option>\n'
+            '            <option>경비실(관리실)에 맡겨주세요</option>\n'
+            '            <option>택배함에 넣어주세요</option>\n'
+            '            <option>부재 시 연락 주세요</option>\n'
+            '            <option>배송 전에 미리 연락 주세요</option>\n'
+            '            <option value="__door">공동현관 비밀번호 입력…</option>\n'
+            '            <option value="__custom">직접 입력…</option>\n'
+            '          </select>\n'
+            '          <input class="f-input" id="mpMemoTxt" maxlength="80" style="display:none" autocomplete="off">', 1)
+        html = html.replace(
+            "// ── 결제 실행 ──",
+            "// ── 배송 메모 (mpMemoSel) ──\n"
+            "function mpMemo(){var s=document.getElementById('mpMemoSel'),t=document.getElementById('mpMemoTxt');\n"
+            "  if(!s)return'';var v=s.value;\n"
+            "  if(v==='__door'){var x=t&&t.value.trim();return x?('공동현관 비밀번호: '+x):'';}\n"
+            "  if(v==='__custom')return (t&&t.value.trim())||'';\n"
+            "  return v;}\n"
+            "(function(){var s=document.getElementById('mpMemoSel'),t=document.getElementById('mpMemoTxt');\n"
+            "  if(!s||!t)return;\n"
+            "  s.addEventListener('change',function(){var v=s.value;\n"
+            "    if(v==='__door'){t.style.display='block';t.placeholder='공동현관 비밀번호 입력 (예: #1234*)';t.value='';t.focus();}\n"
+            "    else if(v==='__custom'){t.style.display='block';t.placeholder='배송 메모를 직접 입력해 주세요 (80자 이내)';t.value='';t.focus();}\n"
+            "    else{t.style.display='none';t.value='';}});\n"
+            "})();\n"
+            "// ── 결제 실행 ──", 1)
 
     # ── [7] 실패 시 실제 사유(msg) 표시 — 서버가 /checkout?fail=1&msg=... 로 전달 ──
     html = html.replace(
@@ -7154,7 +7190,8 @@ def api_m_order_detail(oid: str, request: Request):
     return {'order_id': oid, 'created': (r.get('created') or '')[:19].replace('T', ' '), 'step': st, 'status_kr': kr,
             'amount': num(r.get('amount')), 'ship_method': r.get('ship_method') or '',
             'tracking': r.get('tracking') or '', 'receipt': r.get('receipt_url') or '',
-            'addr': '[%s] %s %s' % (b.get('zip', ''), b.get('addr1', ''), b.get('addr2', '')),
+            'addr': ('[%s] %s %s' % (b.get('zip', ''), b.get('addr1', ''), b.get('addr2', ''))
+                     + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
             'items': [{'name': it.get('n') or it.get('name') or it.get('id', ''), 'qty': num(it.get('q') or 1),
                        'price': num(it.get('p') or it.get('price') or 0)} for it in jload(r.get('items'), [])],
             'can_cancel': (r.get('status') == 'PENDING') or (r.get('status') == 'PAID' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING')),

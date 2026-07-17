@@ -1803,6 +1803,11 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="panel"><h3>LED 드롭 티커 <span class="tag">저장 즉시 전 페이지 반영</span></h3>
   <div class="hint" style="margin-bottom:10px">한 줄에 한 항목 · <b>**별표 두 개**</b>로 감싸면 흰색 강조 · 항목을 전부 지우고 저장하면 사이트에서 티커가 숨겨집니다. 항목 수가 바뀌어도 흐르는 속도는 일정하게 자동 조절됩니다.</div>
   <div id="tkbox" class="loading">불러오는 중…</div></div></section>
+<section id="t-drops" style="display:none">
+  <div class="panel"><h3>NEW/DROPS 이벤트 <span class="tag">메이크스타형 이벤트 허브 · 저장 즉시 반영</span></h3>
+  <div class="hint" style="margin-bottom:10px">판매 시작·종료·발표 시각만 입력하면 <b>판매예정 → 판매중 → 판매종료 → 당첨자발표</b> 상태가 시각 기준으로 자동 전환됩니다. 당첨자 명단은 한 줄에 한 명 — <b>주문번호</b> 또는 <b>주문번호,이름</b> 또는 <b>주문번호,이름,뱃지</b> 형식이며 이름은 사이트에서 자동 마스킹(홍*동)되어 표시됩니다.</div>
+  <div class="toolbar" style="margin-bottom:12px"><button class="btn" onclick="dropEdit(0)">+ 새 이벤트</button><a class="btn ghost" href="/new-drops" target="_blank" style="text-decoration:none">사이트에서 확인</a></div>
+  <div id="dropList" class="loading">불러오는 중…</div></div></section>
 <section id="t-seo" style="display:none">
   <div class="panel"><h3>검색엔진 소유확인·설명 <span class="tag">저장 즉시 전 페이지 반영</span></h3>
   <div class="hint" style="margin-bottom:10px">네이버 서치어드바이저·구글 서치콘솔에서 발급받은 <b>HTML 태그(메타태그) 인증 코드</b>를 붙여넣으세요. 태그 전체를 붙여넣어도 코드만 자동 추출됩니다. 저장 후 각 콘솔에서 [소유확인]을 누르면 됩니다.</div>
@@ -1874,8 +1879,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),pages:loadPages,ticker:loadTicker,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>loadAccounts(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>loadAccounts(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -2341,6 +2346,81 @@ async function saveTicker(){try{
  const d=await api('/admin/api/ticker/save',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({items:tkItems(),speed:tkSpd()})});
  toast('저장 완료 — 전 페이지 즉시 반영 ('+d.items.length+'개 항목)');loadTicker()}catch(e){toast(e.message)}}
+
+
+/* ── NEW/DROPS 이벤트 허브 관리 ─────────────────────────────── */
+let DR=[],DRCATS=[];
+async function loadDrops(){try{const d=await api('/admin/api/drops');DR=d.rows;DRCATS=d.cats;
+ const st={ON_SALE:['판매중','#0a7a3d'],UPCOMING:['판매예정','#9a6b00'],ENDED:['판매종료','#888']};
+ $('#dropList').innerHTML=DR.map(r=>{const s=st[r._status]||['-','#888'];
+  const an=r._announce==='ANNOUNCED'?'<span class="tag" style="background:#E8332A;color:#fff;border-color:#E8332A">발표완료</span>'
+        :r._announce==='RESERVED'?'<span class="tag" style="background:#FFB000;color:#141414;border-color:#FFB000">발표예정</span>':'';
+  return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #e4e1da;border-radius:6px;margin-bottom:8px;background:${r.on?'#fff':'#f4f2ec'}">
+   ${r.image?`<img src="${esc(r.image)}" style="width:74px;height:46px;object-fit:cover;border-radius:4px;flex:none">`:`<div style="width:74px;height:46px;border-radius:4px;background:linear-gradient(135deg,#3A3A3A,#141414);flex:none"></div>`}
+   <div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13.5px;${r.on?'':'color:#999'}">${esc(r.title)} ${r.on?'':'<span class="tag">숨김</span>'}</div>
+    <div class="group-sub mono">#${r.id} · ${esc(r.artist||'-')} · ${esc(r.sales_start||'상시')} ~ ${esc(r.sales_end||'상시')}${r._wcount?` · 당첨 ${r._wcount}명`:''}</div></div>
+   <span style="font:700 11px sans-serif;color:${s[1]};white-space:nowrap">${s[0]}</span>${an}
+   <a class="btn sm ghost" target="_blank" href="/new-drops?id=${r.id}" style="text-decoration:none">보기</a>
+   <button class="btn sm" onclick="dropEdit(${r.id})">편집</button>
+   ${can(2)?`<button class="btn sm red" onclick="delDrop(${r.id})">삭제</button>`:''}
+  </div>`}).join('')||'<div class="loading">등록된 이벤트가 없습니다 — [+ 새 이벤트]로 첫 이벤트를 만들어 보세요</div>';
+}catch(e){$('#dropList').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function drSchedRow(s){s=s||{};return `<div class="drsched" style="display:grid;grid-template-columns:1.1fr .9fr .7fr 1.5fr auto;gap:6px;margin-bottom:6px">
+ <input placeholder="일정명 (예: FANSIGN)" class="ds-n" value="${esc(s.name||'')}"><input type="date" class="ds-d" value="${esc(s.date||'')}">
+ <input placeholder="시간" class="ds-t" value="${esc(s.time||'')}"><input placeholder="비고 (예: 1부 종료 후)" class="ds-x" value="${esc(s.desc||'')}">
+ <button class="btn sm ghost" type="button" onclick="this.parentNode.remove()">✕</button></div>`}
+function drWinRow(g){g=g||{};return `<div class="drwin" style="border:1px solid #e4e1da;border-radius:6px;padding:10px;margin-bottom:8px;background:#faf9f5">
+ <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:6px">
+  <input placeholder="그룹명 (예: 팬사인회 응모권)" class="dw-t" value="${esc(g.title||'')}">
+  <input placeholder="유형 (예: 팬사인회)" class="dw-y" value="${esc(g.type||'')}">
+  <button class="btn sm ghost" type="button" onclick="this.closest('.drwin').remove()">✕ 그룹 삭제</button></div>
+ <textarea class="dw-l" rows="5" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7" placeholder="한 줄에 한 명 — 주문번호  ·  주문번호,이름  ·  주문번호,이름,뱃지&#10;예) MPD2607170001,홍길동,영통+포카">${esc(g.list||'')}</textarea></div>`}
+function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_label:'구매하기',schedule:[],options:[],winners:[]};
+ $('#mbox').classList.add('wide');
+ $('#mbox').innerHTML=`<h3>${r?`이벤트 편집 <span class="tag">#${r.id}</span>`:'새 이벤트'}</h3>
+ <div class="kv">
+ <b>노출</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_on" ${v.on!==false?'checked':''}> 사이트에 표시</label></span>
+ <b>제목 *</b><span><input id="dr_title" style="width:100%" value="${esc(v.title||'')}" placeholder="예) 스타라이트 1st MINI 발매 기념 대면 팬사인회 EVENT"></span>
+ <b>아티스트</b><span><input id="dr_artist" style="width:100%" value="${esc(v.artist||'')}" placeholder="예) 스타라이트"></span>
+ <b>유형</b><span><select id="dr_cat"><option value="">선택</option>${DRCATS.map(c=>`<option value="${c.id}" ${v.category===c.id?'selected':''}>${esc(c.label)}</option>`).join('')}</select></span>
+ <b>배너 이미지</b><span><div style="display:flex;gap:6px"><input id="dr_img" style="flex:1" value="${esc(v.image||'')}" placeholder="이미지 주소 — 오른쪽 버튼으로 업로드하면 자동 입력" onchange="drImgPrev()"><button class="btn sm" type="button" onclick="document.getElementById('dr_imgfile').click()">업로드</button><input type="file" id="dr_imgfile" accept="image/*" style="display:none" onchange="drUpMain(this)"></div><div id="dr_imgpv" style="margin-top:6px"></div></span>
+ <b>판매 시작</b><span><input type="datetime-local" id="dr_start" value="${esc(v.sales_start||'')}"> <span class="hint">비우면 즉시 판매중</span></span>
+ <b>판매 종료</b><span><input type="datetime-local" id="dr_end" value="${esc(v.sales_end||'')}"> <span class="hint">비우면 상시 판매</span></span>
+ <b>당첨자 발표</b><span><input type="datetime-local" id="dr_ann" value="${esc(v.announce_at||'')}"> <span class="hint">추첨 이벤트가 아니면 비워두세요 — 시각 도달 + 명단 저장 시 자동 발표</span></span>
+ <b>구매 링크</b><span><input id="dr_buy" style="width:100%" value="${esc(v.buy_url||'')}" placeholder="/album-detail?uid=…  ·  /kpop  ·  /p/상품ID  ·  https://…"></span>
+ <b>버튼 문구</b><span><input id="dr_buylabel" value="${esc(v.buy_label||'구매하기')}"></span>
+ <b>행사 일정</b><span><div id="dr_sched">${(v.schedule||[]).map(drSchedRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_sched').insertAdjacentHTML('beforeend',drSchedRow())">+ 일정 추가</button></span>
+ <b>옵션 구성</b><span><textarea id="dr_opts" rows="4" style="width:100%" placeholder="한 줄에 하나 (표시용) — 예)&#10;For. 대면 팬사인회&#10;For. 영상통화 (멤버별)">${esc((v.options||[]).join('\n'))}</textarea></span>
+ <b>구매 전 안내</b><span><textarea id="dr_notice" rows="3" style="width:100%" placeholder="줄바꿈으로 여러 항목 — 상세페이지 [구매 전 안내사항]에 표시">${esc(v.notice||'')}</textarea></span>
+ <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
+ <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="6" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지를 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"></div></span>
+ <b>발표 공지</b><span><textarea id="dr_annnotice" rows="3" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
+ <b>당첨 그룹</b><span><div id="dr_wins">${(v.winners||[]).map(drWinRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_wins').insertAdjacentHTML('beforeend',drWinRow())">+ 당첨 그룹 추가</button></span>
+ </div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+  <button class="btn ghost" onclick="closeM()">닫기</button>
+  ${can(2)?`<button class="btn" onclick="saveDrop(${r?r.id:0})">저장 (사이트 즉시 반영)</button>`:''}
+ </div>`;
+ $('#mbg').style.display='flex';drImgPrev();}
+async function saveDrop(id){try{
+ const sched=[...document.querySelectorAll('#dr_sched .drsched')].map(x=>({name:x.querySelector('.ds-n').value,date:x.querySelector('.ds-d').value,time:x.querySelector('.ds-t').value,desc:x.querySelector('.ds-x').value}));
+ const winners=[...document.querySelectorAll('#dr_wins .drwin')].map(x=>({title:x.querySelector('.dw-t').value,type:x.querySelector('.dw-y').value,list:x.querySelector('.dw-l').value}));
+ const body={id:id||undefined,on:$('#dr_on').checked,title:$('#dr_title').value,artist:$('#dr_artist').value,
+  category:$('#dr_cat').value,image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
+  announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
+  schedule:sched,options:$('#dr_opts').value.split('\n').map(s=>s.trim()).filter(Boolean),
+  notice:$('#dr_notice').value,chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
+  announce_notice:$('#dr_annnotice').value,winners:winners};
+ const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ toast('저장 완료 — 사이트에 즉시 반영 (#'+d.id+')');closeM();loadDrops();
+}catch(e){toast(e.message)}}
+async function delDrop(id){if(!confirm('#'+id+' 이벤트를 삭제할까요? 되돌릴 수 없습니다.'))return;
+ try{await api('/admin/api/drops/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});toast('삭제 완료');loadDrops()}catch(e){toast(e.message)}}
+async function drUpMain(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);$('#dr_img').value=u;drImgPrev();toast('이미지 업로드 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
+async function drUpBody(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);const t=$('#dr_html');t.value=(t.value?t.value+'\n':'')+'<img src="'+u+'" alt="" style="max-width:100%;display:block;margin:0 auto">';toast('본문에 이미지 삽입 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
+function drImgPrev(){const el=document.getElementById('dr_img');if(!el)return;const u=el.value.trim();
+ $('#dr_imgpv').innerHTML=u?`<img src="${esc(u)}" style="max-width:280px;max-height:140px;object-fit:cover;border:1px solid #e3e1db;border-radius:4px">`:''}
+
 
 let HB=null;
 async function loadHomeBlocks(){try{const d=await api('/admin/api/homeblocks');HB=d.blocks;
@@ -5742,6 +5822,247 @@ def api_homeblocks_reset(request: Request):
     a = get_actor(request); need(a, 2, '홈 화면 관리')
     run("DELETE FROM site_settings WHERE key='home_blocks'")
     audit(a, '홈블록복원', '', '원본 순서·전체 노출')
+    return {'ok': True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NEW/DROPS 이벤트 허브 — 메이크스타형 4상태 (판매중·당첨자발표·판매예정·판매종료)
+#   저장: site_settings key='drops' (티커·홈블록과 동일 패턴 — 스키마 변경 없음)
+#   상태는 저장하지 않고 KST 현재시각으로 매 요청 계산 → 시각이 지나면 자동 전환
+#     판매예정(UPCOMING) → 판매중(ON_SALE) → 판매종료(ENDED)
+#     종료 후: 발표시각 도달 + 명단 존재 → 발표완료(ANNOUNCED) · 그 전엔 발표예약(RESERVED)
+#   공개 API는 당첨자 이름을 마스킹해 응답 — 원본 명단은 관리자 API에서만 노출
+#   페이지: /new-drops (static/new-drops.html · 목록/상세/당첨자발표 3뷰)
+# ═══════════════════════════════════════════════════════════════════════════
+DROP_CATS = [
+    ('FANSIGN',   '팬사인회',    'linear-gradient(135deg,#E8332A,#FF7A45)'),
+    ('VIDEOCALL', '영상통화',    'linear-gradient(135deg,#1E1E60,#4B3AE8)'),
+    ('PHOTO',     '포토이벤트',  'linear-gradient(135deg,#C2185B,#FF8AB8)'),
+    ('SHOWCASE',  '쇼케이스',    'linear-gradient(135deg,#0C4F3F,#00A879)'),
+    ('LUCKYDRAW', '럭키드로우',  'linear-gradient(135deg,#9A6B00,#FFB000)'),
+    ('GIFT',      '스페셜 특전', 'linear-gradient(135deg,#5E0F35,#B71F18)'),
+    ('POPUP',     '팝업',        'linear-gradient(135deg,#3A3A3A,#141414)'),
+    ('RELEASE',   '신보 발매',   'linear-gradient(135deg,#B71F18,#E8332A)'),
+]
+DROP_CAT_MAP = {c[0]: c for c in DROP_CATS}
+
+def _drops_all():
+    try:
+        r = one("SELECT value FROM site_settings WHERE key='drops'")
+        d = jload(r.get('value'), []) if r else []
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+def _drop_dt(s):
+    """'YYYY-MM-DDTHH:MM'(KST 벽시계) → naive datetime. 실패 시 None."""
+    s = str(s or '').strip().replace(' ', 'T')
+    if not s: return None
+    try: return datetime.datetime.fromisoformat(s[:16])
+    except Exception: return None
+
+def _drop_mask(s):
+    """이름 마스킹: 홍길동→홍*동 · 김수→김* · Jonathan→J******n (별표 최대 6개)."""
+    s = re.sub(r'\s+', ' ', str(s or '')).strip()
+    if not s: return ''
+    if len(s) <= 2: return s[0] + '*'
+    return s[0] + '*' * min(len(s) - 2, 6) + s[-1]
+
+def _drop_state(d, now):
+    """(status, announce) — status: UPCOMING|ON_SALE|ENDED · announce: NONE|RESERVED|ANNOUNCED"""
+    st, en, an = _drop_dt(d.get('sales_start')), _drop_dt(d.get('sales_end')), _drop_dt(d.get('announce_at'))
+    if st and now < st: status = 'UPCOMING'
+    elif en and now > en: status = 'ENDED'
+    else: status = 'ON_SALE'
+    announce = 'NONE'
+    if status == 'ENDED' and an:
+        has = any(str(g.get('list') or '').strip() for g in (d.get('winners') or []) if isinstance(g, dict))
+        announce = 'ANNOUNCED' if (now >= an and has) else 'RESERVED'
+    return status, announce
+
+def _drop_card(d, now):
+    status, announce = _drop_state(d, now)
+    st, en = _drop_dt(d.get('sales_start')), _drop_dt(d.get('sales_end'))
+    dday = None
+    if status == 'ON_SALE' and en: dday = (en.date() - now.date()).days
+    elif status == 'UPCOMING' and st: dday = (st.date() - now.date()).days
+    cat = DROP_CAT_MAP.get(str(d.get('category') or ''))
+    return {'id': num(d.get('id')), 'title': str(d.get('title') or ''), 'artist': str(d.get('artist') or ''),
+            'category': str(d.get('category') or ''),
+            'cat_label': cat[1] if cat else (str(d.get('category') or '') or 'EVENT'),
+            'cat_grad': cat[2] if cat else 'linear-gradient(135deg,#3A3A3A,#141414)',
+            'image': str(d.get('image') or ''),
+            'sales_start': str(d.get('sales_start') or ''), 'sales_end': str(d.get('sales_end') or ''),
+            'announce_at': str(d.get('announce_at') or ''),
+            'status': status, 'announce': announce, 'dday': dday}
+
+def _drop_winner_groups(d, masked=True):
+    out = []
+    for g in (d.get('winners') or []):
+        if not isinstance(g, dict): continue
+        ws = []
+        lines = [x.strip() for x in str(g.get('list') or '').replace('\r', '').split('\n') if x.strip()][:3000]
+        for i, ln in enumerate(lines):
+            p = [x.strip() for x in ln.split(',')]
+            ws.append({'i': i + 1, 'no': p[0][:40],
+                       'name': ((_drop_mask(p[1]) if masked else p[1][:30]) if len(p) > 1 else ''),
+                       'badge': (p[2][:20] if len(p) > 2 else '')})
+        out.append({'title': str(g.get('title') or '')[:80], 'type': str(g.get('type') or '')[:30],
+                    'count': len(ws), 'winners': ws})
+    return out
+
+def _drop_sortkey(c, tab):
+    # 동일 포맷('YYYY-MM-DDTHH:MM') 문자열 비교로 충분
+    if tab == 'ON_SALE': return c.get('sales_end') or '9999'
+    if tab == 'UPCOMING': return c.get('sales_start') or '9999'
+    if tab == 'WINNER_ANNOUNCEMENT': return c.get('announce_at') or ''
+    return c.get('sales_end') or c.get('sales_start') or ''
+
+@admin_router.get('/api/drops')
+def api_drops_public(request: Request):
+    try: ensure_ready()
+    except Exception: pass
+    now = kst_now()
+    cards = [_drop_card(d, now) for d in _drops_all() if isinstance(d, dict) and d.get('on', True)]
+    counts = {'ON_SALE': 0, 'WINNER_ANNOUNCEMENT': 0, 'UPCOMING': 0, 'ENDED': 0}
+    for c in cards:
+        if c['status'] in counts: counts[c['status']] += 1
+        if c['announce'] in ('ANNOUNCED', 'RESERVED'): counts['WINNER_ANNOUNCEMENT'] += 1
+    tab = (request.query_params.get('status') or 'ON_SALE').upper()
+    catf = (request.query_params.get('cat') or '').upper()
+    if tab == 'WINNER_ANNOUNCEMENT':
+        rows_ = sorted([c for c in cards if c['announce'] in ('ANNOUNCED', 'RESERVED')],
+                       key=lambda c: _drop_sortkey(c, tab), reverse=True)
+    elif tab in ('ON_SALE', 'UPCOMING', 'ENDED'):
+        rows_ = sorted([c for c in cards if c['status'] == tab],
+                       key=lambda c: _drop_sortkey(c, tab), reverse=(tab == 'ENDED'))
+    else:  # ALL — 판매중(마감임박순) → 예정(오픈임박순) → 종료(최근종료순)
+        pri = {'ON_SALE': 0, 'UPCOMING': 1, 'ENDED': 2}
+        rows_ = sorted(cards, key=lambda c: (pri.get(c['status'], 3), _drop_sortkey(c, c['status'])))
+    if catf:
+        rows_ = [c for c in rows_ if c['category'] == catf]
+    return JSONResponse({'rows': rows_, 'counts': counts,
+                         'cats': [{'id': x[0], 'label': x[1]} for x in DROP_CATS],
+                         'now': now.strftime('%Y-%m-%dT%H:%M')},
+                        headers={'Cache-Control': 'no-store'})
+
+@admin_router.get('/api/drops/{did}')
+def api_drop_public_detail(did: int):
+    try: ensure_ready()
+    except Exception: pass
+    now = kst_now()
+    ds = [d for d in _drops_all() if isinstance(d, dict)]
+    d = next((x for x in ds if num(x.get('id')) == did and x.get('on', True)), None)
+    if not d: raise HTTPException(404, '이벤트를 찾을 수 없습니다')
+    c = _drop_card(d, now)
+    sched = []
+    for s in (d.get('schedule') or [])[:10]:
+        if isinstance(s, dict):
+            sched.append({'name': str(s.get('name') or '')[:40], 'date': str(s.get('date') or '')[:20],
+                          'time': str(s.get('time') or '')[:20], 'desc': str(s.get('desc') or '')[:80]})
+    rel, art = [], c['artist'].strip().lower()
+    for x in ds:
+        if num(x.get('id')) == did or not x.get('on', True): continue
+        xc = _drop_card(x, now)
+        xc['_rank'] = 0 if (art and xc['artist'].strip().lower() == art) else (1 if (c['category'] and xc['category'] == c['category']) else 2)
+        rel.append(xc)
+    rel.sort(key=lambda x: (x['_rank'], -num(x.get('id'))))
+    for x in rel: x.pop('_rank', None)
+    c.update({'schedule': sched,
+              'notice': str(d.get('notice') or ''),
+              'content_html': str(d.get('content_html') or ''),
+              'options': [str(x)[:80] for x in (d.get('options') or []) if str(x or '').strip()][:40],
+              'buy_url': str(d.get('buy_url') or ''),
+              'buy_label': (str(d.get('buy_label') or '').strip() or '구매하기'),
+              'chart_note': bool(d.get('chart_note')),
+              'announce_notice': str(d.get('announce_notice') or ''),
+              'winner_groups': (_drop_winner_groups(d, masked=True) if c['announce'] == 'ANNOUNCED' else []),
+              'related': rel[:8]})
+    return JSONResponse(c, headers={'Cache-Control': 'no-store'})
+
+def _drop_url_ok(u):
+    u = str(u or '').strip()
+    return (not u) or u.startswith('/') or u.startswith('https://') or u.startswith('http://')
+
+@admin_router.get('/admin/api/drops')
+def api_drops_admin(request: Request):
+    a = get_actor(request)
+    now = kst_now()
+    out = []
+    for d in _drops_all():
+        if not isinstance(d, dict): continue
+        st, an = _drop_state(d, now)
+        e = dict(d); e['_status'] = st; e['_announce'] = an
+        e['_wcount'] = sum(len([x for x in str(g.get('list') or '').split('\n') if x.strip()])
+                           for g in (d.get('winners') or []) if isinstance(g, dict))
+        out.append(e)
+    out.sort(key=lambda x: num(x.get('id')), reverse=True)
+    return {'rows': out, 'cats': [{'id': x[0], 'label': x[1]} for x in DROP_CATS]}
+
+@admin_router.post('/admin/api/drops/save')
+def api_drops_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, 'NEW/DROPS 관리')
+    title = re.sub(r'\s+', ' ', str(body.get('title') or '')).strip()
+    if not title: raise HTTPException(400, '이벤트 제목을 입력하세요')
+    for k, lb in (('sales_start', '판매 시작'), ('sales_end', '판매 종료'), ('announce_at', '당첨자 발표')):
+        v = str(body.get(k) or '').strip()
+        if v and not _drop_dt(v): raise HTTPException(400, '%s 일시 형식이 올바르지 않습니다' % lb)
+    st, en = _drop_dt(body.get('sales_start')), _drop_dt(body.get('sales_end'))
+    if st and en and en < st: raise HTTPException(400, '판매 종료가 시작보다 빠릅니다')
+    if not _drop_url_ok(body.get('buy_url')) or not _drop_url_ok(body.get('image')):
+        raise HTTPException(400, '링크는 /경로 또는 https:// 주소만 가능합니다')
+    winners = []
+    for g in (body.get('winners') or [])[:10]:
+        if not isinstance(g, dict): continue
+        winners.append({'title': str(g.get('title') or '')[:80], 'type': str(g.get('type') or '')[:30],
+                        'list': str(g.get('list') or '').replace('\r', '')[:200000]})
+    sched = []
+    for s in (body.get('schedule') or [])[:10]:
+        if not isinstance(s, dict): continue
+        if not any(str(s.get(k) or '').strip() for k in ('name', 'date', 'time', 'desc')): continue
+        sched.append({'name': str(s.get('name') or '')[:40], 'date': str(s.get('date') or '')[:20],
+                      'time': str(s.get('time') or '')[:20], 'desc': str(s.get('desc') or '')[:80]})
+    ds = [d for d in _drops_all() if isinstance(d, dict)]
+    did = num(body.get('id'))
+    cur = next((d for d in ds if num(d.get('id')) == did), None) if did else None
+    rec = {'id': (did if cur else (max([num(d.get('id')) for d in ds] + [0]) + 1)),
+           'created': ((cur or {}).get('created') or now_iso()), 'updated': now_iso(),
+           'on': bool(body.get('on', True)),
+           'title': title[:120],
+           'artist': re.sub(r'\s+', ' ', str(body.get('artist') or '')).strip()[:60],
+           'category': str(body.get('category') or '').strip().upper()[:20],
+           'image': str(body.get('image') or '').strip()[:400],
+           'sales_start': str(body.get('sales_start') or '').strip()[:16],
+           'sales_end': str(body.get('sales_end') or '').strip()[:16],
+           'announce_at': str(body.get('announce_at') or '').strip()[:16],
+           'schedule': sched,
+           'buy_url': str(body.get('buy_url') or '').strip()[:300],
+           'buy_label': str(body.get('buy_label') or '').strip()[:20],
+           'options': [str(x)[:80] for x in (body.get('options') or []) if str(x or '').strip()][:40],
+           'chart_note': bool(body.get('chart_note')),
+           'notice': str(body.get('notice') or '')[:2000],
+           'content_html': str(body.get('content_html') or '')[:200000],
+           'announce_notice': str(body.get('announce_notice') or '')[:2000],
+           'winners': winners}
+    if cur:
+        ds = [rec if num(x.get('id')) == num(rec['id']) else x for x in ds]
+    else:
+        ds.append(rec)
+    if len(json.dumps(ds, ensure_ascii=False)) > 8000000:
+        raise HTTPException(400, '저장 용량 초과 — 오래된 이벤트를 삭제해 주세요')
+    _setting_put('drops', ds, a['name'])
+    audit(a, 'NEW/DROPS저장', '#%s' % rec['id'], title[:60])
+    return {'ok': True, 'id': rec['id']}
+
+@admin_router.post('/admin/api/drops/delete')
+def api_drops_delete(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, 'NEW/DROPS 관리')
+    did = num(body.get('id'))
+    ds = [d for d in _drops_all() if isinstance(d, dict)]
+    nd = [d for d in ds if num(d.get('id')) != did]
+    if len(nd) == len(ds): raise HTTPException(404, '이벤트를 찾을 수 없습니다')
+    _setting_put('drops', nd, a['name'])
+    audit(a, 'NEW/DROPS삭제', '#%d' % did, '')
     return {'ok': True}
 
 # 전 페이지 주입 스크립트: .ticker-track을 /api/ticker 내용으로 교체.

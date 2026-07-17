@@ -253,6 +253,22 @@ def config():
     return {'pg': 'inicis', 'mid': INICIS_MID,
             'freeShipOver': FREE_SHIP_OVER, 'shipFee': SHIP_FEE}
 
+def _product_id_candidates(pid: str):
+    """장바구니가 보낸 상품 ID를 DB 저장 형태로 정규화한 후보 목록을 만든다.
+    클린 URL(.html 숨김) 정책 때문에 상품 페이지는 슬러그에서 .html이 빠진
+    'product-x::opt' 형태로 담지만, 시드는 원본 파일명 기준 'product-x.html::opt'로
+    저장한다. 두 형태를 모두 시도해 어느 쪽으로 담겼든 정상 조회되게 한다.
+    (k2g::uid 등 이미 올바른 ID는 원본이 먼저 매칭되고, 존재하지 않는 .html 변형은
+     조회에 실패해도 무해하므로 오매칭 위험이 없다.)"""
+    cands = [pid]
+    if '::' in pid:
+        left, right = pid.split('::', 1)
+        if left and not left.endswith('.html'):
+            alt = left + '.html::' + right
+            if alt not in cands:
+                cands.append(alt)
+    return cands
+
 @app.post('/api/orders')
 async def create_order(req: Request):
     body = await req.json()
@@ -291,19 +307,23 @@ async def create_order(req: Request):
         sub, resolved = 0, []
         for it in items:
             pid = str(it.get('id', '')); q = max(1, min(99, int(it.get('q', 1))))
-            row = c.one(f'SELECT * FROM products WHERE id=?{LOCK}', (pid,))
+            row = None
+            for cand in _product_id_candidates(pid):      # 클린 URL(.html 숨김) 대응: 두 형태 모두 조회
+                row = c.one(f'SELECT * FROM products WHERE id=?{LOCK}', (cand,))
+                if row: break
             if not row: raise HTTPException(400, f'알 수 없는 상품: {pid}')
+            db_id = row['id']                              # 이후 재고차감·주문라인은 매칭된 실제 DB ID 사용
             if row['soldout']: raise HTTPException(400, f'품절: {row["name"][:30]}')
             if row['price'] <= 0: raise HTTPException(400, f'가격 확인 필요: {row["name"][:30]}')
             if row['stock'] is not None:                     # 재고 관리 대상 상품
                 if row['stock'] < q:
                     raise HTTPException(409, f'재고 부족: {row["name"][:30]} (남은 수량 {row["stock"]})')
-                c.exec('UPDATE products SET stock=stock-? WHERE id=?', (q, pid))
-                changed_stock_ids.append(pid)
+                c.exec('UPDATE products SET stock=stock-? WHERE id=?', (q, db_id))
+                changed_stock_ids.append(db_id)
                 if row['stock'] - q == 0:
-                    c.exec('UPDATE products SET soldout=1 WHERE id=?', (pid,))
+                    c.exec('UPDATE products SET soldout=1 WHERE id=?', (db_id,))
             sub += row['price'] * q
-            resolved.append({'id': pid, 'n': row['name'], 'p': row['price'], 'q': q})
+            resolved.append({'id': db_id, 'n': row['name'], 'p': row['price'], 'q': q})
         ship_fee = 0 if (ship == 'pickup' or sub >= FREE_SHIP_OVER) else SHIP_FEE
         amount = sub + ship_fee
         order_id = f'MD-{datetime.datetime.now():%Y%m%d}-{secrets.token_hex(3).upper()}'

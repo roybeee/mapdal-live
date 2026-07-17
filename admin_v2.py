@@ -1820,6 +1820,10 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <style>.bnf{display:flex;flex-direction:column;font-size:12px;font-weight:700;color:#666;gap:3px}.bnf input{font:inherit;font-weight:400;color:#141414;padding:7px 9px;border:1px solid #ddd;border-radius:5px;background:#fff}</style>
   <datalist id="bntags"><option value="VIDEOCALL"><option value="FANSIGN&amp;PHOTO EVENT"><option value="FANSIGN"><option value="PHOTO EVENT"><option value="LUCKY DRAW"><option value="POP-UP"><option value="NEW DROP"><option value="LIVE"></datalist>
   <div id="bnbox" class="loading">불러오는 중…</div></div></section>
+<section id="t-home" style="display:none">
+  <div class="panel"><h3>홈 화면 구성 — 히어로 아래 블록 <span class="tag">저장 즉시 홈 반영</span></h3>
+  <div class="hint" style="margin-bottom:10px">▲▼로 순서를 바꾸고, [노출] 체크를 끄면 홈에서 숨겨집니다. 히어로 슬라이드 자체는 [메인배너] 탭에서 관리합니다. [기본값 복원]을 누르면 원본 순서·전체 노출로 돌아갑니다.</div>
+  <div id="hbbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-cust" style="display:none">
   <div class="panel"><h3>통합 고객·계정 <span class="tag">회원 · 비회원 주문 · 포인트 · 동의</span></h3>
   <div class="toolbar grow"><input id="aq" placeholder="고객번호 · 이름 · 이메일 · 전화" onkeydown="if(event.key==='Enter')loadAccounts(1)">
@@ -1870,8 +1874,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['seo','SEO·검색',2],['banner','메인배너',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),pages:loadPages,ticker:loadTicker,seo:loadSeo,banner:loadBanner,cust:()=>loadAccounts(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),pages:loadPages,ticker:loadTicker,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>loadAccounts(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -2337,6 +2341,31 @@ async function saveTicker(){try{
  const d=await api('/admin/api/ticker/save',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({items:tkItems(),speed:tkSpd()})});
  toast('저장 완료 — 전 페이지 즉시 반영 ('+d.items.length+'개 항목)');loadTicker()}catch(e){toast(e.message)}}
+
+let HB=null;
+async function loadHomeBlocks(){try{const d=await api('/admin/api/homeblocks');HB=d.blocks;
+ $('#hbbox').innerHTML=`<div id="hblist"></div>
+ <div class="toolbar" style="margin-top:12px;align-items:center">
+  ${can(2)?'<button class="btn" onclick="saveHB()">저장 (홈에 즉시 반영)</button><button class="btn ghost" onclick="resetHB()">기본값 복원</button>':''}
+  <a class="btn ghost" href="/" target="_blank" style="text-decoration:none;margin-left:auto">홈에서 확인</a></div>
+ ${d.is_default?'<div class="hint" style="margin-top:8px">아직 저장 이력 없음 — 원본 순서 그대로 노출 중입니다.</div>'
+  :`<div class="hint" style="margin-top:8px">마지막 저장 ${esc((d.updated||'').slice(0,16).replace('T',' '))} UTC · ${esc(d.by_admin||'')}</div>`}`;
+ renderHB();
+}catch(e){$('#hbbox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function renderHB(){$('#hblist').innerHTML=HB.map((b,i)=>`
+ <div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border:1px solid #e4e1da;border-radius:6px;margin-bottom:8px;background:${b.on?'#fff':'#f4f2ec'}">
+  <span class="mono" style="font-size:11px;color:#999;width:18px">${i+1}</span>
+  <b style="flex:1;font-size:13.5px;${b.on?'':'color:#999;text-decoration:line-through'}">${esc(b.label)}</b>
+  <button class="btn ghost" onclick="hbMove(${i},-1)" ${i===0?'disabled':''} title="위로">▲</button>
+  <button class="btn ghost" onclick="hbMove(${i},1)" ${i===HB.length-1?'disabled':''} title="아래로">▼</button>
+  <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;cursor:pointer"><input type="checkbox" ${b.on?'checked':''} onchange="HB[${i}].on=this.checked;renderHB()"> 노출</label>
+ </div>`).join('')}
+function hbMove(i,d){const j=i+d;if(j<0||j>=HB.length)return;const t=HB[i];HB[i]=HB[j];HB[j]=t;renderHB()}
+async function saveHB(){try{await api('/admin/api/homeblocks/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({blocks:HB.map(b=>({id:b.id,on:b.on}))})});
+ toast('저장 완료 — 홈 새로고침 시 반영됩니다');loadHomeBlocks()}catch(e){toast(e.message)}}
+async function resetHB(){if(!confirm('원본 순서·전체 노출로 되돌립니다. 계속할까요?'))return;
+ try{await api('/admin/api/homeblocks/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ toast('기본값 복원 완료');loadHomeBlocks()}catch(e){toast(e.message)}}
 
 async function loadSeo(){try{const d=await api('/admin/api/seo');
  $('#seobox').innerHTML=`<div style="display:grid;gap:12px;max-width:720px">
@@ -5496,6 +5525,143 @@ def api_ticker_save(request: Request, body: dict = Body(...)):
     audit(a, '티커저장', '', '%d개 항목 · %s' % (len(items), speed))
     return {'ok': True, 'items': items, 'speed': speed}
 
+
+# ─────────────────────────────────────────────────────────────
+# 홈 화면 블록 (히어로 하부 섹션) — 관리자에서 순서/노출 제어
+#   site_settings key='home_blocks' : [{"id","on"}] 순서 배열
+#   저장 이력이 없으면 원본 정적 파일 순서 그대로 (제로 리스크)
+# ─────────────────────────────────────────────────────────────
+HOME_BLOCKS = [
+    ('collections', '컬렉션 — 세계관으로 쇼핑하기'),
+    ('space',       '공간 소개 — 하나의 건물, 완성되는 팬 경험 (층별 안내)'),
+    ('kfood',       'K-FOOD — 분식을 배송합니다 (떡볶이·김밥·BOWL)'),
+    ('journal',     '저널 & LIVE'),
+    ('trust',       '신뢰 스트립 — 전 세계 배송·DDP·차트 집계 USP'),
+]
+HOME_BLOCK_LABELS = dict(HOME_BLOCKS)
+
+def homeblocks_conf():
+    """저장 순서/노출 설정. 레지스트리 기준으로 정규화(누락분은 노출 상태로 뒤에 붙음)."""
+    try:
+        r = one('SELECT value, updated, by_admin FROM site_settings WHERE key=?', ('home_blocks',))
+    except Exception:
+        r = None
+    saved = jload(r.get('value'), []) if r else []
+    order, seen = [], set()
+    for it in (saved if isinstance(saved, list) else []):
+        bid = str((it or {}).get('id', ''))
+        if bid in HOME_BLOCK_LABELS and bid not in seen:
+            order.append({'id': bid, 'label': HOME_BLOCK_LABELS[bid],
+                          'on': bool((it or {}).get('on', True))})
+            seen.add(bid)
+    for bid, lb in HOME_BLOCKS:
+        if bid not in seen:
+            order.append({'id': bid, 'label': lb, 'on': True})
+    return {'blocks': order, 'updated': (r.get('updated') or '') if r else '',
+            'by_admin': (r.get('by_admin') or '') if r else '', 'is_default': not r}
+
+def _hb_span_with_comment(html, s, e):
+    """블록 시작 직전의 안내 주석(<!-- … -->)까지 스팬에 포함해 같이 이동."""
+    j = s
+    while j > 0 and html[j-1] in ' \t\r\n':
+        j -= 1
+    if html.endswith('-->', 0, j):
+        k = html.rfind('<!--', 0, j)
+        if k >= 0 and (j - k) <= 120:
+            s = k
+    return (s, e)
+
+def _homeblocks_found(html):
+    """홈 HTML에서 각 블록의 (start, end) 스팬 탐지. 못 찾은 블록은 생략(내성)."""
+    found = {}
+
+    def _divspan(marker):
+        s = html.find(marker)
+        if s < 0:
+            return None
+        depth = 0
+        for mm in re.finditer(r'<div\b|</div>', html[s:]):
+            depth += 1 if mm.group(0) != '</div>' else -1
+            if depth == 0:
+                return (s, s + mm.end())
+        return None
+
+    i = html.find('세계관으로 쇼핑하기')
+    if i > 0:
+        s = html.rfind('<section', 0, i)
+        e = html.find('</section>', i)
+        if s >= 0 and e > 0:
+            found['collections'] = _hb_span_with_comment(html, s, e + len('</section>'))
+    for bid, marker in (('kfood', '<section id="kfood"'), ('journal', '<section id="journal"')):
+        s = html.find(marker)
+        if s >= 0:
+            e = html.find('</section>', s)
+            if e > 0:
+                found[bid] = _hb_span_with_comment(html, s, e + len('</section>'))
+    for bid, marker in (('space', '<div class="floor-sec" id="space">'), ('trust', '<div class="trust">')):
+        sp = _divspan(marker)
+        if sp:
+            found[bid] = _hb_span_with_comment(html, *sp)
+    return found
+
+def _homeblocks_apply(html, path=''):
+    """홈(index)의 히어로 하부 블록을 관리자 설정 순서/노출로 재배치 (멱등·fail-open)."""
+    try:
+        if not isinstance(html, str) or 'mzHero' not in html:
+            return html                       # 홈이 아니면 통과
+        conf = homeblocks_conf()
+        if conf['is_default']:
+            return html                       # 저장 이력 없음 → 원본 그대로
+        found = _homeblocks_found(html)
+        if not found:
+            return html
+        pieces = {bid: html[s:e] for bid, (s, e) in found.items()}
+        first = min(s for s, _ in found.values())
+        out = html
+        for _bid, (s, e) in sorted(found.items(), key=lambda kv: -kv[1][0]):
+            out = out[:s] + out[e:]           # 뒤에서부터 제거 (인덱스 보존)
+        seq = [b['id'] for b in conf['blocks'] if b['on'] and b['id'] in pieces]
+        tail = out[first:]                    # 블록 사이 공백 잔여 소거 (멱등 보장)
+        k = 0
+        while k < len(tail) and tail[k] in ' \t\r\n':
+            k += 1
+        blob = '\n\n'.join(pieces[b] for b in seq)
+        out = out[:first] + blob + ('\n\n' if blob else '') + tail[k:]
+        return out
+    except Exception:
+        return html
+
+@admin_router.get('/admin/api/homeblocks')
+def api_homeblocks_get(request: Request):
+    get_actor(request)
+    return homeblocks_conf()
+
+@admin_router.post('/admin/api/homeblocks/save')
+def api_homeblocks_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '홈 화면 관리')
+    raw = body.get('blocks')
+    if not isinstance(raw, list):
+        raise HTTPException(400, 'blocks는 목록이어야 합니다')
+    order, seen = [], set()
+    for it in raw:
+        bid = str((it or {}).get('id', ''))
+        if bid in HOME_BLOCK_LABELS and bid not in seen:
+            order.append({'id': bid, 'on': bool((it or {}).get('on', True))})
+            seen.add(bid)
+    for bid, _lb in HOME_BLOCKS:
+        if bid not in seen:
+            order.append({'id': bid, 'on': True})
+    _setting_put('home_blocks', order, a['name'])
+    audit(a, '홈블록저장', '', ' → '.join(('%s%s' % (b['id'], '' if b['on'] else '(숨김)')) for b in order))
+    return {'ok': True}
+
+@admin_router.post('/admin/api/homeblocks/reset')
+def api_homeblocks_reset(request: Request):
+    a = get_actor(request); need(a, 2, '홈 화면 관리')
+    run("DELETE FROM site_settings WHERE key='home_blocks'")
+    audit(a, '홈블록복원', '', '원본 순서·전체 노출')
+    return {'ok': True}
+
 # 전 페이지 주입 스크립트: .ticker-track을 /api/ticker 내용으로 교체.
 # **문구** → <b>흰색 강조</b> · 항목 0개면 티커 숨김 · API 이상 시 기존 문구 유지(fail-open)
 # 항목이 짧아도 화면 폭을 채울 때까지 반복(-50% 루프 이음새 방지) · 체감 속도 일정하게 duration 자동 계산
@@ -6900,6 +7066,7 @@ def _inject_auth(html, path='', uid=None):
     html = _feedback_apply(html)
     html = _checkout_apply(html)
     html = _order_complete_apply(html)
+    html = _homeblocks_apply(html, path)
     html, patched = _patch_legacy_footer(html)
     html = _seo_apply(html, path, uid)
     html = _inject_og(html)

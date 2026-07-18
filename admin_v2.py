@@ -6515,12 +6515,74 @@ def _ko_spacer():
     return _KIWI
 
 # ── 영문 자동 보정 — 붙여 쓴 영문 분리(단어 빈도 DP) + 오탈자 교정(편집거리 1)
-_EN_TYPO = {'recieve': 'receive', 'seperate': 'separate', 'occured': 'occurred',
-            'definately': 'definitely', 'adress': 'address', 'wich': 'which'}
+_EN_TYPO = {
+    # 3~4자 고빈도 오타 — 철자엔진 미적용 구간이므로 사전으로 확정 교정
+    'teh': 'the', 'hte': 'the', 'taht': 'that', 'thsi': 'this', 'tihs': 'this',
+    'jsut': 'just', 'waht': 'what', 'wnat': 'want', 'adn': 'and', 'nad': 'and',
+    'yuo': 'you', 'yoru': 'your', 'sotp': 'stop', 'thx': 'thanks',
+    # 아포스트로피 누락 (실단어와 겹치지 않는 것만 — cant·wont 등은 제외)
+    'dont': "don't", 'doesnt': "doesn't", 'didnt': "didn't", 'isnt': "isn't",
+    'wasnt': "wasn't", 'arent': "aren't", 'havent': "haven't", 'hasnt': "hasn't",
+    'wouldnt': "wouldn't", 'couldnt': "couldn't", 'shouldnt': "shouldn't",
+    # 붙임말 — 말뭉치 빈도가 높아(zipf 3+) 철자엔진이 못 잡는 run-on
+    'thankyou': 'thank you', 'thanku': 'thank you', 'alot': 'a lot',
+    'aswell': 'as well', 'incase': 'in case', 'atleast': 'at least',
+    'alteast': 'at least', 'eachother': 'each other', 'infact': 'in fact',
+    'ofcourse': 'of course', 'everytime': 'every time', 'aslong': 'as long',
+    'inorder': 'in order', 'upto': 'up to', 'abit': 'a bit', 'alittle': 'a little',
+    'noone': 'no one',
+    # 5자+ 정형 오탈자 (모두 비단어 → 오교정 위험 없음)
+    'recieve': 'receive', 'recieved': 'received', 'recieves': 'receives',
+    'recieving': 'receiving', 'recived': 'received',
+    'seperate': 'separate', 'seperated': 'separated', 'seperately': 'separately',
+    'occured': 'occurred', 'occuring': 'occurring', 'occurence': 'occurrence',
+    'definately': 'definitely', 'definetly': 'definitely',
+    'adress': 'address', 'adresses': 'addresses', 'wich': 'which', 'whcih': 'which',
+    'becuase': 'because', 'becasue': 'because', 'beacuse': 'because',
+    'beleive': 'believe', 'freind': 'friend', 'freinds': 'friends', 'wierd': 'weird',
+    'acheive': 'achieve', 'acheived': 'achieved', 'arguement': 'argument',
+    'calender': 'calendar', 'commited': 'committed', 'commiting': 'committing',
+    'dissapoint': 'disappoint', 'dissapointed': 'disappointed',
+    'embarass': 'embarrass', 'embarassing': 'embarrassing',
+    'enviroment': 'environment', 'existance': 'existence', 'foriegn': 'foreign',
+    'goverment': 'government', 'happend': 'happened', 'immediatly': 'immediately',
+    'independant': 'independent', 'knowlege': 'knowledge',
+    'maintainance': 'maintenance', 'maintenence': 'maintenance',
+    'neccessary': 'necessary', 'necesary': 'necessary', 'neccesary': 'necessary',
+    'noticable': 'noticeable', 'occassion': 'occasion', 'ocassion': 'occasion',
+    'payed': 'paid', 'perfomance': 'performance', 'preformance': 'performance',
+    'persue': 'pursue', 'posession': 'possession', 'possesion': 'possession',
+    'prefered': 'preferred', 'probaly': 'probably', 'probally': 'probably',
+    'publically': 'publicly', 'recomend': 'recommend', 'reccomend': 'recommend',
+    'reccommend': 'recommend', 'refered': 'referred', 'relevent': 'relevant',
+    'remeber': 'remember', 'succesful': 'successful', 'successfull': 'successful',
+    'sucessful': 'successful', 'suprise': 'surprise',
+    'tommorow': 'tomorrow', 'tomorow': 'tomorrow', 'tommorrow': 'tomorrow',
+    'truely': 'truly', 'unfortunatly': 'unfortunately', 'untill': 'until',
+    'usefull': 'useful', 'writting': 'writing',
+    # 커머스·안내문 도메인 오탈자
+    'delievery': 'delivery', 'delivary': 'delivery', 'deliverys': 'deliveries',
+    'availble': 'available', 'avaliable': 'available', 'aviable': 'available',
+    'orignal': 'original', 'orginal': 'original',
+    'purchse': 'purchase', 'puchase': 'purchase', 'purchace': 'purchase',
+    'sheduled': 'scheduled', 'schedual': 'schedule', 'scedule': 'schedule',
+    'cancle': 'cancel', 'cancled': 'canceled', 'cancelation': 'cancellation',
+    'confimation': 'confirmation', 'confrimation': 'confirmation',
+    'verfication': 'verification', 'notifcation': 'notification',
+    'annoucement': 'announcement', 'anouncement': 'announcement',
+    'congradulations': 'congratulations', 'congratulaions': 'congratulations',
+    'participaton': 'participation', 'applicaton': 'application',
+    'informaton': 'information', 'infomation': 'information',
+    'plase': 'please', 'pleae': 'please', 'pelase': 'please', 'shiping': 'shipping'}
 _EN_PROTECT = {'mapdal', 'seongsu', 'kpop', 'kdrama', 'kfood', 'kbeauty', 'kculture',
                'kcon', 'kstyle', 'hallyu', 'bbgirls', 'poca', 'pocaalbum', 'kakao',
                'kakaotalk', 'facetalk', 'photocard', 'fansign', 'glg', 'mealzip',
-               'solapi', 'tteokbokki', 'gimbap', 'bibimbap'}
+               'solapi', 'tteokbokki', 'gimbap', 'bibimbap',
+               # 커머스·팬덤 통용어 (빈도는 낮지만 정상 용어 — 분리·교정 금지)
+               'mapdalseoul', 'preorder', 'preorders', 'restock', 'restocks',
+               'merch', 'lightstick', 'lightsticks', 'photocards', 'fansigns',
+               'unboxing', 'presale', 'videocall', 'giveaway', 'weverse',
+               'tteok', 'kimbap'}
 _WF = None
 
 def _en_freq():
@@ -6541,8 +6603,10 @@ def _en_segment(run):
     if not zf:
         return run
     low = run.lower()
-    if zf(low, 'en') >= 2.0:                      # 이미 실제 단어(전문용어 등)
+    if low in _EN_PROTECT or low in _EN_TYPO:     # 보호어·사전 교정 대상은 분리 금지
         return run
+    if zf(low, 'en') >= 3.6:                      # 확실한 통용 단어만 스킵 (말뭉치의
+        return run                                # run-on 오염(thankyou 3.29 등) 통과 방지
     n = len(low)
     best = [-990.0] * (n + 1); best[0] = 0.0; back = [0] * (n + 1)
     for i in range(1, n + 1):
@@ -6556,8 +6620,12 @@ def _en_segment(run):
         cuts.append(i); i = back[i]
     cuts.append(0); cuts.reverse()
     words = [run[cuts[k]:cuts[k + 1]] for k in range(len(cuts) - 1)]
-    if len(words) < 3:
+    if len(words) < 2:
         return run
+    if len(words) == 2:                           # 2단어 분리는 고신뢰 조건에서만
+        if (zf(low, 'en') >= 2.6 or min(len(w) for w in words) < 3
+                or any(zf(w.lower(), 'en') < 3.5 for w in words)):
+            return run
     for w in words:
         if len(w) > 1 and zf(w.lower(), 'en') == 0:
             return run
@@ -6590,12 +6658,29 @@ def _en_spellfix(w):
     return best if bf >= max(3.5, f0 + 2.0) else w
 
 def _en_fix_line(s):
-    """한 줄 내 영문 보정: run-on 분리 → 문장부호 뒤 공백 → 오탈자 사전·교정."""
-    s = re.sub(r'[A-Za-z]{15,}', lambda m: _en_segment(m.group(0)), s)
-    s = re.sub(r'([a-z])\.([A-Z])', r'\1. \2', s)                  # 소문자.대문자 → 문장 경계
-    s = re.sub(r'([A-Za-z])([,;])([A-Za-z])', r'\1\2 \3', s)       # 쉼표 뒤 공백(숫자 제외)
-    return re.sub(r'(?<![A-Za-z0-9])[a-z]{5,}(?![A-Za-z0-9])',
-                  lambda m: _EN_TYPO.get(m.group(0)) or _en_spellfix(m.group(0)), s)
+    """한 줄 내 영문 보정: run-on 분리 → 문장부호 공백 → 오탈자 사전·철자 교정.
+    ALL-CAPS·중간대문자(브랜드·약어) 토큰은 보호하고, 첫 글자만 대문자인 단어는
+    소문자로 교정한 뒤 케이스를 복원한다."""
+    s = re.sub(r'[A-Za-z]{9,}', lambda m: _en_segment(m.group(0)), s)
+    s = re.sub(r'([a-z가-힣])\.([A-Z가-힣])', r'\1. \2', s)          # 문장 경계 마침표 뒤 공백
+    s = re.sub(r'([A-Za-z가-힣])([,;])([A-Za-z가-힣])', r'\1\2 \3', s)   # 쉼표·세미콜론 (숫자 제외)
+    s = re.sub(r'([A-Za-z가-힣])([!?])([A-Za-z가-힣])', r'\1\2 \3', s)   # 느낌표·물음표
+    s = re.sub(r'([A-Za-z가-힣]):(?!//)([A-Za-z가-힣])', r'\1: \2', s)   # 콜론 (URL·시각 제외)
+    s = re.sub(r'\(\s+', '(', s)
+    s = re.sub(r'\s+\)', ')', s)                                     # 괄호 안쪽 공백
+    s = re.sub(r'^i(?= [A-Za-z])', 'I', s)                           # 문두 단독 i
+    s = re.sub(r'(?<=[A-Za-z] )i(?= [a-z])', 'I', s)                 # 문중 단독 i
+
+    def _tok(m):
+        w = m.group(0)
+        if w.isupper() or not w[1:].islower():                       # 약어·브랜드 보호
+            return w
+        low = w.lower()
+        fixed = _EN_TYPO.get(low) or (_en_spellfix(low) if len(low) >= 5 else low)
+        if fixed == low:
+            return w
+        return (fixed[0].upper() + fixed[1:]) if w[0].isupper() else fixed
+    return re.sub(r"(?<![A-Za-z0-9'])[A-Za-z]{3,}(?![A-Za-z0-9'])", _tok, s)
 
 def _ko_autofix(text):
     """유의사항·공지 저장 시 한·영 맞춤법·띄어쓰기 자동 보정. 빈 줄(항목 구분) 구조는 그대로 유지.

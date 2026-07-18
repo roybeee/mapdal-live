@@ -173,6 +173,14 @@ nav.main>div:hover .mega{display:grid}
 .nd-qty button:hover{border-color:var(--ink)}
 .nd-qty button:disabled{opacity:.35;cursor:default}
 .nd-qty .q{min-width:36px;text-align:center;font-weight:800;font-size:15px}
+.nd-oq .nd-oq-t{font-size:14px;font-weight:800;display:flex;align-items:center;gap:8px;line-height:1.45}
+.nd-req{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;color:var(--red);border:1px solid var(--red);padding:2px 7px;border-radius:999px;flex:0 0 auto}
+.nd-oq-c{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.nd-oq-opt{font-family:inherit;font-size:13px;font-weight:700;padding:10px 16px;border:1.5px solid var(--line);border-radius:10px;background:#fff;color:#3A3A38;cursor:pointer;transition:all .13s;line-height:1.45;text-align:left}
+.nd-oq-opt:hover{border-color:var(--ink)}
+.nd-oq-opt.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.nd-oq-opt:disabled{opacity:.45;cursor:default}
+.nd-oc.miss{border-color:var(--red);box-shadow:0 0 0 3px rgba(232,51,42,.12)}
 .nd-oc-items{margin-top:12px;border-top:1px dashed var(--line);padding-top:11px;display:flex;flex-direction:column;gap:7px}
 .nd-oc-it{display:flex;gap:9px;font-size:13px;color:#3A3A38;line-height:1.5;align-items:flex-start}
 .nd-oc-it svg{flex:0 0 16px;width:16px;height:16px;margin-top:1.5px;color:var(--steel)}
@@ -515,7 +523,7 @@ function infoRows(c){var h='<div class="row"><b>판매기간</b><span>'+esc(peri
    +(s.desc?'<div class="sub">'+esc(s.desc)+'</div>':'')+'</span></div>'});
  return h}
 /* ── 옵션 카드: 메이크스타형 수량 구매 (mpDropOptUI) ── */
-var OQ={};
+var OQ={},OQA={};
 var OICON={album:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></svg>',
  card:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 12h6M9 15.5h6"/></svg>',
  ticket:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M13 6v12" stroke-dasharray="2 2.4"/></svg>',
@@ -525,6 +533,13 @@ function fmtw(n){return '₩'+Number(n||0).toLocaleString('ko-KR')}
 function hasShopOpts(c){return (c.opts||[]).some(function(o){return o.pid&&o.price>0})}
 function allSold(c){return (c.opts||[]).filter(function(o){return o.pid&&o.price>0}).every(function(o){return o.soldout})}
 function optCard(o,i,live){
+ if(!(o.pid&&o.price>0)&&o.items&&o.items.length){ /* 가격 없는 옵션 = 고객 선택 질문 */
+  var ch=o.items.map(function(it,j){var on=OQA[i]===it.t;
+   return '<button type="button" class="nd-oq-opt'+(on?' on':'')+'" data-qi="'+i+'" data-j="'+j+'"'+(live?'':' disabled')+'>'+esc(it.t)+'</button>'}).join('');
+  return '<div class="nd-oc nd-oq'+(OQA[i]!=null?' sel':'')+'" id="ndq'+i+'">'
+   +'<div class="nd-oq-t">'+esc(o.name)+(live?'<span class="nd-req">필수</span>':'')+'</div>'
+   +'<div class="nd-oq-c">'+ch+'</div></div>';
+ }
  var q=(o.pid&&OQ[o.pid])||0;
  var items=(o.items||[]).map(function(it){return '<div class="nd-oc-it">'+(OICON[it.k]||OICON.etc)+'<span>'+esc(it.t)+'</span></div>'}).join('');
  var flag=o.soldout?'<span class="nd-oc-sold">SOLD OUT</span>':(o.left?'<span class="nd-oc-left">'+o.left+'개 남음</span>':'');
@@ -548,6 +563,10 @@ function refreshOpts(c){var live=c.status==='ON_SALE';
  var s=$('#ndOsum');if(s){s.outerHTML=optSummary(c);bindSummary(c)}}
 function bindOpts(c){var box=$('#ndOpts');if(!box)return;
  box.addEventListener('click',function(e){
+  var qb=e.target.closest('button.nd-oq-opt');
+  if(qb){if(qb.disabled)return;
+   var qi=parseInt(qb.dataset.qi,10),j=parseInt(qb.dataset.j,10),qo=c.opts[qi];
+   if(qo&&qo.items&&qo.items[j]){OQA[qi]=qo.items[j].t;refreshOpts(c)}return}
   var b=e.target.closest('button[data-oi]');if(!b||b.disabled)return;
   var o=c.opts[parseInt(b.dataset.oi,10)];if(!o||!o.pid)return;
   var q=(OQ[o.pid]||0)+parseInt(b.dataset.d,10);
@@ -556,9 +575,19 @@ function bindOpts(c){var box=$('#ndOpts');if(!box)return;
  bindSummary(c)}
 function bindSummary(c){
  var a=$('#ndAddCart'),b=$('#ndBuyNow');
- if(a)a.onclick=function(){dropAddCart(c);location.href='/cart'};
- if(b)b.onclick=function(){dropAddCart(c);location.href='/checkout'}}
+ if(a)a.onclick=function(){if(dropAddCart(c))location.href='/cart'};
+ if(b)b.onclick=function(){if(dropAddCart(c))location.href='/checkout'}}
+function unansweredQs(c){var m=[];
+ (c.opts||[]).forEach(function(o,i){
+  if(!(o.pid&&o.price>0)&&o.items&&o.items.length&&OQA[i]==null)m.push({i:i,name:o.name})});
+ return m}
 function dropAddCart(c){
+ var miss=unansweredQs(c);
+ if(miss.length){ /* 필수 선택 미완료 — 담기 차단 */
+  miss.forEach(function(m){var el=$('#ndq'+m.i);if(el)el.classList.add('miss')});
+  var f=$('#ndq'+miss[0].i);if(f&&f.scrollIntoView)try{f.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}
+  alert('필수 선택 항목을 완료해 주세요:\n· '+miss.map(function(m){return m.name}).join('\n· '));
+  return false}
  var CK='mapdal_cart',items;
  try{items=JSON.parse(localStorage.getItem(CK)||'[]')}catch(e){items=[]}
  (c.opts||[]).forEach(function(o){var q=(o.pid&&OQ[o.pid])||0;if(!q)return;
@@ -566,8 +595,17 @@ function dropAddCart(c){
   if(ex)ex.q=Math.min(99,ex.q+q);
   else items.push({id:o.pid,n:c.title+' — '+o.name,p:o.price,q:q,img:c.image||'',u:'/new-drops?id='+c.id})});
  try{localStorage.setItem(CK,JSON.stringify(items))}catch(e){}
+ try{ /* 응모 선택값 — 구매한 옵션 상품에 귀속, 결제 시 주문에 자동 부착 */
+  var sel=[];(c.opts||[]).forEach(function(o,i){
+   if(!(o.pid&&o.price>0)&&o.items&&o.items.length&&OQA[i]!=null)sel.push({q:o.name,a:OQA[i]})});
+  if(sel.length){
+   var sm=JSON.parse(localStorage.getItem('mapdal_drop_sel')||'{}');
+   (c.opts||[]).forEach(function(o){if(o.pid&&(OQ[o.pid]||0)>0)sm[o.pid]={event:c.title,sel:sel}});
+   localStorage.setItem('mapdal_drop_sel',JSON.stringify(sm))}
+ }catch(e){}
  var cnt=items.reduce(function(a,i){return a+i.q},0);
- var el=document.querySelector('.util .cart');if(el)el.textContent='CART · '+cnt}
+ var el=document.querySelector('.util .cart');if(el)el.textContent='CART · '+cnt;
+ return true}
 
 function relSideHTML(c){
  if(!c.related||!c.related.length)return '';
@@ -630,7 +668,7 @@ function ledHTML(c){
  if(c.status==='ENDED')return '<div class="nd-led end">SALES CLOSED — 본 이벤트 판매가 종료되었습니다</div>';
  return ''}
 function renderDetail(c){
- OQ={};
+ OQ={};OQA={};
  document.title=c.title+' — NEW / DROPS | 맵달SEOUL';
  var vis=c.image?'<img src="'+esc(c.image)+'" alt="'+esc(c.title)+'">'
   :'<div class="ph" style="background:'+(c.cat_grad||CATFALL)+'"><b>'+esc((c.artist||c.cat_label||'MAPDAL').toUpperCase())+'</b></div>';

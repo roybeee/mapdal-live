@@ -6517,17 +6517,18 @@ def _drop_terms_for(d):
     return entry, winner
 
 def _migrate_new_drops_page_edits():
-    """new-drops.html의 DB 편집본이 있으면 옵션 카드 UI(mpDropOptUI)가 반영된
-    최신 정적본으로 교체 (멱등 — 이미 반영된 편집본은 건드리지 않는다)."""
+    """new-drops.html의 DB 편집본이 있으면 최신 정적본(mpDropOptUI)으로 동기화.
+    이 페이지는 시스템(JS) 페이지라 [페이지] 탭 수동 편집을 지원하지 않으며,
+    편집본이 정적본과 다르면 배포된 정적본으로 교체한다 (멱등)."""
     try:
         row = one("SELECT html FROM page_edits WHERE path='new-drops.html'")
-        if not row or 'mpDropOptUI' in (row.get('html') or ''):
+        if not row:
             return
         fp = os.path.join(BASE, 'static', 'new-drops.html')
         if not os.path.isfile(fp):
             return
         fresh = open(fp, encoding='utf-8').read()
-        if 'mpDropOptUI' not in fresh:
+        if 'mpDropOptUI' not in fresh or (row.get('html') or '') == fresh:
             return
         run("UPDATE page_edits SET html=?, updated=? WHERE path='new-drops.html'",
             (fresh, now_iso()))

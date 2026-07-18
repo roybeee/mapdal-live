@@ -753,7 +753,8 @@ def api_order_detail(oid: str, request: Request):
             'fulfill': r.get('fulfill') or 'NEW', 'amount': num(r.get('amount')),
             'buyer': {'name': b.get('name', ''), 'phone': b.get('phone', ''), 'zip': b.get('zip', ''),
                       'addr': ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
-                               + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else ''))},
+                               + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
+                      'selections': (b.get('selections') or [])[:40]},
             'items': items, 'ship_method': r.get('ship_method', ''), 'tracking': r.get('tracking') or '',
             'admin_memo': r.get('admin_memo') or '', 'receipt': r.get('receipt_url') or '',
             'method': r.get('method') or '',
@@ -1965,6 +1966,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>금액</b><span class="mono">${won(o.amount)} ${o.method?'· '+esc(o.method):''}</span>
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
  <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}</span>
+ ${(o.buyer.selections&&o.buyer.selections.length)?`<b>응모 선택</b><span>${o.buyer.selections.map(s=>esc((s.event?'['+s.event+'] ':'')+(s.q||'')+' → '+(s.a||'')).replace(/\n/g,'')).join('<br>')}</span>`:''}
  ${o.receipt?`<b>영수증</b><span><a href="${esc(o.receipt)}" target="_blank">토스 영수증</a></span>`:''}</div>
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
  ${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
@@ -7622,7 +7624,7 @@ def _order_complete_apply(html):
         "      title.textContent='주문이 완료되었습니다';\n"
         "      desc.innerHTML='결제 금액 <b>₩'+(+amt).toLocaleString('ko-KR')+'</b> · '+(d.method||'카드')+' 결제가 승인되었습니다.'+(d.receipt?' <a href=\"'+d.receipt+'\" target=\"_blank\" style=\"text-decoration:underline\">매출전표 보기</a>':'');\n"
         "      ono.textContent='ORDER NO. '+oid;\n"
-        "      try{localStorage.removeItem('mapdal_cart');}catch(e){}\n"
+        "      try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
         "    }catch(e){")
     _new_body = (
         "  if(oid){\n"
@@ -7635,7 +7637,7 @@ def _order_complete_apply(html):
         "      title.textContent='주문이 완료되었습니다';\n"
         "      desc.innerHTML='결제 금액 <b>₩'+(+d.amount).toLocaleString('ko-KR')+'</b> · 결제가 정상 승인되었습니다.';\n"
         "      ono.textContent='ORDER NO. '+oid;\n"
-        "      try{localStorage.removeItem('mapdal_cart');}catch(e){}\n"
+        "      try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
         "    }catch(e){")
     html = html.replace(_toss_body, _new_body, 1)
     return html
@@ -8158,6 +8160,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpCardCss' not in html: add += CARD_CSS_SNIPPET
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
+    if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
@@ -9718,6 +9721,24 @@ def artist_hub_page(slug: str):
                         headers={'Cache-Control': 'no-cache'})
 
 # ── 앨범상세 아티스트 칩 — 제목 아래 '아티스트관' 태그 링크 주입 ─────────
+DROPSEL_SNIPPET = r"""<script id="mpDropSel">(function(){
+/* NEW/DROPS 응모 선택값(mapdal_drop_sel) → 주문 buyer.selections 부착 (체크아웃 전용) */
+if(!/^\/checkout(?:\.html)?$/.test(location.pathname))return;
+var OF=window.fetch;
+window.fetch=function(u,o){
+ try{
+  if(o&&String(o.method||'').toUpperCase()==='POST'&&String(u).indexOf('/api/orders')>=0&&typeof o.body==='string'){
+   var b=JSON.parse(o.body),map=JSON.parse(localStorage.getItem('mapdal_drop_sel')||'{}'),out=[],seen={};
+   (b.items||[]).forEach(function(it){var m=map[String(it.id||'')];
+    if(!m||!m.sel||!m.sel.length)return;
+    var k=m.event||'';if(seen[k])return;seen[k]=1;
+    m.sel.forEach(function(s){if(s&&s.q)out.push({event:m.event||'',q:String(s.q).slice(0,120),a:String(s.a||'').slice(0,200)})})});
+   if(out.length){b.buyer=b.buyer||{};b.buyer.selections=out.slice(0,40);o.body=JSON.stringify(b)}
+  }
+ }catch(e){}
+ return OF.apply(this,arguments)};
+})();</script>"""
+
 ARTIST_CHIP_SNIPPET = r"""<script id="mpArtistChip">(function(){
  if(!/^\/album-detail(?:\.html)?$/.test(location.pathname))return;
  var tries=0,t=setInterval(function(){

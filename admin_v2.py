@@ -2629,7 +2629,7 @@ function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,
  <b>응모 전 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_te_on" ${v.terms_entry_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 이벤트명·제공받는 자만 바뀌고 나머지는 항상 같은 포맷</span></label>
  <input id="dr_pi" style="width:100%;margin-top:6px" value="${esc(v.pi_recipients||'')}" placeholder="개인정보를 제공받는 자 — 예) KPOP2GETHER, 스타쉽엔터테인먼트 (비우면 'KPOP2GETHER, 맵달서울성수')">
  <textarea id="dr_te_extra" rows="2" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나 (표준 문구 뒤에 이어서 번호가 붙습니다)">${esc(v.entry_extra||'')}</textarea></span>
- <b>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_tw_on" ${v.terms_winner_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형이 영상통화/팬사인회/기타인지에 따라 표준 문구가 자동 선택됩니다</span></label>
+ <b>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_tw_on" ${v.terms_winner_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 팬사인회·영상통화가 모두 있으면 [대면 팬사인회]·[영상통화] 두 섹션이 선택 순서대로 각각 표시되고, 그 외 유형만 있으면 공통 문구가 표시됩니다. 추가 항목은 마지막 섹션 끝에 붙습니다.</span></label>
  <textarea id="dr_tw_extra" rows="2" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나">${esc(v.winner_extra||'')}</textarea></span>
  <b>발표 공지</b><span><textarea id="dr_annnotice" rows="3" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
  <b>당첨 그룹</b><span><div id="dr_wins">${(v.winners||[]).map(drWinRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_wins').insertAdjacentHTML('beforeend',drWinRow())">+ 당첨 그룹 추가</button></span>
@@ -6507,14 +6507,19 @@ def _drop_terms_for(d):
                   [s.replace('{RECIPIENTS}', rcp).replace('{TITLE}', title) for s in subs])
                  for t, subs in DROP_TERMS_ENTRY]
         entry = _drop_terms_html(items, extras('entry_extra'))
-    winner = ''
+    winners = []
     if d.get('terms_winner_on', True):
-        cats = set(_drop_cats(d))
-        tpl = (DROP_TERMS_WINNER_VIDEOCALL if 'VIDEOCALL' in cats
-               else DROP_TERMS_WINNER_FANSIGN if 'FANSIGN' in cats
-               else DROP_TERMS_WINNER_DEFAULT)
-        winner = _drop_terms_html(tpl, extras('winner_extra'))
-    return entry, winner
+        picked = [x for x in _drop_cats(d) if x in ('FANSIGN', 'VIDEOCALL')]
+        specs = [(('FANSIGN', '대면 팬사인회 당첨자 유의사항', DROP_TERMS_WINNER_FANSIGN)
+                  if x == 'FANSIGN' else
+                  ('VIDEOCALL', '영상통화 당첨자 유의사항', DROP_TERMS_WINNER_VIDEOCALL))
+                 for x in picked] \
+            or [('DEFAULT', '당첨자 유의사항', DROP_TERMS_WINNER_DEFAULT)]
+        ex = extras('winner_extra')
+        for i, (kind, label, tpl) in enumerate(specs):   # 유형 선택 순서대로 · 추가 항목은 마지막 섹션에
+            winners.append({'kind': kind, 'label': label,
+                            'html': _drop_terms_html(tpl, ex if i == len(specs) - 1 else [])})
+    return entry, winners
 
 def _migrate_new_drops_page_edits():
     """new-drops.html의 DB 편집본이 있으면 최신 정적본(mpDropOptUI)으로 동기화.
@@ -6598,7 +6603,10 @@ def api_drop_public_detail(did: int):
               'announce_notice': str(d.get('announce_notice') or ''),
               'winner_groups': (_drop_winner_groups(d, masked=True) if c['announce'] == 'ANNOUNCED' else []),
               'related': rel[:8]})
-    c['entry_terms_html'], c['winner_terms_html'] = _drop_terms_for(d)
+    c['entry_terms_html'], wt = _drop_terms_for(d)
+    c['winner_terms'] = wt
+    c['winner_terms_html'] = next((w['html'] for k in ('VIDEOCALL', 'FANSIGN', 'DEFAULT')
+                                   for w in wt if w['kind'] == k), '')  # 구버전 캐시 페이지 호환
     return JSONResponse(c, headers={'Cache-Control': 'no-store'})
 
 def _drop_url_ok(u):

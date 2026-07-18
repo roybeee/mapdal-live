@@ -5,3 +5,4 @@ PyJWT[crypto]>=2.8
 python-multipart>=0.0.9
 boto3>=1.34
 kiwipiepy>=0.18
+wordfreq>=3.0

@@ -75,15 +75,19 @@ nav.main>div:hover .mega{display:grid}
 
 /* ---------- LED 상태 탭바 (시그니처) ---------- */
 .nd-tabs{position:sticky;top:78px;z-index:60;background:var(--ink);border-bottom:3px solid var(--red)}
-.nd-tabs-in{max-width:1440px;margin:0 auto;padding:0 40px;display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;
+.nd-tabs-in{max-width:1440px;margin:0 auto;padding:14px 40px;display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;
   -webkit-mask-image:linear-gradient(90deg,#000 92%,transparent);mask-image:linear-gradient(90deg,#000 92%,transparent)}
 .nd-tabs-in::-webkit-scrollbar{display:none}
-.nd-tab{font-family:var(--mono);font-size:12.5px;letter-spacing:.08em;color:#8C8B84;background:none;border:0;
-  border-bottom:2px solid transparent;padding:16px 15px 14px;white-space:nowrap;cursor:pointer;transition:color .15s}
-.nd-tab .n{margin-left:7px;font-size:11px;color:#5F5E58}
-.nd-tab:hover{color:#fff}
-.nd-tab.on{color:var(--amber);border-bottom-color:var(--amber);text-shadow:0 0 14px rgba(255,176,0,.5)}
-.nd-tab.on .n{color:var(--amber)}
+.nd-tab{font-family:var(--body);font-size:16px;font-weight:800;letter-spacing:.02em;color:#B9B8B0;
+  background:#22221E;border:1px solid #34342E;border-radius:999px;padding:12px 20px;white-space:nowrap;cursor:pointer;
+  display:inline-flex;align-items:center;transition:color .15s,background .15s,border-color .15s,box-shadow .15s}
+.nd-tab .n{margin-left:9px;min-width:22px;height:22px;padding:0 7px;border-radius:999px;display:inline-flex;
+  align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;font-weight:700;
+  background:rgba(255,255,255,.09);color:#DDDCD4}
+.nd-tab:hover{color:#fff;border-color:#6B6A62}
+.nd-tab.on{color:var(--ink);background:var(--amber);border-color:var(--amber);
+  box-shadow:0 0 22px rgba(255,176,0,.45),0 4px 14px rgba(0,0,0,.35)}
+.nd-tab.on .n{background:rgba(20,20,20,.18);color:var(--ink)}
 
 /* ---------- 목록 ---------- */
 .nd-wrap{max-width:1440px;margin:0 auto;padding:40px 48px 96px}
@@ -334,7 +338,9 @@ footer li a:hover{color:#fff}
 @media(max-width:640px){
   .header-inner{padding:0 18px}
   .nd-hero-in{padding:38px 20px 32px}
-  .nd-tabs-in{padding:0 14px}
+  .nd-tabs-in{padding:10px 14px;gap:8px}
+  .nd-tab{font-size:14.5px;padding:10px 16px}
+  .nd-tab .n{min-width:20px;height:20px;font-size:11px}
   .nd-wrap{padding:26px 18px 72px}
   .nd-bc{padding:20px 18px 0}
   .nd-det{padding:18px 18px 52px}

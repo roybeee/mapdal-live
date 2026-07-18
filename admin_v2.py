@@ -337,6 +337,19 @@ def ensure_ready():
         """CREATE TABLE IF NOT EXISTS site_settings(key TEXT PRIMARY KEY, value TEXT,
            updated TEXT, by_admin TEXT)""",
         """CREATE TABLE IF NOT EXISTS catalog_sequences(name TEXT PRIMARY KEY, value INTEGER)""",
+        """CREATE TABLE IF NOT EXISTS artists(id TEXT PRIMARY KEY, name TEXT, name_en TEXT,
+           slug TEXT UNIQUE, aliases TEXT, agency TEXT, debut_year INTEGER, profile_img TEXT,
+           descr TEXT, is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
+           auto_collected INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)""",
+        """CREATE TABLE IF NOT EXISTS artist_links(id TEXT PRIMARY KEY, artist_id TEXT,
+           kind TEXT DEFAULT 'item', category TEXT, title TEXT, image TEXT, url TEXT,
+           price INTEGER, ref TEXT, sort_order INTEGER DEFAULT 0, created_at TEXT)""",
+        """CREATE INDEX IF NOT EXISTS idx_artist_links_artist ON artist_links(artist_id)""",
+        """CREATE TABLE IF NOT EXISTS artist_pending(key TEXT PRIMARY KEY, surface TEXT,
+           similar_id TEXT, similar_name TEXT, reason TEXT, score INTEGER,
+           albums INTEGER, created TEXT)""",
+        """CREATE TABLE IF NOT EXISTS artist_suppressed(key TEXT PRIMARY KEY, name TEXT,
+           created TEXT, by_admin TEXT)""",
         """CREATE TABLE IF NOT EXISTS product_groups(id TEXT PRIMARY KEY, group_no INTEGER UNIQUE,
            group_code TEXT UNIQUE, group_key TEXT UNIQUE, title TEXT, department TEXT, category TEXT,
            product_type TEXT, brand_artist TEXT, collection_name TEXT, source TEXT,
@@ -496,6 +509,14 @@ def ensure_ready():
     try: _migrate_lifestyle_page_edits() # DB 편집본이 정적 파일을 덮는 경우의 화면 문구도 전환
     except Exception: pass
     try: _migrate_storefront_header_page_edits() # DB 편집본에도 개편된 상단 헤더를 멱등 반영
+    except Exception: pass
+    try: _artists_migrate_ordinal() # 구버전이 만든 'N집' 서수 표기 팀 병합·정정 (멱등)
+    except Exception: pass
+    try: _artists_migrate_variants() # 구버전이 만든 역순 표기('있지 (ITZY)'류) 중복 팀 병합 (멱등)
+    except Exception: pass
+    try: _artists_migrate_bare() # 구버전이 만든 단독 표기('권은비'류) 중복 팀 병합 (멱등)
+    except Exception: pass
+    try: _artists_collect() # K2G 카탈로그 아티스트 → artists 자동 수집 (멱등)
     except Exception: pass
     try: _account_migrate() # 기존 회원을 단일 고객 ID·동의·포인트 원장 구조로 안전하게 백필
     except Exception as e: print('account migration skipped:', e)
@@ -1258,6 +1279,8 @@ def api_product_update(request: Request, body: dict = Body(...)):
     audit(a, '상품수정', pid, ', '.join(log))
     try: _k2g_cache_bust()
     except Exception: pass
+    try: _artist_cache_bust()   # 상품명 변경 → 아티스트 매칭 재계산
+    except Exception: pass
     try:
         nowr = one('SELECT stock, soldout FROM products WHERE id=?', (pid,)) or {}
         was_off = num(old.get('soldout')) or num(old.get('stock')) <= 0
@@ -1794,6 +1817,18 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
    <div id="reviewList" class="loading">불러오는 중…</div>
   </div>
  </section>
+<section id="t-artists" style="display:none">
+  <div class="panel"><h3>아티스트 메타태그 <span class="tag">아티스트관 · 앨범/이벤트/굿즈 자동 연결</span></h3>
+  <div class="hint" style="margin-bottom:10px">K-POP 카탈로그의 앨범명에서 아티스트를 자동 수집해 <b>/artist/슬러그</b> 아티스트관 페이지를 만듭니다. <b>앨범·이벤트</b>는 카탈로그와 실시간 연동(복사본 없음)되어 가격·품절이 항상 최신이고, <b>굿즈</b>는 직접등록 상품명 자동 매칭 + 수동 연결로 구성됩니다. 새 앨범이 등록되면 미등록 아티스트는 <b>자동 등록</b>되고, 기존 팀과 표기가 비슷한(오타 의심) 경우엔 아래 <b>검수 대기</b>로 보류되어 오등록을 막습니다. 별칭을 추가할수록 매칭 정확도가 올라가고, 앨범 상세 제목 아래에 <b># 아티스트관</b> 태그 링크가 자동으로 붙습니다.</div>
+  <div class="toolbar" style="margin-bottom:12px">
+    <input id="arq" placeholder="아티스트 · 별칭 검색" style="width:210px" onkeydown="if(event.key==='Enter')loadArtists()">
+    <button class="btn" onclick="loadArtists()">검색</button>
+    <button class="btn ghost" onclick="artistCollect()">카탈로그에서 수집</button>
+    <button class="btn ghost" onclick="artistModal('')">+ 새 아티스트</button>
+    <a class="btn ghost" href="/artists" target="_blank" style="text-decoration:none">사이트에서 확인</a>
+    <span class="hint" id="arstat"></span>
+  </div>
+  <div id="artistList" class="loading">불러오는 중…</div></div></section>
 <section id="t-pages" style="display:none">
   <div class="panel"><h3>페이지 콘텐츠 관리 <span class="tag">저장 즉시 사이트 반영 · 재배포에도 유지</span></h3>
   <div class="hint" style="margin-bottom:10px">편집 내용은 데이터베이스에 저장되어 원본 파일과 별도로 보존됩니다. [원본 복원]으로 언제든 되돌릴 수 있고, 저장할 때마다 직전 버전이 이력(최근 10개)에 남습니다.</div>
@@ -1879,8 +1914,8 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>loadAccounts(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['artists','아티스트',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>loadAccounts(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -2371,6 +2406,147 @@ async function uploadFile(file){
  const fd=new FormData();fd.append('file',small,small.name||'image.jpg');
  const r=await api('/admin/api/upload',{method:'POST',body:fd});
  return r.url;
+}
+/* ── 아티스트 메타태그 탭 ─────────────────────────────────────────── */
+let ARTS=[];
+async function loadArtists(){
+ const box=$('#artistList');box.innerHTML='<div class="loading">불러오는 중…</div>';
+ try{
+  const d=await api('/admin/api/artists?query='+encodeURIComponent(($('#arq').value||'').trim()));
+  ARTS=d.rows;const pend=d.pending||[];
+  $('#arstat').textContent=`등록 ${d.total}팀 · 카탈로그 감지 ${d.catalog_artists}팀 · 수동 연결 ${d.links}건${pend.length?` · 검수 대기 ${pend.length}건`:''}`;
+  const pendH=pend.length?`<div style="border:1px solid var(--line);border-left:4px solid var(--amber);background:#fff;padding:12px 14px;margin-bottom:12px">
+   <h3 style="font-size:13.5px;margin:0 0 4px">신규 아티스트 검수 대기 <span class="tag" style="background:var(--amber);color:#141414">${pend.length}건</span></h3>
+   <div class="hint" style="margin:4px 0 8px">새 앨범에서 감지됐지만 기존 팀과 표기가 비슷해 <b>자동 등록을 보류</b>한 항목입니다. 오타·표기 변형이면 [별칭으로 흡수], 실제 다른 팀이면 [신규 등록]을 누르세요.</div>
+   <table><thead><tr><th>감지 표기</th><th style="text-align:right">앨범</th><th>보류 사유</th><th style="width:270px"></th></tr></thead><tbody>${pend.map(p=>`<tr>
+    <td><b>${esc(p.surface)}</b></td><td style="text-align:right">${p.albums}</td>
+    <td style="font-size:11.5px;color:#777">${esc(p.reason)}${p.similar_name?` — <b>${esc(p.similar_name)}</b>${p.score?` (유사도 ${p.score})`:''}`:''}</td>
+    <td style="text-align:right;white-space:nowrap">${p.similar_id?`<button class="btn sm" onclick="artistPending('${p.key}','alias')">별칭으로 흡수</button> `:''}<button class="btn sm ghost" onclick="artistPending('${p.key}','create')">신규 등록</button> <button class="btn sm ghost" onclick="artistPending('${p.key}','ignore')">무시</button></td></tr>`).join('')}</tbody></table></div>`:'';
+  if(!d.rows.length){box.className='';box.innerHTML=pendH+'<div class="empty-state">아티스트가 없습니다. [카탈로그에서 수집]을 누르면 K-POP 앨범명에서 자동 생성됩니다.</div>';return}
+  box.className='';
+  box.innerHTML=pendH+`<table><thead><tr><th>아티스트</th><th>슬러그</th><th>별칭</th><th style="text-align:right">앨범</th><th style="text-align:right">이벤트</th><th>상태</th><th style="width:200px"></th></tr></thead><tbody>`+
+   d.rows.map(a=>`<tr>
+    <td><b>${esc(a.name)}</b>${a.name_en?` <span style="color:#888;font-size:11px">${esc(a.name_en)}</span>`:''}${a.auto?'':' <span class="tag">수동</span>'}</td>
+    <td class="mono" style="font-size:11px"><a href="/artist/${encodeURIComponent(a.slug)}" target="_blank">${esc(a.slug)}</a></td>
+    <td style="font-size:11px;color:#777;max-width:260px">${esc(a.aliases.join(', '))}</td>
+    <td style="text-align:right">${a.albums}</td><td style="text-align:right">${a.events}</td>
+    <td>${a.is_active?'<span style="color:var(--ok);font-weight:700">노출</span>':'<span style="color:#999">숨김</span>'}</td>
+    <td style="text-align:right;white-space:nowrap"><button class="btn sm ghost" onclick="artistModal('${a.id}')">편집·연결</button>${can(2)?` <button class="btn sm ghost" onclick="artistMerge('${a.id}')">병합</button> <button class="btn sm ghost" style="color:var(--bad)" onclick="delArtist('${a.id}')">삭제</button>`:''}</td>
+   </tr>`).join('')+'</tbody></table>';
+ }catch(e){box.className='';box.innerHTML='';toast(e.message)}
+}
+async function artistCollect(){
+ if(!can(1))return toast('권한이 없습니다');
+ try{const d=await api('/admin/api/artists/collect',{method:'POST'});
+  toast((d.created||d.aliased||d.pending)?`신규 ${d.created}팀 · 별칭 흡수 ${d.aliased} · 검수 대기 ${d.pending}`:'새로 수집할 아티스트가 없습니다 — 카탈로그 전 팀 등록됨');
+  loadArtists();
+ }catch(e){toast(e.message)}
+}
+async function artistPending(key,action){
+ if(action==='ignore'&&!confirm('이 표기를 무시할까요?\n앞으로 자동 수집에서 다시 제안되지 않습니다. (해당 표기를 수동 등록하면 해제됩니다)'))return;
+ try{const r=await api('/admin/api/artists/pending',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,action:action})});
+  toast(r.mode==='alias'?'기존 팀 별칭으로 흡수했습니다':r.mode==='create'?'신규 아티스트로 등록했습니다':'무시했습니다 — 재제안 안 함');loadArtists();
+ }catch(e){toast(e.message)}
+}
+function artistModal(id){
+ const a=id?ARTS.find(x=>x.id===id):null;
+ const v=a||{name:'',name_en:'',slug:'',aliases:[],agency:'',debut_year:'',profile_img:'',descr:'',is_active:1,sort_order:0};
+ $('#mbox').classList.add('wide');
+ $('#mbox').innerHTML=`<h3>${a?'아티스트 편집':'새 아티스트'}${a?` <span class="tag">/artist/${esc(a.slug)}</span>`:''}</h3>
+ <div class="kv">
+ <b>이름 *</b><span><input id="ar_name" style="width:100%" value="${esc(v.name)}" placeholder="예) 브레이브걸스 — 카탈로그 표기와 같게"></span>
+ <b>영문명</b><span><input id="ar_en" style="width:100%" value="${esc(v.name_en)}" placeholder="예) Brave Girls"></span>
+ <b>슬러그</b><span><input id="ar_slug" style="width:100%" value="${esc(v.slug)}" placeholder="비우면 자동 생성 — 페이지 주소 /artist/슬러그"></span>
+ <b>별칭</b><span><textarea id="ar_alias" rows="3" style="width:100%" placeholder="한 줄에 하나 — 앨범명·상품명에 등장하는 모든 표기(한/영/약칭)를 넣을수록 매칭이 정확해집니다">${esc(v.aliases.join('\n'))}</textarea></span>
+ <b>소속사</b><span><input id="ar_agency" value="${esc(v.agency)}"></span>
+ <b>데뷔년도</b><span><input id="ar_year" type="number" value="${esc(v.debut_year||'')}" style="width:110px" placeholder="2016"></span>
+ <b>프로필 이미지</b><span><div style="display:flex;gap:6px"><input id="ar_img" style="flex:1" value="${esc(v.profile_img)}" placeholder="비우면 최신 앨범 커버 자동 사용"><button class="btn sm" type="button" onclick="document.getElementById('ar_imgfile').click()">업로드</button><input type="file" id="ar_imgfile" accept="image/*" style="display:none" onchange="arUp(this)"></div></span>
+ <b>소개</b><span><textarea id="ar_descr" rows="3" style="width:100%" placeholder="아티스트관 상단에 표시할 소개 문구 (선택)">${esc(v.descr)}</textarea></span>
+ <b>노출</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="ar_on" ${v.is_active?'checked':''}> 아티스트관·목록·검색에 표시</label></span>
+ <b>정렬 가중치</b><span><input id="ar_sort" type="number" value="${v.sort_order||0}" style="width:110px"> <span class="hint">클수록 목록 앞쪽</span></span>
+ </div>
+ ${a?'<div id="arLinks" class="loading" style="margin-top:6px">연결 상품 불러오는 중…</div>':''}
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+  <button class="btn ghost" onclick="closeM()">닫기</button>
+  ${can(1)?`<button class="btn" onclick="saveArtist('${a?a.id:''}')">저장</button>`:''}
+ </div>`;
+ $('#mbg').style.display='flex';
+ if(a)artistLinks(a.id);
+}
+async function artistLinks(aid){
+ const el=$('#arLinks');if(!el)return;
+ try{
+  const d=await api('/admin/api/artists/links?artist_id='+encodeURIComponent(aid));
+  const CATN={goods:'굿즈',event:'이벤트',content:'콘텐츠',album:'앨범'};
+  const man=d.links.filter(l=>l.kind==='item');
+  const auto=d.auto_goods.map(g=>`<tr><td><span class="tag" style="background:#eee;color:#555">자동</span> ${esc(g.name)}</td><td class="mono" style="font-size:10.5px">${esc(g.id)}</td><td style="text-align:right">${g.price?'₩'+g.price.toLocaleString():''}</td><td style="text-align:right">${can(1)?`<button class="btn sm ghost" onclick="artistExclude('${aid}','${esc(g.id)}')">제외</button>`:''}</td></tr>`).join('');
+  const manH=man.map(l=>`<tr><td><span class="tag">${CATN[l.category]||esc(l.category)}</span> ${esc(l.title)}</td><td class="mono" style="font-size:10.5px">${esc(l.url)}</td><td style="text-align:right">${l.price?'₩'+l.price.toLocaleString():''}</td><td style="text-align:right">${can(1)?`<button class="btn sm ghost" style="color:var(--bad)" onclick="artistLinkDel('${l.id}','${aid}')">삭제</button>`:''}</td></tr>`).join('');
+  const excH=d.links.filter(l=>l.kind==='exclude').map(l=>`<tr><td><span class="tag" style="background:#fff0cf;color:#8a5b00">제외</span> <span class="mono" style="font-size:10.5px">${esc(l.ref)}</span></td><td colspan="2" style="color:#888;font-size:11px">굿즈 자동 매칭에서 제외됨</td><td style="text-align:right">${can(1)?`<button class="btn sm ghost" onclick="artistLinkDel('${l.id}','${aid}')">복원</button>`:''}</td></tr>`).join('');
+  el.className='';
+  el.innerHTML=`<h3 style="margin:8px 0 6px;font-size:13px">연결 상품 <span class="hint">앨범·이벤트는 카탈로그 자동 연동 — 아래는 굿즈 자동 매칭 ${d.auto_goods.length} · 수동 ${man.length}</span></h3>
+  ${(auto||manH||excH)?`<table><thead><tr><th>항목</th><th>연결</th><th style="text-align:right">가격</th><th style="width:70px"></th></tr></thead><tbody>${auto}${manH}${excH}</tbody></table>`:'<div class="hint">연결된 굿즈가 없습니다 — 직접등록 상품명에 별칭이 들어가면 자동 매칭됩니다.</div>'}
+  ${can(1)?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;align-items:center">
+   <select id="al_cat"><option value="goods">굿즈</option><option value="event">이벤트</option><option value="content">콘텐츠</option></select>
+   <input id="al_title" placeholder="제목 *" style="flex:1;min-width:150px">
+   <input id="al_url" placeholder="링크 — /p/상품ID · https://…" style="flex:1;min-width:150px">
+   <input id="al_price" type="number" placeholder="가격" style="width:90px">
+   <button class="btn sm" onclick="artistLinkAdd('${aid}')">+ 연결</button></div>
+   <div class="hint" style="margin-top:4px">자동으로 안 잡히는 정적 상품·팝업/전시·유튜브 등 외부 콘텐츠를 수동 연결하세요. 이벤트로 연결하면 아티스트관 이벤트 섹션 맨 앞에 표시됩니다.</div>`:''}`;
+ }catch(e){el.className='';el.textContent=e.message}
+}
+async function artistExclude(aid,ref){
+ try{await api('/admin/api/artists/links',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist_id:aid,kind:'exclude',ref:ref})});
+  toast('자동 매칭에서 제외했습니다');artistLinks(aid);
+ }catch(e){toast(e.message)}
+}
+async function artistLinkAdd(aid){
+ const title=$('#al_title').value.trim();if(!title)return toast('제목을 입력하세요');
+ try{await api('/admin/api/artists/links',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({artist_id:aid,category:$('#al_cat').value,title:title,url:$('#al_url').value.trim(),price:$('#al_price').value||null})});
+  toast('연결했습니다');$('#al_title').value='';$('#al_url').value='';$('#al_price').value='';artistLinks(aid);
+ }catch(e){toast(e.message)}
+}
+async function artistLinkDel(id,aid){
+ try{await api('/admin/api/artists/links/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
+  artistLinks(aid);
+ }catch(e){toast(e.message)}
+}
+async function arUp(inp){
+ const f=inp.files[0];if(!f)return;
+ try{$('#ar_img').value=await uploadFile(f);toast('업로드 완료 — 저장을 눌러 반영')}catch(e){toast(e.message)}
+}
+async function saveArtist(id){
+ const b={id:id,name:$('#ar_name').value,name_en:$('#ar_en').value,slug:$('#ar_slug').value,
+  aliases:$('#ar_alias').value,agency:$('#ar_agency').value,debut_year:$('#ar_year').value||null,
+  profile_img:$('#ar_img').value,descr:$('#ar_descr').value,is_active:$('#ar_on').checked,
+  sort_order:$('#ar_sort').value||0};
+ try{await api('/admin/api/artists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  toast('저장했습니다');closeM();loadArtists();
+ }catch(e){toast(e.message)}
+}
+async function delArtist(id){
+ const a=ARTS.find(x=>x.id===id);
+ if(!confirm(`'${a?a.name:''}' 아티스트를 삭제할까요?\n아티스트관 페이지와 수동 연결이 함께 삭제되고, 자동 수집이 이 팀을 다시 만들지 않도록 억제됩니다.\n(앨범·상품 원본은 유지 · 나중에 [+ 새 아티스트]로 수동 등록하면 억제가 해제됩니다)`))return;
+ try{await api('/admin/api/artists/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
+  toast('삭제했습니다');loadArtists();
+ }catch(e){toast(e.message)}
+}
+function artistMerge(id){
+ const src=ARTS.find(x=>x.id===id);if(!src)return;
+ if(ARTS.length<2)return toast('병합할 다른 아티스트가 없습니다');
+ $('#mbox').classList.remove('wide');
+ $('#mbox').innerHTML=`<h3>아티스트 병합</h3>
+ <div class="hint" style="margin:8px 0 12px">표기 차이로 중복 생성된 팀을 하나로 합칩니다.<br><b>${esc(src.name)}</b>의 별칭·수동 연결이 아래에서 선택한 팀으로 옮겨지고, <b>${esc(src.name)}</b> 항목은 삭제됩니다.</div>
+ <select id="mg_t" style="width:100%">${ARTS.filter(x=>x.id!==id).map(x=>`<option value="${x.id}">${esc(x.name)}${x.name_en?' ('+esc(x.name_en)+')':''} — 앨범 ${x.albums}</option>`).join('')}</select>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+  <button class="btn ghost" onclick="closeM()">취소</button>
+  <button class="btn" onclick="artistMergeGo('${id}')">병합 실행</button></div>`;
+ $('#mbg').style.display='flex';
+}
+async function artistMergeGo(sid){
+ try{await api('/admin/api/artists/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:sid,target_id:$('#mg_t').value})});
+  toast('병합했습니다');closeM();loadArtists();
+ }catch(e){toast(e.message)}
 }
 let DR=[],DRCATS=[];
 async function loadDrops(){try{const d=await api('/admin/api/drops');DR=d.rows;DRCATS=d.cats;
@@ -3082,6 +3258,8 @@ def api_product_create(request: Request, body: dict = Body(...)):
     audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s' % (
         name, format(price, ','), (' · 할인 %d%% → 판매 ₩%s' % (dc, format(disc_price(price, dc), ','))) if dc else '',
         stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류')))
+    try: _artist_cache_bust()   # 아티스트 굿즈 자동 매칭 즉시 반영
+    except Exception: pass
     return {'ok': True, 'id': pid, 'url': '/p/' + pid}
 
 @admin_router.post('/admin/api/products/delete')
@@ -7446,6 +7624,12 @@ def _sitemap_xml():
             continue
         locs.append(SITE_ORIGIN + '/' + slug)
     locs.append(SITE_ORIGIN + '/kpop')
+    locs.append(SITE_ORIGIN + '/artists')
+    try:
+        for r in rows('SELECT slug FROM artists WHERE is_active=1'):
+            locs.append(SITE_ORIGIN + '/artist/' + urllib.parse.quote(str(r['slug']), safe=''))
+    except Exception:
+        pass
     try:
         ensure_ready()
         for r in rows("SELECT id FROM products WHERE id LIKE ? ORDER BY id", ('mp::%',)):
@@ -7504,6 +7688,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpTickerJs' not in html: add += TICKER_SNIPPET
     if 'mpCardCss' not in html: add += CARD_CSS_SNIPPET
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
+    if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
@@ -8233,6 +8418,1090 @@ def api_m_withdraw(request: Request, body: dict = Body(...)):
     resp = JSONResponse({'ok': True})
     resp.delete_cookie('mp_member')
     return resp
+
+# ══════════════════════════════════════════════════════════════════════════
+# 아티스트 메타태그 시스템 — 국내 KPOP 아티스트 정보의 DB 수집·저장 + 아티스트관
+#   구조: artists(아티스트 마스터·별칭) + artist_links(수동 연결·제외)
+#   · 앨범/이벤트: K2G 카탈로그(products k2g::)를 파싱해 별칭 정규화 키로 실시간
+#     매칭(60초 캐시) — 별도 복사본을 두지 않아 가격·품절·삭제가 항상 최신.
+#   · 굿즈: mp:: 직접등록 상품을 별칭 경계 매칭(한글 부분일치·영문 단어경계)으로
+#     자동 연결 + artist_links 수동 연결. 오탐은 kind='exclude'로 개별 제외.
+#   · 수집: _artists_collect()가 카탈로그의 고유 아티스트를 자동 생성(멱등) —
+#     기동 시 1회 + 관리자 [카탈로그에서 수집] 버튼.
+#   · 공개: /artists(전체 목록) · /artist/{slug}(아티스트관) · /api/artist* —
+#     캐치올(serve_site)보다 먼저 등록되어야 한다.
+#   · 파싱 규칙은 _catalog_parse_product(상품 마스터)와 동일 계열을 유지한다.
+# ══════════════════════════════════════════════════════════════════════════
+
+_ARTIST_TAGS_RE = re.compile(r'^\s*(?:【[^】]+】\s*)+')
+_ARTIST_PAREN_RE = re.compile(r'^(.*?)\s*\(([^()]+)\)\s*$')
+_ARTIST_KO_RE = re.compile(r'[가-힣]')
+# 표기부 끝의 앨범 서수·유형 접미 — 'NCT 127 (엔시티 127) 3집'은 별개 팀이 아니다.
+#   포착: N집 · 정규/미니(앨범) N집 · N집 리패키지/스페셜 버전·앨범/합본 ·
+#         The 1st Single/Mini Album · 겨울 스페셜 싱글   ("(여자)아이들"류는 보존)
+_ARTIST_ORDINAL_RE = re.compile(
+    r'\s*[:·]?\s*(?:'
+    r'(?:정규|미니|싱글|스페셜)?\s*(?:앨범)?\s*\d+\s*집'
+    r'(?:\s*(?:리패키지|스페셜\s*(?:버전|앨범)|합본))?'
+    r'|The\s*\d+(?:st|nd|rd|th)\s*(?:Single|Mini|Full|Special)?\s*Album'
+    r'|겨울\s*스페셜\s*싱글'
+    r')\s*$', re.I)
+
+_ARTIST_SQTAG_RE = re.compile(r'^\s*(?:\[[^\]\[]{1,20}\]\s*)+')   # [랜덤]·[예약특전종료] 등
+                                                                  # ※ '(여자)아이들'의 소괄호는 보존
+
+def _artist_strip_ordinal(s):
+    s = str(s or '').strip()
+    while True:
+        t = _ARTIST_ORDINAL_RE.sub('', s).strip()
+        if t == s or not t:
+            break
+        s = t
+    return s
+
+def _artist_clean_name(s):
+    """표기부 정제 — 앞의 대괄호 태그 제거 + 뒤의 앨범 서수 접미 제거."""
+    return _artist_strip_ordinal(_ARTIST_SQTAG_RE.sub('', str(s or '')).strip())
+
+def _artist_h(s):
+    return str('' if s is None else s).replace('&', '&amp;').replace('<', '&lt;')\
+        .replace('>', '&gt;').replace('"', '&quot;')
+
+def _artist_parse_k2g(raw):
+    """K2G 상품명 → (아티스트 표기, 앨범 제목부, 이벤트, 이벤트일). 구분자(' - ')
+    없는 컴필레이션(SMTOWN 등)은 아티스트 없음으로 둔다."""
+    raw = str(raw or '')
+    tags = re.findall(r'【([^】]+)】', raw)
+    clean = _ARTIST_SQTAG_RE.sub('', _ARTIST_TAGS_RE.sub('', raw).strip()).strip()
+    artist, sep, rest = clean.partition(' - ')
+    if not sep:
+        return '', clean, '', ''
+    artist, rest = _artist_strip_ordinal(artist), rest.strip()
+    joined = ' '.join(tags) + ' ' + raw
+    event = ''
+    if re.search(r'영상통화|video\s*call|fancall', joined, re.I): event = '영상통화'
+    elif re.search(r'대면\s*사인|팬\s*사인|fansign', joined, re.I): event = '팬사인회'
+    elif re.search(r'럭키\s*드로우|lucky\s*draw', joined, re.I): event = '럭키드로우'
+    elif re.search(r'쇼케이스|showcase', joined, re.I): event = '쇼케이스'
+    event_date = ''
+    dm = re.search(r'【\s*(\d{1,2}/\d{1,2})', raw)
+    if dm: event_date = dm.group(1)
+    return artist, rest, event, event_date
+
+def _artist_split_surface(surface):
+    """'에이티즈 (ATEEZ)' 류의 표기 → (대표명, 영문명, 별칭목록)."""
+    s = str(surface or '').strip()
+    aliases, name_en = {s}, ''
+    m = _ARTIST_PAREN_RE.match(s)
+    if m:
+        outer, inner = m.group(1).strip(), m.group(2).strip()
+        if outer and inner:
+            aliases |= {outer, inner}
+            o_ko, i_ko = bool(_ARTIST_KO_RE.search(outer)), bool(_ARTIST_KO_RE.search(inner))
+            if o_ko and not i_ko: name_en = inner
+            elif i_ko and not o_ko: name_en = outer
+    return s, name_en, sorted(a for a in aliases if a)
+
+def _artist_slugify(name_en, surface, taken=None):
+    """영문명 우선 ASCII 슬러그, 없으면 한글 슬러그(URL 인코딩 서빙). 중복 시 -2…"""
+    base = re.sub(r'[^a-z0-9]+', '-', str(name_en or '').lower()).strip('-')
+    if not base:
+        core = _ARTIST_PAREN_RE.sub(r'\1', str(surface or '')).strip() or str(surface or '')
+        base = re.sub(r'[^0-9a-z가-힣]+', '-', core.lower()).strip('-')
+    base = (base or uid())[:60]
+    if taken is None:
+        return base
+    slug, n = base, 2
+    while slug in taken:
+        slug = '%s-%d' % (base[:56], n); n += 1
+    taken.add(slug)
+    return slug
+
+def _artist_alias_keys(row):
+    """아티스트 행 → 정규화 키 집합 (이름·영문명·별칭 전부)."""
+    keys = set()
+    for v in [row.get('name'), row.get('name_en')] + jload(row.get('aliases'), []):
+        k = _catalog_norm_key(v)
+        if k: keys.add(k)
+    return keys
+
+def _artist_img_url(img):
+    img = str(img or '').strip()
+    if img and not img.startswith(('http://', 'https://', '/')):
+        return 'https://www.kpop2gether.com/shopimages/912enter/' + img
+    return img
+
+# ── K2G 카탈로그 아티스트 인덱스 (60초 캐시 · 요청 시 1회 전량 파싱 ≈20ms) ──
+_artist_idx_cache = {'t': 0.0, 'idx': None, 'fails': 0}
+
+def _artist_cache_bust():
+    _artist_idx_cache['idx'] = None
+    _artist_alias_cache['map'] = None
+
+def _artist_catalog_index():
+    """{정규화키: {'surface': {표기: 횟수}, 'albums': [item…], 'events': [item…]}}"""
+    if _artist_idx_cache['idx'] is not None and time.time() - _artist_idx_cache['t'] < 60:
+        return _artist_idx_cache['idx']
+    try: ensure_ready()
+    except Exception: pass
+    nm, pr = _state.get('pname') or 'name', _state.get('pprice') or 'price'
+    cols = 'id, %s AS name, %s AS price, img, soldout, list_price, sort_order, created_at' % (nm, pr)
+    try:
+        rs = rows('SELECT ' + cols + ' FROM products WHERE id LIKE ?', ('k2g::%',))
+    except Exception:
+        rs = []
+    idx, fails = {}, 0
+    for r in rs:
+        artist, title, event, event_date = _artist_parse_k2g(r.get('name'))
+        if not artist:
+            fails += 1; continue
+        key = _catalog_norm_key(artist)
+        if not key:
+            fails += 1; continue
+        price, listp = num(r.get('price')), num(r.get('list_price'))
+        item = {'uid': str(r['id'])[5:], 'name': str(r.get('name') or ''), 'title': title,
+                'img': _artist_img_url(r.get('img')), 'price': price,
+                'pct': derived_pct(listp, price),
+                'soldout': 1 if num(r.get('soldout')) else 0,
+                'sort': num(r.get('sort_order')) if r.get('sort_order') is not None else 999999999,
+                'is_new': 1 if is_new_product(r.get('created_at')) else 0,
+                'event': event, 'event_date': event_date,
+                'url': '/album-detail?uid=' + urllib.parse.quote(str(r['id'])[5:], safe='')}
+        b = idx.setdefault(key, {'surface': {}, 'albums': [], 'events': []})
+        b['surface'][artist] = b['surface'].get(artist, 0) + 1
+        b['albums'].append(item)
+        if event: b['events'].append(item)
+    for b in idx.values():
+        b['albums'].sort(key=lambda x: (x['sort'], x['uid']))
+        b['events'].sort(key=lambda x: (x['sort'], x['uid']))
+    _artist_idx_cache.update(t=time.time(), idx=idx, fails=fails)
+    _artist_autoregister(idx)   # 신규 앨범의 미등록 아티스트 자동 감지·등록
+    return idx
+
+# ── 아티스트 별칭 맵 (60초 캐시) — resolve·허브 매칭 공용 ──────────────────
+_artist_alias_cache = {'t': 0.0, 'map': None}
+
+def _artists_alias_map():
+    """{정규화키: {'slug','name','id'}} — 활성 아티스트만."""
+    if _artist_alias_cache['map'] is not None and time.time() - _artist_alias_cache['t'] < 60:
+        return _artist_alias_cache['map']
+    m = {}
+    try:
+        for r in rows('SELECT id, slug, name, name_en, aliases FROM artists WHERE is_active=1'):
+            for k in _artist_alias_keys(r):
+                m.setdefault(k, {'slug': r['slug'], 'name': r['name'], 'id': r['id']})
+    except Exception:
+        m = _artist_alias_cache['map'] or {}
+    _artist_alias_cache.update(t=time.time(), map=m)
+    return m
+
+# ── 신규 아티스트 자동 등록 + 오등록 방지(별칭 흡수 · 유사도 검수 · 삭제 억제) ──
+import threading
+_artist_auto_state = {'lock': threading.Lock(), 'busy': False, 't': 0.0}
+
+def _artist_lev1(a, b):
+    """편집거리 ≤ 1 여부 (오타 감지용 · O(n) 판정)."""
+    la, lb = len(a), len(b)
+    if a == b: return True
+    if abs(la - lb) > 1: return False
+    if la == lb:
+        return sum(1 for x, y in zip(a, b) if x != y) == 1
+    if la > lb: a, b, la, lb = b, a, lb, la
+    i = j = 0; skipped = False
+    while i < la and j < lb:
+        if a[i] == b[j]: i += 1; j += 1
+        elif skipped: return False
+        else: skipped = True; j += 1
+    return True
+
+def _artist_key_index(entries):
+    """[(정규화키, 아티스트id, 이름)] → {길이: [(키,id,이름)]} — 유사 탐색 가속 버킷."""
+    by_len = {}
+    for k, aid, nm in entries:
+        by_len.setdefault(len(k), []).append((k, aid, nm))
+    return by_len
+
+def _artist_similar_hit(cand_keys, by_len):
+    """후보 키들이 기존 키와 '유사 표기'인지 탐지 — (artist_id, 이름, 점수) | None.
+    · 편집거리 1 — 단, 양쪽 다 3자 이하 초단문은 제외(아이브/아이유 같은 실존 인접명 보호)
+    · 6자 이상 장문은 SequenceMatcher ≥ 0.88 (2자 이상 어긋난 긴 오타 포착)"""
+    import difflib
+    for ck in cand_keys:
+        lk = len(ck)
+        if lk < 3: continue
+        for L in (lk - 1, lk, lk + 1):
+            for ek, aid, nm in by_len.get(L, ()):
+                if max(lk, L) >= 4 and _artist_lev1(ck, ek):
+                    return aid, nm, 95
+        if lk >= 6:
+            for L in range(lk - 2, lk + 3):
+                for ek, aid, nm in by_len.get(L, ()):
+                    r = difflib.SequenceMatcher(None, ck, ek).ratio()
+                    if r >= 0.88:
+                        return aid, nm, int(r * 100)
+    return None
+
+def _artist_add_aliases(aid, new_aliases, actor_name='자동'):
+    """기존 아티스트에 새 표기를 별칭으로 흡수 — 신규 팀을 만들지 않고 매칭만 넓힌다."""
+    row = one('SELECT * FROM artists WHERE id=?', (aid,))
+    if not row: return False
+    cur = set(jload(row.get('aliases'), []))
+    add = {str(x)[:80] for x in new_aliases if str(x or '').strip()} - cur
+    if not add: return True
+    run('UPDATE artists SET aliases=?, updated_at=? WHERE id=?',
+        (json.dumps(sorted(cur | add), ensure_ascii=False), now_iso(), aid))
+    audit({'name': actor_name, 'role': 'SYSTEM'}, '아티스트별칭자동', aid,
+          '%s ← %s' % (row['name'], ', '.join(sorted(add))))
+    _artist_alias_cache['map'] = None
+    return True
+
+def _artist_pend(key, surface, albums, similar, reason):
+    sid, sname, score = (similar or ('', '', 0))
+    try:
+        if one('SELECT key FROM artist_pending WHERE key=?', (key,)):
+            run('UPDATE artist_pending SET surface=?, albums=? WHERE key=?', (surface, albums, key))
+        else:
+            run('INSERT INTO artist_pending(key,surface,similar_id,similar_name,reason,score,albums,created) '
+                'VALUES(?,?,?,?,?,?,?,?)', (key, surface, sid, sname, reason, score, albums, now_iso()))
+    except Exception:
+        pass
+
+def _artists_migrate_ordinal():
+    """구버전 자동 수집이 'NCT 127 (엔시티 127) 3집'처럼 서수 접미가 붙은 표기를
+    별도 팀으로 만든 DB 정리 (멱등): 접미 제거 후 기본 팀이 있으면 연결을 옮기고
+    병합, 없으면 표기를 정정한다. 파서 수정과 함께 재발도 차단된다."""
+    try:
+        arts = rows('SELECT * FROM artists')
+    except Exception:
+        return
+    junk = [r for r in arts if num(r.get('auto_collected'))
+            and _artist_clean_name(r.get('name')) != str(r.get('name') or '').strip()]
+    if not junk:
+        return
+    for r in sorted(junk, key=lambda x: str(x.get('name') or '')):
+        base = _artist_clean_name(r.get('name'))
+        bkey = _catalog_norm_key(base)
+        owner = None
+        if bkey:
+            for o in rows('SELECT * FROM artists WHERE id<>?', (r['id'],)):
+                if bkey in _artist_alias_keys(o):
+                    owner = o; break
+        if owner:
+            run('UPDATE artist_links SET artist_id=? WHERE artist_id=?', (owner['id'], r['id']))
+            run('DELETE FROM artists WHERE id=?', (r['id'],))
+            audit({'name': '자동', 'role': 'SYSTEM'}, '아티스트정리', owner['id'],
+                  '서수 표기 병합: %s → %s' % (r['name'], owner['name']))
+        else:
+            nm, ne, al = _artist_split_surface(base)
+            run('UPDATE artists SET name=?, name_en=?, aliases=?, updated_at=? WHERE id=?',
+                (nm, ne or r.get('name_en') or '', json.dumps(al, ensure_ascii=False),
+                 now_iso(), r['id']))
+            audit({'name': '자동', 'role': 'SYSTEM'}, '아티스트정리', r['id'],
+                  '서수 표기 정정: %s → %s' % (r['name'], nm))
+    _artist_cache_bust(); _sitemap_cache['xml'] = None
+
+def _artists_migrate_variants():
+    """구버전 수집이 'ITZY (있지)'/'있지 (ITZY)'처럼 표기 역순을 별도 팀으로 만든
+    DB 정리 (멱등): 자동 수집 팀 중 괄호 구성요소 집합이 완전히 같은 팀들을
+    카탈로그 앨범이 가장 많은 팀으로 병합한다(별칭 합집합 · 연결 이전). 수동
+    등록·수정 팀(auto_collected=0)은 건드리지 않는다."""
+    try:
+        arts = rows('SELECT * FROM artists WHERE auto_collected=1')
+    except Exception:
+        return
+    groups = {}
+    for r in arts:
+        nm_full = str(r.get('name') or '').strip()
+        _nm, _ne, al = _artist_split_surface(nm_full)
+        comp = frozenset(k for k in (_catalog_norm_key(x) for x in al if x != nm_full) if k)
+        if len(comp) >= 2:
+            groups.setdefault(comp, []).append(r)
+    dups = {c: g for c, g in groups.items() if len(g) > 1}
+    if not dups:
+        return
+    idx = _artist_catalog_index()
+    for comp, g in dups.items():
+        def albums_of(rr):
+            return sum(len((idx.get(k) or {}).get('albums') or []) for k in _artist_alias_keys(rr))
+        g.sort(key=lambda rr: (-albums_of(rr), str(rr.get('created_at') or ''), str(rr.get('id') or '')))
+        keep, rest = g[0], g[1:]
+        merged = set(jload(keep.get('aliases'), []))
+        for r in rest:
+            merged |= set(jload(r.get('aliases'), [])) | {str(r.get('name') or '')}
+            run('UPDATE artist_links SET artist_id=? WHERE artist_id=?', (keep['id'], r['id']))
+            run('DELETE FROM artists WHERE id=?', (r['id'],))
+            audit({'name': '자동', 'role': 'SYSTEM'}, '아티스트정리', keep['id'],
+                  '역순 표기 병합: %s → %s' % (r['name'], keep['name']))
+        run('UPDATE artists SET aliases=?, updated_at=? WHERE id=?',
+            (json.dumps(sorted(x for x in merged if x), ensure_ascii=False), now_iso(), keep['id']))
+    _artist_cache_bust(); _sitemap_cache['xml'] = None
+
+def _artists_migrate_bare():
+    """'권은비'처럼 괄호 없는 단독 표기가 '권은비 (KWON EUN BI)' 팀과 별도로 남은
+    구버전 중복 정리 (멱등). 병합 조건 — 단독 키가 상대 팀의 ① 대표(괄호 밖)
+    이름과 같거나 ② 한/영 음차 쌍의 괄호 안 이름과 같을 때만. '슈퍼주니어 ⊂
+    동해&은혁 (슈퍼 주니어)'처럼 괄호 안이 소속 그룹을 뜻하는 한/한 조합은
+    다른 팀이므로 건드리지 않는다."""
+    try:
+        arts = rows('SELECT * FROM artists')
+    except Exception:
+        return
+    info = {}
+    for r in arts:
+        m = _ARTIST_PAREN_RE.match(str(r.get('name') or '').strip())
+        outer = _catalog_norm_key(m.group(1)) if m else ''
+        inner = _catalog_norm_key(m.group(2)) if m else ''
+        translit = bool(m) and (bool(_ARTIST_KO_RE.search(m.group(1)))
+                                != bool(_ARTIST_KO_RE.search(m.group(2))))
+        info[r['id']] = [_artist_alias_keys(r), r, outer, inner, translit]
+    idx = _artist_catalog_index()
+    gone = set()
+    for aid in list(info.keys()):
+        ks, r, _o, _i, _t = info[aid]
+        if aid in gone or len(ks) != 1 or not num(r.get('auto_collected')):
+            continue
+        k = next(iter(ks))
+        cands = []
+        for bid, (bks, br, outer, inner, translit) in info.items():
+            if bid == aid or bid in gone or not (ks < bks):
+                continue
+            if k == outer:
+                cands.append((0, bid))                    # 대표 이름 일치 — 최우선
+            elif k == inner and translit:
+                cands.append((1, bid))                    # 한/영 음차 쌍의 안쪽 이름
+        if not cands:
+            continue
+        def albums_of(bid):
+            return sum(len((idx.get(x) or {}).get('albums') or []) for x in info[bid][0])
+        cands.sort(key=lambda c: (c[0], -albums_of(c[1])))
+        keep = info[cands[0][1]][1]
+        merged = set(jload(keep.get('aliases'), [])) | set(jload(r.get('aliases'), [])) \
+                 | {str(r.get('name') or '')}
+        run('UPDATE artist_links SET artist_id=? WHERE artist_id=?', (keep['id'], r['id']))
+        run('DELETE FROM artists WHERE id=?', (r['id'],))
+        run('UPDATE artists SET aliases=?, updated_at=? WHERE id=?',
+            (json.dumps(sorted(x for x in merged if x), ensure_ascii=False), now_iso(), keep['id']))
+        info[keep['id']][0] = info[keep['id']][0] | ks
+        gone.add(aid)
+        audit({'name': '자동', 'role': 'SYSTEM'}, '아티스트정리', keep['id'],
+              '단독 표기 병합: %s → %s' % (r['name'], keep['name']))
+    if gone:
+        _artist_cache_bust(); _sitemap_cache['xml'] = None
+
+def _artists_collect():
+    """카탈로그의 미등록 아티스트 자동 처리 (멱등). 신규 앨범이 들어오면:
+    ① 기존 팀 별칭이 구성요소('에이티즈'/'ATEEZ' 등)를 커버 → 새 표기를 그 팀
+       별칭으로 흡수 — 표기 역순·오타 변형이 중복 팀을 만들지 않는다.
+    ② 기존 표기와 유사(편집거리 1 등, 오타 의심) → artist_pending 검수 대기 —
+       관리자가 [별칭으로 흡수]/[신규 등록]/[무시] 1클릭으로 확정.
+    ③ 관리자가 삭제·무시한 팀(artist_suppressed) → 자동 재생성하지 않음.
+    ④ 그 외 → 신규 아티스트 자동 등록."""
+    _artist_auto_state['busy'] = True
+    try:
+        idx = _artist_catalog_index()
+        existing = rows('SELECT id, slug, name, name_en, aliases FROM artists')
+        try: suppressed = {str(r['key']) for r in rows('SELECT key FROM artist_suppressed')}
+        except Exception: suppressed = set()
+        covered, key_owner = set(), {}
+        taken = {str(r.get('slug') or '') for r in existing}
+        entries = []
+        for r in existing:
+            for k in _artist_alias_keys(r):
+                covered.add(k)
+                key_owner.setdefault(k, (r['id'], r['name']))
+                entries.append((k, r['id'], r['name']))
+        by_len = _artist_key_index(entries)
+        ops, created, aliased, pended = [], 0, 0, 0
+        # 앨범 수가 많은(정식 표기일 확률이 높은) 키부터 — 오타·변형이 뒤에서 걸리도록
+        for key, b in sorted(idx.items(), key=lambda kv: (-len(kv[1]['albums']), kv[0])):
+            if not b['albums'] or key in covered or key in suppressed:
+                continue
+            surface = max(b['surface'].items(), key=lambda kv: (kv[1], -len(kv[0])))[0]
+            name, name_en, aliases = _artist_split_surface(surface)
+            if not name or len(name) > 80:
+                continue
+            comp = {k for k in (_catalog_norm_key(a) for a in aliases) if k}
+            owners = {key_owner[k] for k in comp if k in key_owner}
+            if len(owners) == 1:                          # ① 표기 변형 → 별칭 흡수
+                own = next(iter(owners))
+                if _artist_add_aliases(own[0], aliases + [surface]):
+                    aliased += 1
+                    for k in comp | {key}:
+                        covered.add(k); key_owner.setdefault(k, own)
+                        by_len.setdefault(len(k), []).append((k, own[0], own[1]))
+                continue
+            if len(owners) > 1:                           # 구성요소가 서로 다른 팀 소속 → 검수
+                sid, snm = sorted(owners)[0]
+                _artist_pend(key, surface, len(b['albums']), (sid, snm, 0),
+                             '구성 별칭이 서로 다른 팀에 속함')
+                pended += 1; continue
+            sim = _artist_similar_hit(comp | {key}, by_len)
+            if sim:                                       # ② 오타·유사 표기 의심 → 검수
+                _artist_pend(key, surface, len(b['albums']), sim, '기존 팀과 유사한 표기')
+                pended += 1; continue
+            slug = _artist_slugify(name_en, surface, taken)   # ④ 안전 → 신규 등록
+            aid = uid()
+            ops.append(('INSERT INTO artists(id,name,name_en,slug,aliases,agency,debut_year,'
+                        'profile_img,descr,is_active,sort_order,auto_collected,created_at,updated_at) '
+                        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (aid, name, name_en, slug,
+                         json.dumps(aliases, ensure_ascii=False), '', None, '', '',
+                         1, 0, 1, now_iso(), now_iso())))
+            created += 1
+            for k in comp | {key}:
+                covered.add(k); key_owner.setdefault(k, (aid, name))
+                by_len.setdefault(len(k), []).append((k, aid, name))
+        if ops:
+            runmany(ops)
+            _artist_alias_cache['map'] = None
+            _sitemap_cache['xml'] = None
+        return {'created': created, 'aliased': aliased, 'pending': pended,
+                'total': len(existing) + created,
+                'catalog_artists': len(idx), 'unparsed': _artist_idx_cache['fails']}
+    finally:
+        _artist_auto_state['busy'] = False
+
+def _artist_autoregister(idx):
+    """카탈로그 인덱스 재빌드 때 미커버 아티스트 키가 보이면 안전 수집을 즉시 실행.
+    신규 앨범 등록 → 최대 60초(캐시 주기) 안에 아티스트 자동 반영. 재진입·과호출 방지."""
+    st = _artist_auto_state
+    if st['busy'] or time.time() - st['t'] < 20:
+        return
+    try:
+        cov = set(_artists_alias_map().keys())
+        cov |= {str(r['key']) for r in rows('SELECT key FROM artist_suppressed')}
+        cov |= {str(r['key']) for r in rows('SELECT key FROM artist_pending')}
+        if all((k in cov or not b['albums']) for k, b in idx.items()):
+            return
+    except Exception:
+        return
+    if not st['lock'].acquire(blocking=False):
+        return
+    try:
+        st['t'] = time.time()
+        res = _artists_collect()
+        if not (res['created'] or res['aliased'] or res['pending']):
+            st['t'] = time.time() + 540   # 숨김 팀 등 전부 커버 상태 — 10분 뒤 재확인
+    except Exception:
+        pass
+    finally:
+        st['lock'].release()
+
+# ── 굿즈 자동 매칭 (mp:: 직접등록 상품 · 보수적 경계 매칭) ─────────────────
+def _artist_goods_auto(art_row, exclude_ids):
+    pats = []
+    for a in [art_row.get('name'), art_row.get('name_en')] + jload(art_row.get('aliases'), []):
+        a = str(a or '').strip()
+        if not a: continue
+        if _ARTIST_KO_RE.search(a):
+            if len(a) >= 2: pats.append(('sub', a))
+        elif len(re.sub(r'[^0-9A-Za-z]', '', a)) >= 3:
+            pats.append(('word', re.compile(r'(?<![0-9A-Za-z])' + re.escape(a) + r'(?![0-9A-Za-z])', re.I)))
+    if not pats:
+        return []
+    nm, pr = _state.get('pname') or 'name', _state.get('pprice') or 'price'
+    try:
+        rs = rows('SELECT id, %s AS name, %s AS price, img, soldout, stock, list_price, created_at '
+                  'FROM products WHERE id LIKE ?' % (nm, pr), ('mp::%',))
+    except Exception:
+        return []
+    out = []
+    for r in rs:
+        if str(r['id']) in exclude_ids: continue
+        name = str(r.get('name') or '')
+        hit = any((a in name) if kind == 'sub' else bool(a.search(name)) for kind, a in pats)
+        if not hit: continue
+        price, listp = num(r.get('price')), num(r.get('list_price'))
+        out.append({'id': str(r['id']), 'name': name, 'img': str(r.get('img') or ''),
+                    'price': price, 'pct': derived_pct(listp, price),
+                    'soldout': 1 if (num(r.get('soldout')) or (r.get('stock') is not None and num(r.get('stock')) <= 0)) else 0,
+                    'is_new': 1 if is_new_product(r.get('created_at')) else 0,
+                    'url': '/p/' + urllib.parse.quote(str(r['id']), safe=''), 'auto': 1})
+    out.sort(key=lambda x: x['name'])
+    return out
+
+def _artist_row_by_slug(slug):
+    s = str(slug or '').strip()
+    if not s: return None
+    r = one('SELECT * FROM artists WHERE slug=? AND is_active=1', (s,))
+    if r: return r
+    hit = _artists_alias_map().get(_catalog_norm_key(s))
+    if hit:
+        return one('SELECT * FROM artists WHERE id=? AND is_active=1', (hit['id'],))
+    return None
+
+def _artist_payload(art):
+    """아티스트관 데이터 — 앨범/이벤트(K2G 자동) + 굿즈(자동+수동) + 기타(수동)."""
+    keys = _artist_alias_keys(art)
+    idx = _artist_catalog_index()
+    albums, events, seen = [], [], set()
+    for k in keys:
+        b = idx.get(k)
+        if not b: continue
+        for it in b['albums']:
+            if it['uid'] in seen: continue
+            seen.add(it['uid']); albums.append(it)
+            if it['event']: events.append(it)
+    albums.sort(key=lambda x: (x['sort'], x['uid']))
+    events.sort(key=lambda x: (x['sort'], x['uid']))
+    links = rows('SELECT * FROM artist_links WHERE artist_id=? ORDER BY sort_order, created_at', (art['id'],))
+    excludes = {str(l.get('ref') or '') for l in links if l.get('kind') == 'exclude'}
+    manual = [l for l in links if l.get('kind') != 'exclude']
+    goods = _artist_goods_auto(art, excludes)
+    extras = []
+    for l in manual:
+        item = {'id': l['id'], 'name': l.get('title') or '', 'img': l.get('image') or '',
+                'price': num(l.get('price')) or None, 'url': l.get('url') or '', 'auto': 0,
+                'event_date': (jload(l.get('meta'), {}) or {}).get('date', '')}
+        cat = (l.get('category') or 'goods').lower()
+        if cat == 'goods': goods.append(item)
+        elif cat == 'event': item['event'] = '이벤트'; events.insert(0, item)
+        else: extras.append(item)
+    profile = str(art.get('profile_img') or '').strip() or (albums[0]['img'] if albums else '')
+    return {'artist': {'slug': art['slug'], 'name': art['name'], 'name_en': art.get('name_en') or '',
+                       'img': profile, 'descr': art.get('descr') or '', 'agency': art.get('agency') or '',
+                       'debut_year': art.get('debut_year')},
+            'counts': {'albums': len(albums), 'events': len(events), 'goods': len(goods), 'extras': len(extras)},
+            'albums': albums, 'events': events, 'goods': goods, 'extras': extras}
+
+def _artists_list(query=''):
+    """공개 목록 — 활성 아티스트 + 앨범 수 + 대표 이미지."""
+    idx = _artist_catalog_index()
+    qk = _catalog_norm_key(query)
+    out = []
+    try:
+        arts = rows('SELECT * FROM artists WHERE is_active=1')
+    except Exception:
+        arts = []
+    for a in arts:
+        keys = _artist_alias_keys(a)
+        if qk and not any(qk in k for k in keys):
+            continue
+        n_alb = n_evt = 0
+        img = str(a.get('profile_img') or '').strip()
+        for k in keys:
+            b = idx.get(k)
+            if not b: continue
+            n_alb += len(b['albums']); n_evt += len(b['events'])
+            if not img and b['albums']: img = b['albums'][0]['img']
+        out.append({'slug': a['slug'], 'name': a['name'], 'name_en': a.get('name_en') or '',
+                    'img': img, 'albums': n_alb, 'events': n_evt,
+                    'sort': num(a.get('sort_order'))})
+    out.sort(key=lambda x: (-x['sort'], -x['albums'], x['name']))
+    return out
+
+# ── 공개 API ──────────────────────────────────────────────────────────────
+@admin_router.get('/api/artists')
+def api_artists_public(request: Request):
+    q = (request.query_params.get('query') or '').strip()[:60]
+    rows_ = _artists_list(q)
+    return {'rows': rows_, 'total': len(rows_)}
+
+@admin_router.get('/api/artists/resolve')
+def api_artists_resolve(request: Request):
+    name = (request.query_params.get('name') or '').strip()[:120]
+    hit = _artists_alias_map().get(_catalog_norm_key(_artist_clean_name(name))) if name else None
+    return {'slug': hit['slug'], 'name': hit['name']} if hit else {}
+
+@admin_router.get('/api/artist/{slug}')
+def api_artist_public(slug: str):
+    art = _artist_row_by_slug(slug)
+    if not art:
+        raise HTTPException(404, '아티스트를 찾을 수 없습니다')
+    return _artist_payload(art)
+
+# ── 아티스트 페이지 공통 셸 (브랜드 디자인 시스템 — shop.html 토큰 동일) ──
+_ARTIST_PAGE_CSS = r"""
+:root{--red:#E8332A;--red-deep:#B71F18;--ink:#141414;--paper:#F7F6F2;--steel:#87867F;
+  --amber:#FFB000;--line:#E2E0D9;--disp:'Black Han Sans',sans-serif;
+  --body:'IBM Plex Sans KR',sans-serif;--mono:'IBM Plex Mono',monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+a{color:inherit;text-decoration:none}
+body{font-family:var(--body);background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased}
+header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1px solid var(--line)}
+.header-inner{display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:78px;max-width:1520px;margin:0 auto}
+.logo{font-family:var(--disp);font-size:31px;letter-spacing:.02em;color:var(--ink);line-height:1}
+.logo em{color:var(--red);font-style:normal}
+nav.main{display:flex;gap:4px;height:100%}
+nav.main>div{position:relative;height:100%;display:flex;align-items:center}
+nav.main a.top{font-size:14px;font-weight:700;letter-spacing:.02em;padding:0 17px;height:100%;
+  display:flex;align-items:center;border-bottom:2px solid transparent;transition:border-color .15s,color .15s}
+nav.main>div:hover a.top{border-bottom-color:var(--red);color:var(--red)}
+nav.main a.top.drops{color:var(--red)}
+.util{display:flex;gap:20px;font-size:14px;font-weight:600;align-items:center}
+.util .cart{background:var(--ink);color:#fff;border-radius:22px;padding:8px 17px;font-size:12.5px}
+.mega{position:absolute;top:100%;left:50%;transform:translateX(-50%);width:640px;background:#fff;
+  border:1px solid var(--line);border-top:2px solid var(--red);display:none;padding:28px 32px;
+  grid-template-columns:1fr 1fr 220px;gap:24px;box-shadow:0 16px 40px rgba(20,20,20,.08)}
+nav.main>div:hover .mega{display:grid}
+.mega h5{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--steel);margin-bottom:12px}
+.mega ul{list-style:none}.mega li{margin-bottom:9px}
+.mega li a{font-size:13.5px;font-weight:500}.mega li a:hover{color:var(--red)}
+.mega .visual{padding:18px;display:flex;flex-direction:column;justify-content:flex-end;min-height:180px;color:#fff}
+.mega .visual b{font-family:var(--disp);font-size:20px;font-weight:400;line-height:1.15}
+.mega .visual span{font-family:var(--mono);font-size:10px;letter-spacing:.1em;opacity:.85;margin-top:6px}
+.wrap{max-width:1520px;margin:0 auto;padding:0 32px}
+.crumb{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--steel);padding:22px 0 0}
+.crumb a:hover{color:var(--red)}
+.ah-title{font-family:var(--disp);font-size:clamp(30px,4.4vw,52px);line-height:1.08;margin:10px 0 4px}
+.ah-sub{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--steel)}
+.a-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px;margin:18px 0 44px}
+.a-card{background:#fff;border:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden;transition:transform .12s,box-shadow .12s}
+.a-card:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(20,20,20,.09)}
+.a-cover{aspect-ratio:1/1;background:#EDEBE4 center/cover no-repeat;position:relative}
+.a-cover .flag{position:absolute;top:10px;left:10px;display:flex;gap:5px}
+.a-cover .flag span{font-family:var(--mono);font-size:10px;letter-spacing:.08em;padding:4px 8px;background:var(--ink);color:#fff}
+.a-cover .flag .ev{background:var(--amber);color:var(--ink)}
+.a-cover .flag .new{background:var(--red)}
+.a-cover .sold{position:absolute;inset:0;background:rgba(20,20,20,.55);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;letter-spacing:.18em}
+.a-body{padding:12px 12px 14px;display:flex;flex-direction:column;gap:7px;min-height:96px}
+.a-body h4{font-size:12.5px;font-weight:700;line-height:1.38;letter-spacing:-.025em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.a-price{display:flex;gap:6px;align-items:baseline;margin-top:auto}
+.a-price .pct{font-size:15px;font-weight:700;color:var(--red)}
+.a-price .amt{font-size:15px;font-weight:700;letter-spacing:-.02em}
+.sec-h{display:flex;align-items:baseline;gap:12px;border-top:2px solid var(--ink);padding-top:16px;margin-top:8px}
+.sec-h h2{font-family:var(--disp);font-size:24px;font-weight:400}
+.sec-h .cnt{font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:.1em}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 8px;position:sticky;top:78px;background:var(--paper);padding:12px 0;z-index:5}
+.chips a{font-size:12.5px;font-weight:700;border:1.5px solid var(--ink);border-radius:999px;padding:7px 16px;letter-spacing:.02em}
+.chips a:hover,.chips a.on{background:var(--ink);color:#fff}
+.chips a em{font-style:normal;color:var(--red);margin-left:5px}
+.chips a:hover em,.chips a.on em{color:var(--amber)}
+.a-hero{display:flex;gap:28px;align-items:flex-end;padding:34px 0 6px;flex-wrap:wrap}
+.a-face{width:132px;height:132px;background:#EDEBE4 center/cover no-repeat;border:1px solid var(--line);flex:0 0 auto}
+.a-meta{font-size:13px;color:var(--steel);margin-top:8px;line-height:1.7}
+.a-desc{max-width:760px;font-size:14px;line-height:1.75;margin:14px 0 4px}
+.empty{border:1px dashed var(--line);background:#fff;padding:44px 20px;text-align:center;color:var(--steel);font-size:13.5px;margin:18px 0 44px}
+.idx-search{margin:22px 0 6px}
+.idx-search input{width:min(420px,100%);border:1.5px solid var(--ink);background:#fff;padding:12px 16px;font:600 14px var(--body);letter-spacing:.02em}
+.idx-search input:focus{outline:2px solid var(--red);outline-offset:-1px}
+.ar-card .a-body h4{font-family:var(--disp);font-weight:400;font-size:17px;letter-spacing:.01em;-webkit-line-clamp:1}
+.ar-card .a-sub{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;color:var(--steel)}
+.ar-card .a-cnt{font-size:12px;font-weight:700;color:var(--red)}
+@media(max-width:960px){nav.main{display:none}.header-inner{padding:0 18px;height:64px}
+ .wrap{padding:0 18px}.a-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+ .chips{top:64px}.a-face{width:96px;height:96px}}
+"""
+
+_ARTIST_HEADER_HTML = r"""<header>
+  <div class="header-inner">
+    <a class="logo" href="/home">MAPDAL<em>SEOUL</em></a>
+    <nav class="main">
+      <div><a class="top drops" href="/new-drops">NEW / DROPS</a></div>
+      <div><a class="top" href="/shop">SHOP</a></div>
+      <div><a class="top" href="/mapdal-seoul">MAPDAL SEOUL</a></div>
+      <div>
+        <a class="top" href="/support">SUPPORT</a>
+        <div class="mega">
+          <div><h5>GUIDE</h5><ul><li><a href="/shipping">배송 안내</a></li><li><a href="/returns">교환/반품</a></li></ul></div>
+          <div><h5>COMPANY</h5><ul><li><a href="/partnership">파트너십 문의</a></li><li><a href="/ir">IR · 뉴스룸</a></li></ul></div>
+          <div class="visual" style="background:linear-gradient(160deg,#141414,#3A3A3A)"><b>NEED<br>HELP?</b><span>ceo@mealzip.kr · 11:00–21:00</span></div>
+        </div>
+      </div>
+    </nav>
+    <div class="util"><a href="/search">검색</a><a class="cart" href="/cart">CART · 0</a></div>
+  </div>
+</header>"""
+
+def _artist_page_shell(title, desc, canonical, og_img, ld_json, body):
+    ld = ('<script type="application/ld+json">%s</script>'
+          % ld_json.replace('</', '<\\/')) if ld_json else ''
+    og = ('<meta property="og:image" content="%s">' % _artist_h(og_img)) if og_img else ''
+    return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>' + _artist_h(title) + '</title>'
+            '<meta name="description" content="' + _artist_h(desc) + '">'
+            '<link rel="canonical" href="' + _artist_h(canonical) + '">'
+            '<meta property="og:url" content="' + _artist_h(canonical) + '">' + og +
+            '<link rel="preconnect" href="https://fonts.googleapis.com">'
+            '<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">'
+            '<style>' + _ARTIST_PAGE_CSS + '</style>' + ld +
+            '</head><body>' + _ARTIST_HEADER_HTML + body + '</body></html>')
+
+def _artist_item_card(it, event_mode=False):
+    flags = []
+    if event_mode and it.get('event'):
+        d = (' ' + it['event_date']) if it.get('event_date') else ''
+        flags.append('<span class="ev">' + _artist_h(it['event'] + d) + '</span>')
+    elif it.get('event'):
+        flags.append('<span class="ev">' + _artist_h(it['event']) + '</span>')
+    if it.get('is_new'):
+        flags.append('<span class="new">NEW</span>')
+    sold = '<div class="sold">SOLD OUT</div>' if it.get('soldout') else ''
+    price = ''
+    if num(it.get('price')):
+        pct = ('<span class="pct">%d%%</span>' % it['pct']) if it.get('pct') else ''
+        price = ('<div class="a-price">%s<span class="amt">₩%s</span></div>'
+                 % (pct, format(num(it['price']), ',')))
+    img = _artist_h(it.get('img') or '')
+    style = (' style="background-image:url(\'%s\')"' % img) if img else ''
+    return ('<a class="a-card" href="' + _artist_h(it.get('url') or '#') + '">'
+            '<div class="a-cover"' + style + '>'
+            + ('<div class="flag">' + ''.join(flags) + '</div>' if flags else '') + sold + '</div>'
+            '<div class="a-body"><h4>' + _artist_h(it.get('title') or it.get('name') or '') + '</h4>'
+            + price + '</div></a>')
+
+def _artist_hub_html(art):
+    p = _artist_payload(art)
+    a, c = p['artist'], p['counts']
+    total = c['albums'] + c['goods'] + c['extras'] + (c['events'] if not c['albums'] else 0)
+    canonical = SITE_ORIGIN + '/artist/' + urllib.parse.quote(a['slug'], safe='')
+    title = (a['name'][:24] + ' 앨범·이벤트·굿즈 — MAPDAL SEOUL')
+    desc = ('%s 앨범 %d종 · 이벤트 %d건 · 공식 굿즈 — K-컬처 플래그십 맵달SEOUL 아티스트관'
+            % (a['name'], c['albums'], c['events']))[:80]
+    ld = {'@context': 'https://schema.org', '@graph': [
+        {'@type': 'MusicGroup', 'name': a['name'], 'url': canonical,
+         **({'alternateName': a['name_en']} if a['name_en'] else {}),
+         **({'image': a['img']} if a['img'] else {})},
+        {'@type': 'BreadcrumbList', 'itemListElement': [
+            {'@type': 'ListItem', 'position': 1, 'name': '홈', 'item': SITE_ORIGIN + '/home'},
+            {'@type': 'ListItem', 'position': 2, 'name': '아티스트', 'item': SITE_ORIGIN + '/artists'},
+            {'@type': 'ListItem', 'position': 3, 'name': a['name'], 'item': canonical}]}]}
+    meta_bits = []
+    if a['agency']: meta_bits.append(_artist_h(a['agency']))
+    if a['debut_year']: meta_bits.append('%s 데뷔' % _artist_h(a['debut_year']))
+    face = (' style="background-image:url(\'%s\')"' % _artist_h(a['img'])) if a['img'] else ''
+    chips = ['<a href="#sec-album">앨범<em>%d</em></a>' % c['albums']]
+    if c['events']: chips.append('<a href="#sec-event">이벤트<em>%d</em></a>' % c['events'])
+    if c['goods']: chips.append('<a href="#sec-goods">굿즈<em>%d</em></a>' % c['goods'])
+    if c['extras']: chips.append('<a href="#sec-extra">콘텐츠·기타<em>%d</em></a>' % c['extras'])
+    body = ['<main class="wrap">',
+            '<div class="crumb"><a href="/home">HOME</a> / <a href="/artists">ARTIST</a> / '
+            + _artist_h((a['name_en'] or a['name']).upper()) + '</div>',
+            '<div class="a-hero"><div class="a-face"' + face + '></div><div>',
+            '<h1 class="ah-title">' + _artist_h(a['name']) + '</h1>']
+    if a['name_en']:
+        body.append('<div class="ah-sub">' + _artist_h(a['name_en'].upper()) + '</div>')
+    if meta_bits:
+        body.append('<div class="a-meta">' + ' · '.join(meta_bits) + '</div>')
+    body.append('</div></div>')
+    if a['descr']:
+        body.append('<p class="a-desc">' + _artist_h(a['descr']) + '</p>')
+    if total == 0:
+        body.append('<div class="empty">아직 등록된 상품이 없습니다. 곧 채워질 예정이에요.</div>')
+    else:
+        body.append('<div class="chips">' + ''.join(chips) + '</div>')
+        body.append('<div class="sec-h" id="sec-album"><h2>앨범</h2><span class="cnt">%d ITEMS</span></div>' % c['albums'])
+        body.append('<div class="a-grid">' + ''.join(_artist_item_card(i) for i in p['albums']) + '</div>'
+                    if p['albums'] else '<div class="empty">등록된 앨범이 없습니다.</div>')
+        if c['events']:
+            body.append('<div class="sec-h" id="sec-event"><h2>이벤트</h2><span class="cnt">%d ITEMS</span></div>' % c['events'])
+            body.append('<div class="a-grid">' + ''.join(_artist_item_card(i, True) for i in p['events']) + '</div>')
+        if c['goods']:
+            body.append('<div class="sec-h" id="sec-goods"><h2>굿즈</h2><span class="cnt">%d ITEMS</span></div>' % c['goods'])
+            body.append('<div class="a-grid">' + ''.join(_artist_item_card(i) for i in p['goods']) + '</div>')
+        if c['extras']:
+            body.append('<div class="sec-h" id="sec-extra"><h2>콘텐츠 · 기타</h2><span class="cnt">%d ITEMS</span></div>' % c['extras'])
+            body.append('<div class="a-grid">' + ''.join(_artist_item_card(i) for i in p['extras']) + '</div>')
+    body.append('</main>')
+    return _artist_page_shell(title, desc, canonical, a['img'], 
+                              json.dumps(ld, ensure_ascii=False), ''.join(body))
+
+def _artists_index_html():
+    arts = _artists_list()
+    canonical = SITE_ORIGIN + '/artists'
+    cards = []
+    for a in arts:
+        style = (' style="background-image:url(\'%s\')"' % _artist_h(a['img'])) if a['img'] else ''
+        key = _artist_h((a['name'] + ' ' + a['name_en']).lower())
+        cnt = ('<span class="a-cnt">앨범 %d</span>' % a['albums']) if a['albums'] else ''
+        cards.append('<a class="a-card ar-card" data-k="' + key + '" href="/artist/'
+                     + _artist_h(urllib.parse.quote(a['slug'], safe='')) + '">'
+                     '<div class="a-cover"' + style + '></div><div class="a-body">'
+                     '<h4>' + _artist_h(a['name']) + '</h4>'
+                     + ('<span class="a-sub">' + _artist_h(a['name_en'].upper()) + '</span>' if a['name_en'] else '')
+                     + cnt + '</div></a>')
+    body = ('<main class="wrap">'
+            '<div class="crumb"><a href="/home">HOME</a> / ARTIST</div>'
+            '<h1 class="ah-title" style="margin-top:16px">ARTIST</h1>'
+            '<div class="ah-sub">국내 K-POP 아티스트 %d팀 — 앨범 · 이벤트 · 굿즈를 한 곳에서</div>'
+            '<div class="idx-search"><input id="aq" type="search" placeholder="아티스트 검색 (한글/영문)" '
+            'oninput="(function(v){v=v.trim().toLowerCase();document.querySelectorAll(\'.ar-card\').forEach(function(c){'
+            'c.style.display=(!v||c.dataset.k.indexOf(v)>=0)?\'\':\'none\'})})(this.value)"></div>'
+            '<div class="a-grid" style="margin-top:22px">%s</div></main>'
+            ) % (len(arts), ''.join(cards) or '<div class="empty">아티스트 준비 중입니다.</div>')
+    ld = {'@context': 'https://schema.org', '@type': 'CollectionPage',
+          'name': '아티스트 — MAPDAL SEOUL', 'url': canonical}
+    return _artist_page_shell('아티스트 | 맵달SEOUL K-POP 아티스트관',
+                              'K-POP 아티스트별 앨범·영상통화/팬사인회 이벤트·공식 굿즈 — 맵달SEOUL 아티스트관',
+                              canonical, '', json.dumps(ld, ensure_ascii=False), body)
+
+# ── 공개 페이지 라우트 (캐치올보다 먼저 등록) ─────────────────────────────
+@admin_router.get('/artists')
+def artists_index_page():
+    try: ensure_ready()
+    except Exception: pass
+    return HTMLResponse(_inject_auth(_artists_index_html(), '/artists'),
+                        headers={'Cache-Control': 'no-cache'})
+
+@admin_router.get('/artist/{slug}')
+def artist_hub_page(slug: str):
+    try: ensure_ready()
+    except Exception: pass
+    art = _artist_row_by_slug(slug)
+    if not art:
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center">'
+                            '<h2>아티스트를 찾을 수 없습니다</h2><a href="/artists">아티스트 전체 보기</a>', status_code=404)
+    if art['slug'] != slug:  # 별칭(한글 이름 등)으로 접근 → 대표 슬러그로 정리
+        return Response(status_code=302,
+                        headers={'Location': '/artist/' + urllib.parse.quote(art['slug'], safe='')})
+    return HTMLResponse(_inject_auth(_artist_hub_html(art), '/artist/' + art['slug']),
+                        headers={'Cache-Control': 'no-cache'})
+
+# ── 앨범상세 아티스트 칩 — 제목 아래 '아티스트관' 태그 링크 주입 ─────────
+ARTIST_CHIP_SNIPPET = r"""<script id="mpArtistChip">(function(){
+ if(!/^\/album-detail(?:\.html)?$/.test(location.pathname))return;
+ var tries=0,t=setInterval(function(){
+  var h=document.getElementById('pName');
+  if(++tries>20){clearInterval(t);return}
+  if(!h||!h.textContent||!h.textContent.trim())return;
+  clearInterval(t);
+  if(document.getElementById('mpArtistChipEl'))return;
+  var clean=h.textContent.replace(/^(?:\s*【[^】]+】)+\s*/,'').trim();
+  var i=clean.indexOf(' - ');if(i<1)return;
+  var name=clean.slice(0,i).trim();if(!name)return;
+  fetch('/api/artists/resolve?name='+encodeURIComponent(name)).then(function(r){return r.json()})
+  .then(function(d){if(!d||!d.slug||document.getElementById('mpArtistChipEl'))return;
+   var a=document.createElement('a');a.id='mpArtistChipEl';
+   a.href='/artist/'+encodeURIComponent(d.slug);
+   a.textContent='# '+d.name+' 아티스트관';
+   a.style.cssText='display:inline-flex;align-items:center;gap:6px;margin:10px 0 2px;'+
+    'padding:6px 14px;border:1.5px solid #E8332A;border-radius:999px;color:#E8332A;'+
+    'font:700 12.5px "IBM Plex Sans KR",sans-serif;letter-spacing:.02em;text-decoration:none';
+   a.onmouseenter=function(){a.style.background='#E8332A';a.style.color='#fff'};
+   a.onmouseleave=function(){a.style.background='transparent';a.style.color='#E8332A'};
+   h.parentNode.insertBefore(a,h.nextSibling)}).catch(function(){});
+ },300)})();</script>"""
+
+# ── 관리자 API — [아티스트] 탭 ────────────────────────────────────────────
+def _artist_admin_row(a, idx):
+    keys = _artist_alias_keys(a)
+    n_alb = n_evt = 0
+    for k in keys:
+        b = idx.get(k)
+        if b: n_alb += len(b['albums']); n_evt += len(b['events'])
+    return {'id': a['id'], 'name': a['name'], 'name_en': a.get('name_en') or '',
+            'slug': a['slug'], 'aliases': jload(a.get('aliases'), []),
+            'agency': a.get('agency') or '', 'debut_year': a.get('debut_year'),
+            'profile_img': a.get('profile_img') or '', 'descr': a.get('descr') or '',
+            'is_active': num(a.get('is_active')), 'sort_order': num(a.get('sort_order')),
+            'auto': num(a.get('auto_collected')), 'albums': n_alb, 'events': n_evt}
+
+@admin_router.get('/admin/api/artists')
+def api_admin_artists(request: Request):
+    a = get_actor(request); need(a, 0)
+    q = (request.query_params.get('query') or '').strip()[:60]
+    qk = _catalog_norm_key(q)
+    idx = _artist_catalog_index()
+    out = []
+    for r in rows('SELECT * FROM artists'):
+        if qk and not any(qk in k for k in _artist_alias_keys(r)):
+            continue
+        out.append(_artist_admin_row(r, idx))
+    out.sort(key=lambda x: (-x['is_active'], -x['albums'], x['name']))
+    links = num((one('SELECT COUNT(*) AS n FROM artist_links') or {}).get('n'))
+    covered = set()
+    for r in rows('SELECT name, name_en, aliases FROM artists'):
+        covered |= _artist_alias_keys(r)
+    pend = []
+    try:
+        for p in rows('SELECT * FROM artist_pending ORDER BY albums DESC, created'):
+            k = str(p['key'])
+            if k in covered or k not in idx:              # 이미 해소 · 카탈로그에서 사라짐 → 정리
+                run('DELETE FROM artist_pending WHERE key=?', (k,)); continue
+            pend.append({'key': k, 'surface': p.get('surface') or '',
+                         'similar_id': p.get('similar_id') or '',
+                         'similar_name': p.get('similar_name') or '',
+                         'reason': p.get('reason') or '', 'score': num(p.get('score')),
+                         'albums': len((idx.get(k) or {}).get('albums') or []),
+                         'created': (p.get('created') or '')[:10]})
+    except Exception:
+        pend = []
+    return {'rows': out[:500], 'total': len(out), 'links': links, 'pending': pend,
+            'catalog_artists': len(idx), 'unparsed': _artist_idx_cache['fails']}
+
+@admin_router.post('/admin/api/artists/collect')
+def api_admin_artists_collect(request: Request):
+    a = get_actor(request); need(a, 1, '아티스트 수집')
+    _artist_cache_bust()
+    res = _artists_collect()
+    audit(a, '아티스트수집', '', '신규 %d팀 · 별칭흡수 %d · 검수대기 %d · 카탈로그 %d팀'
+          % (res['created'], res['aliased'], res['pending'], res['catalog_artists']))
+    return {'ok': True, **res}
+
+@admin_router.post('/admin/api/artists')
+def api_admin_artist_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 1, '아티스트 저장')
+    name = (body.get('name') or '').strip()[:80]
+    if not name: raise HTTPException(400, '이름을 입력하세요')
+    slug = re.sub(r'\s+', '-', (body.get('slug') or '').strip().lower())[:60]
+    slug = re.sub(r'[^0-9a-z가-힣\-]+', '', slug).strip('-')
+    aliases = body.get('aliases')
+    if isinstance(aliases, str):
+        aliases = [x.strip() for x in re.split(r'[\n,]+', aliases) if x.strip()]
+    aliases = sorted({x[:80] for x in (aliases or []) if x} | {name})
+    dy = num(body.get('debut_year')) or None
+    fields = (name, (body.get('name_en') or '').strip()[:80],
+              json.dumps(aliases, ensure_ascii=False),
+              (body.get('agency') or '').strip()[:80], dy,
+              (body.get('profile_img') or '').strip()[:300],
+              (body.get('descr') or '').strip()[:1000],
+              1 if body.get('is_active', True) else 0, num(body.get('sort_order')))
+    aid = (body.get('id') or '').strip()
+    if aid:
+        old = one('SELECT * FROM artists WHERE id=?', (aid,))
+        if not old: raise HTTPException(404, '아티스트 없음')
+        slug = slug or old['slug']
+        if slug != old['slug'] and one('SELECT id FROM artists WHERE slug=? AND id<>?', (slug, aid)):
+            raise HTTPException(400, '이미 사용 중인 슬러그입니다: ' + slug)
+        run('UPDATE artists SET name=?,name_en=?,aliases=?,agency=?,debut_year=?,'
+            'profile_img=?,descr=?,is_active=?,sort_order=?,slug=?,updated_at=? WHERE id=?',
+            fields + (slug, now_iso(), aid))
+        audit(a, '아티스트수정', aid, name)
+    else:
+        taken = {str(r['slug']) for r in rows('SELECT slug FROM artists')}
+        nm2, ne2, al2 = _artist_split_surface(name)
+        if not slug:
+            slug = _artist_slugify(fields[1] or ne2, name, taken)
+        elif slug in taken:
+            raise HTTPException(400, '이미 사용 중인 슬러그입니다: ' + slug)
+        aliases = sorted(set(aliases) | set(al2))
+        aid = uid()
+        run('INSERT INTO artists(id,name,name_en,aliases,agency,debut_year,profile_img,descr,'
+            'is_active,sort_order,slug,auto_collected,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (aid, fields[0], fields[1] or ne2, json.dumps(aliases, ensure_ascii=False)) + fields[3:] + (slug, 0, now_iso(), now_iso()))
+        audit(a, '아티스트등록', aid, name)
+    saved = one('SELECT * FROM artists WHERE id=?', (aid,))
+    if saved:                            # 관리자 수동 저장 = 억제·검수 이력 해제(재등록 의사 존중)
+        for k in _artist_alias_keys(saved):
+            run('DELETE FROM artist_suppressed WHERE key=?', (k,))
+            run('DELETE FROM artist_pending WHERE key=?', (k,))
+    _artist_cache_bust(); _sitemap_cache['xml'] = None
+    return {'ok': True, 'id': aid, 'slug': slug}
+
+@admin_router.post('/admin/api/artists/delete')
+def api_admin_artist_delete(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '아티스트 삭제')
+    aid = (body.get('id') or '').strip()
+    row = one('SELECT * FROM artists WHERE id=?', (aid,))
+    if not row: raise HTTPException(404, '아티스트 없음')
+    for k in _artist_alias_keys(row):   # 삭제 억제 — 자동 수집이 같은 팀을 되살리지 않도록
+        if not one('SELECT key FROM artist_suppressed WHERE key=?', (k,)):
+            run('INSERT INTO artist_suppressed(key,name,created,by_admin) VALUES(?,?,?,?)',
+                (k, row['name'], now_iso(), a.get('name') or ''))
+    run('DELETE FROM artist_links WHERE artist_id=?', (aid,))
+    run('DELETE FROM artists WHERE id=?', (aid,))
+    audit(a, '아티스트삭제', aid, row['name'] + ' (자동 재등록 억제)')
+    _artist_cache_bust(); _sitemap_cache['xml'] = None
+    return {'ok': True}
+
+@admin_router.post('/admin/api/artists/merge')
+def api_admin_artist_merge(request: Request, body: dict = Body(...)):
+    """표기 변형으로 중복 생성된 아티스트 병합 — source의 별칭·연결을 target으로."""
+    a = get_actor(request); need(a, 2, '아티스트 병합')
+    src = one('SELECT * FROM artists WHERE id=?', ((body.get('source_id') or '').strip(),))
+    dst = one('SELECT * FROM artists WHERE id=?', ((body.get('target_id') or '').strip(),))
+    if not src or not dst or src['id'] == dst['id']:
+        raise HTTPException(400, '병합 대상이 올바르지 않습니다')
+    merged = sorted(set(jload(dst.get('aliases'), []) + jload(src.get('aliases'), [])
+                        + [src['name'], src.get('name_en') or '', dst['name']]) - {''})
+    run('UPDATE artists SET aliases=?, updated_at=? WHERE id=?',
+        (json.dumps(merged, ensure_ascii=False), now_iso(), dst['id']))
+    run('UPDATE artist_links SET artist_id=? WHERE artist_id=?', (dst['id'], src['id']))
+    run('DELETE FROM artists WHERE id=?', (src['id'],))
+    audit(a, '아티스트병합', dst['id'], '%s ← %s' % (dst['name'], src['name']))
+    _artist_cache_bust(); _sitemap_cache['xml'] = None
+    return {'ok': True, 'slug': dst['slug']}
+
+@admin_router.get('/admin/api/artists/links')
+def api_admin_artist_links(request: Request):
+    a = get_actor(request); need(a, 0)
+    aid = (request.query_params.get('artist_id') or '').strip()
+    art = one('SELECT * FROM artists WHERE id=?', (aid,))
+    if not art: raise HTTPException(404, '아티스트 없음')
+    ls = rows('SELECT * FROM artist_links WHERE artist_id=? ORDER BY sort_order, created_at', (aid,))
+    excludes = {str(l.get('ref') or '') for l in ls if l.get('kind') == 'exclude'}
+    return {'links': [{'id': l['id'], 'kind': l['kind'], 'category': l.get('category') or '',
+                       'title': l.get('title') or '', 'url': l.get('url') or '',
+                       'image': l.get('image') or '', 'price': num(l.get('price')) or None,
+                       'ref': l.get('ref') or ''} for l in ls],
+            'auto_goods': _artist_goods_auto(art, excludes)}
+
+@admin_router.post('/admin/api/artists/links')
+def api_admin_artist_link_add(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 1, '아티스트 연결')
+    aid = (body.get('artist_id') or '').strip()
+    if not one('SELECT id FROM artists WHERE id=?', (aid,)):
+        raise HTTPException(404, '아티스트 없음')
+    kind = 'exclude' if body.get('kind') == 'exclude' else 'item'
+    if kind == 'exclude':
+        ref = (body.get('ref') or '').strip()[:120]
+        if not ref: raise HTTPException(400, '제외할 상품 ID가 없습니다')
+        vals = (uid(), aid, 'exclude', '', '', '', '', None, ref)
+    else:
+        cat = (body.get('category') or 'goods').lower()
+        if cat not in ('goods', 'event', 'content', 'album'):
+            raise HTTPException(400, '카테고리는 goods/event/content/album 중 하나입니다')
+        title = (body.get('title') or '').strip()[:200]
+        if not title: raise HTTPException(400, '제목을 입력하세요')
+        vals = (uid(), aid, 'item', cat, title, (body.get('image') or '').strip()[:300],
+                (body.get('url') or '').strip()[:500], num(body.get('price')) or None,
+                (body.get('ref') or '').strip()[:120])
+    run('INSERT INTO artist_links(id,artist_id,kind,category,title,image,url,price,ref,'
+        'sort_order,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+        vals + (num(body.get('sort_order')), now_iso()))
+    audit(a, '아티스트연결', aid, ('제외:' + vals[8]) if kind == 'exclude' else vals[4])
+    return {'ok': True, 'id': vals[0]}
+
+@admin_router.post('/admin/api/artists/links/delete')
+def api_admin_artist_link_del(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 1, '아티스트 연결 삭제')
+    n = run('DELETE FROM artist_links WHERE id=?', ((body.get('id') or '').strip(),))
+    if not n: raise HTTPException(404, '연결 없음')
+    return {'ok': True}
+
+@admin_router.post('/admin/api/artists/pending')
+def api_admin_artist_pending_resolve(request: Request, body: dict = Body(...)):
+    """검수 대기 1클릭 처리 — alias(기존 팀 별칭으로 흡수) · create(신규 등록) · ignore(무시/억제)."""
+    a = get_actor(request); need(a, 1, '아티스트 검수')
+    key = (body.get('key') or '').strip()
+    p = one('SELECT * FROM artist_pending WHERE key=?', (key,))
+    if not p: raise HTTPException(404, '검수 항목이 없습니다')
+    action = body.get('action')
+    surface = str(p.get('surface') or '')
+    name, name_en, aliases = _artist_split_surface(surface)
+    if action == 'alias':
+        tid = (body.get('target_id') or p.get('similar_id') or '').strip()
+        tgt = one('SELECT * FROM artists WHERE id=?', (tid,))
+        if not tgt: raise HTTPException(400, '흡수할 대상 팀이 없습니다')
+        _artist_add_aliases(tid, aliases + [surface], a.get('name') or '관리자')
+        run('DELETE FROM artist_pending WHERE key=?', (key,))
+        audit(a, '아티스트검수', tid, '별칭 흡수: %s → %s' % (surface, tgt['name']))
+        _artist_cache_bust()
+        return {'ok': True, 'mode': 'alias', 'slug': tgt['slug']}
+    if action == 'create':
+        if not name: raise HTTPException(400, '표기를 해석할 수 없습니다')
+        taken = {str(r['slug']) for r in rows('SELECT slug FROM artists')}
+        slug = _artist_slugify(name_en, surface, taken)
+        aid = uid()
+        run('INSERT INTO artists(id,name,name_en,slug,aliases,agency,debut_year,profile_img,descr,'
+            'is_active,sort_order,auto_collected,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (aid, name, name_en, slug, json.dumps(aliases, ensure_ascii=False),
+             '', None, '', '', 1, 0, 1, now_iso(), now_iso()))
+        for k in {key} | {x for x in (_catalog_norm_key(al) for al in aliases) if x}:
+            run('DELETE FROM artist_pending WHERE key=?', (k,))
+            run('DELETE FROM artist_suppressed WHERE key=?', (k,))
+        audit(a, '아티스트검수', aid, '신규 확정: ' + surface)
+        _artist_cache_bust(); _sitemap_cache['xml'] = None
+        return {'ok': True, 'mode': 'create', 'id': aid, 'slug': slug}
+    if action == 'ignore':
+        if not one('SELECT key FROM artist_suppressed WHERE key=?', (key,)):
+            run('INSERT INTO artist_suppressed(key,name,created,by_admin) VALUES(?,?,?,?)',
+                (key, surface, now_iso(), a.get('name') or ''))
+        run('DELETE FROM artist_pending WHERE key=?', (key,))
+        audit(a, '아티스트검수', '', '무시(억제): ' + surface)
+        return {'ok': True, 'mode': 'ignore'}
+    raise HTTPException(400, 'action은 alias/create/ignore 중 하나입니다')
 
 # ── /kpop: shop.html을 앨범 전용관 모드로 변환 서빙 ──────────────────────
 #    ※ 캐치올(serve_site)보다 먼저 등록되어야 한다 (등록 순서 = 매칭 순서).

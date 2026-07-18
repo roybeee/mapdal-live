@@ -2633,11 +2633,11 @@ const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_la
  <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지를 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"></div></span>
  <b>응모 전 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_te_on" ${v.terms_entry_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 이벤트명·제공받는 자만 바뀌고 나머지는 항상 같은 포맷</span></label>
  <input id="dr_pi" style="width:100%;margin-top:6px" value="${esc(v.pi_recipients||'')}" placeholder="개인정보를 제공받는 자 — 예) KPOP2GETHER, 스타쉽엔터테인먼트 (비우면 'KPOP2GETHER, 맵달서울성수')">
- <textarea id="dr_te_extra" rows="10" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 빈 줄로 항목을 구분합니다 (붙여 쓴 줄은 한 항목으로 묶이고, 표준 문구 뒤에 이어서 번호가 붙습니다)">${esc(v.entry_extra||'')}</textarea></span>
+ <textarea id="dr_te_extra" rows="10" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 빈 줄 1개면 다음 번호로 넘어갑니다 (붙여 쓴 줄은 한 항목, 저장 시 맞춤법·띄어쓰기 자동 보정)">${esc(v.entry_extra||'')}</textarea></span>
  <b>대면 팬사인회<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twf_on" ${(v.winner_fansign_on!==undefined?v.winner_fansign_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [팬사인회]가 선택된 이벤트에 표시됩니다 (대면 표준 9항목)</span></label>
- <textarea id="dr_twf_extra" rows="10" style="width:100%;margin-top:6px" placeholder="대면 팬사인회 섹션에만 추가할 항목 — 빈 줄로 항목을 구분합니다 (붙여 쓴 줄은 한 항목, 표준 문구 뒤에 번호가 이어집니다)">${esc(v.winner_fansign_extra!==undefined?v.winner_fansign_extra:_lxF)}</textarea></span>
+ <textarea id="dr_twf_extra" rows="10" style="width:100%;margin-top:6px" placeholder="대면 팬사인회 섹션에만 추가할 항목 — 빈 줄 1개면 다음 번호 (저장 시 맞춤법·띄어쓰기 자동 보정)">${esc(v.winner_fansign_extra!==undefined?v.winner_fansign_extra:_lxF)}</textarea></span>
  <b>영상통화<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twv_on" ${(v.winner_videocall_on!==undefined?v.winner_videocall_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [영상통화]가 선택된 이벤트에 표시됩니다 (영상통화 표준 15항목). 두 유형 모두 선택 시 두 섹션이 유형 선택 순서대로 각각 표시되고, 팬사인회·영상통화가 아닌 유형만 있으면 공통 문구가 표시됩니다.</span></label>
- <textarea id="dr_twv_extra" rows="10" style="width:100%;margin-top:6px" placeholder="영상통화 섹션에만 추가할 항목 — 빈 줄로 항목을 구분합니다 (붙여 쓴 줄은 한 항목)">${esc(v.winner_videocall_extra!==undefined?v.winner_videocall_extra:_lxV)}</textarea></span>
+ <textarea id="dr_twv_extra" rows="10" style="width:100%;margin-top:6px" placeholder="영상통화 섹션에만 추가할 항목 — 빈 줄 1개면 다음 번호 (저장 시 맞춤법·띄어쓰기 자동 보정)">${esc(v.winner_videocall_extra!==undefined?v.winner_videocall_extra:_lxV)}</textarea></span>
  <b>발표 공지</b><span><textarea id="dr_annnotice" rows="6" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
  <b>당첨 그룹</b><span><div id="dr_wins">${(v.winners||[]).map(drWinRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_wins').insertAdjacentHTML('beforeend',drWinRow())">+ 당첨 그룹 추가</button></span>
  </div>
@@ -6491,6 +6491,56 @@ DROP_TERMS_WINNER_DEFAULT = [
     ('본 이벤트는 사정에 따라 일부 또는 전체가 변경되거나 취소될 수 있습니다.', []),
 ]
 
+# ── 한국어 자동 보정(저장 시) — 오탈자 사전 + 문장부호 뒤 공백 + 띄어쓰기 복원(kiwipiepy)
+_KO_TYPO = {'영상동화': '영상통화', '이벤트창여': '이벤트 참여', '창여': '참여', '을바르게': '올바르게'}
+_KO_COMPOUND = {'팬 사인회': '팬사인회', '영상 통화': '영상통화', '영문 명': '영문명',
+                '카카오 톡': '카카오톡', '페이스 톡': '페이스톡', 'To. 는': 'To.는',
+                '부탁 드립니다': '부탁드립니다', '부탁 드리': '부탁드리', '안내 드리': '안내드리',
+                '발송 드리': '발송드리'}
+_KIWI = None
+
+def _ko_spacer():
+    """kiwipiepy 지연 로드 싱글턴 — 미설치·로드 실패 시 False(규칙 보정만 동작).
+    환경변수 KO_SPACING=off 로 끌 수 있다 (저메모리 인스턴스 대비)."""
+    global _KIWI
+    if _KIWI is None:
+        if os.environ.get('KO_SPACING', '').lower() in ('off', '0', 'false'):
+            _KIWI = False
+        else:
+            try:
+                from kiwipiepy import Kiwi
+                _KIWI = Kiwi()
+            except Exception:
+                _KIWI = False
+    return _KIWI
+
+def _ko_autofix(text):
+    """유의사항·공지 저장 시 맞춤법·띄어쓰기 자동 보정. 빈 줄(항목 구분) 구조는 그대로 유지.
+    이미 정상 띄어쓰기인 줄은 건드리지 않고, 붙여 쓴(run-on) 줄만 띄어쓰기를 복원한다."""
+    raw = str(text or '').replace('\r', '')
+    if not raw.strip():
+        return raw
+    out = []
+    for ln in raw.split('\n'):
+        s = ln.strip()
+        if s:
+            for a, b in _KO_TYPO.items():
+                s = s.replace(a, b)
+            s = re.sub(r'([가-힣])([.,!?])([가-힣])', r'\1\2 \3', s)   # 문장부호 뒤 공백
+            if re.search(r'[가-힣]{12,}', s):                          # run-on 줄만 복원
+                kiwi = _ko_spacer()
+                if kiwi:
+                    try:
+                        s = kiwi.space(s, reset_whitespace=False)
+                    except Exception:
+                        pass
+            for a, b in _KO_COMPOUND.items():
+                s = s.replace(a, b)
+            s = re.sub(r'\s*/\s*', '/', s)                             # 슬래시 주변 공백 정리
+            s = re.sub(r'[ \t]{2,}', ' ', s).strip()
+        out.append(s)
+    return '\n'.join(out)
+
 def _drop_terms_html(items, extra_lines):
     """(본문,[하위]) 목록 + 추가 줄 → 번호 목록 HTML (사용자 입력은 이스케이프)."""
     h = ['<ol class="nd-tlist">']
@@ -6507,7 +6557,7 @@ def _drop_terms_html(items, extra_lines):
 def _drop_terms_for(d):
     """드롭 레코드 → (응모 전 유의사항 HTML, 당첨자 유의사항 HTML). 끔 상태면 ''."""
     def extras(key):
-        # 빈 줄(개행 2개 이상)로 항목을 구분 — 붙여 쓴 줄들은 하나의 번호로 묶는다.
+        # 빈 줄이 1개 이상 있으면 다음 번호로 — 붙여 쓴 줄들은 하나의 번호로 묶는다.
         out = []
         for blk in re.split(r'\n\s*\n+', str(d.get(key) or '').replace('\r', '')):
             lines = [x.strip()[:300] for x in blk.split('\n') if x.strip()]
@@ -6704,10 +6754,10 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'winner_fansign_on': bool(body.get('winner_fansign_on', True)),
            'winner_videocall_on': bool(body.get('winner_videocall_on', True)),
            'pi_recipients': str(body.get('pi_recipients') or '').strip()[:120],
-           'entry_extra': str(body.get('entry_extra') or '').replace('\r', '')[:2000],
-           'winner_fansign_extra': str(body.get('winner_fansign_extra') or '').replace('\r', '')[:2000],
-           'winner_videocall_extra': str(body.get('winner_videocall_extra') or '').replace('\r', '')[:2000],
-           'announce_notice': str(body.get('announce_notice') or '')[:2000],
+           'entry_extra': _ko_autofix(body.get('entry_extra'))[:2000],
+           'winner_fansign_extra': _ko_autofix(body.get('winner_fansign_extra'))[:2000],
+           'winner_videocall_extra': _ko_autofix(body.get('winner_videocall_extra'))[:2000],
+           'announce_notice': _ko_autofix(body.get('announce_notice'))[:2000],
            'winners': winners}
     try:
         rec['options'] = _drop_product_sync(rec, (cur or {}).get('options'), a)

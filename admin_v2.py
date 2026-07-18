@@ -2633,12 +2633,12 @@ const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_la
  <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지를 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"></div></span>
  <b>응모 전 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_te_on" ${v.terms_entry_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 이벤트명·제공받는 자만 바뀌고 나머지는 항상 같은 포맷</span></label>
  <input id="dr_pi" style="width:100%;margin-top:6px" value="${esc(v.pi_recipients||'')}" placeholder="개인정보를 제공받는 자 — 예) KPOP2GETHER, 스타쉽엔터테인먼트 (비우면 'KPOP2GETHER, 맵달서울성수')">
- <textarea id="dr_te_extra" rows="5" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나 (표준 문구 뒤에 이어서 번호가 붙습니다)">${esc(v.entry_extra||'')}</textarea></span>
+ <textarea id="dr_te_extra" rows="10" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 빈 줄로 항목을 구분합니다 (붙여 쓴 줄은 한 항목으로 묶이고, 표준 문구 뒤에 이어서 번호가 붙습니다)">${esc(v.entry_extra||'')}</textarea></span>
  <b>대면 팬사인회<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twf_on" ${(v.winner_fansign_on!==undefined?v.winner_fansign_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [팬사인회]가 선택된 이벤트에 표시됩니다 (대면 표준 9항목)</span></label>
- <textarea id="dr_twf_extra" rows="5" style="width:100%;margin-top:6px" placeholder="대면 팬사인회 섹션에만 추가할 항목 — 한 줄에 하나 (표준 문구 뒤에 번호가 이어집니다)">${esc(v.winner_fansign_extra!==undefined?v.winner_fansign_extra:_lxF)}</textarea></span>
+ <textarea id="dr_twf_extra" rows="10" style="width:100%;margin-top:6px" placeholder="대면 팬사인회 섹션에만 추가할 항목 — 빈 줄로 항목을 구분합니다 (붙여 쓴 줄은 한 항목, 표준 문구 뒤에 번호가 이어집니다)">${esc(v.winner_fansign_extra!==undefined?v.winner_fansign_extra:_lxF)}</textarea></span>
  <b>영상통화<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twv_on" ${(v.winner_videocall_on!==undefined?v.winner_videocall_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [영상통화]가 선택된 이벤트에 표시됩니다 (영상통화 표준 15항목). 두 유형 모두 선택 시 두 섹션이 유형 선택 순서대로 각각 표시되고, 팬사인회·영상통화가 아닌 유형만 있으면 공통 문구가 표시됩니다.</span></label>
- <textarea id="dr_twv_extra" rows="5" style="width:100%;margin-top:6px" placeholder="영상통화 섹션에만 추가할 항목 — 한 줄에 하나">${esc(v.winner_videocall_extra!==undefined?v.winner_videocall_extra:_lxV)}</textarea></span>
- <b>발표 공지</b><span><textarea id="dr_annnotice" rows="3" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
+ <textarea id="dr_twv_extra" rows="10" style="width:100%;margin-top:6px" placeholder="영상통화 섹션에만 추가할 항목 — 빈 줄로 항목을 구분합니다 (붙여 쓴 줄은 한 항목)">${esc(v.winner_videocall_extra!==undefined?v.winner_videocall_extra:_lxV)}</textarea></span>
+ <b>발표 공지</b><span><textarea id="dr_annnotice" rows="6" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
  <b>당첨 그룹</b><span><div id="dr_wins">${(v.winners||[]).map(drWinRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_wins').insertAdjacentHTML('beforeend',drWinRow())">+ 당첨 그룹 추가</button></span>
  </div>
  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
@@ -6500,14 +6500,20 @@ def _drop_terms_html(items, extra_lines):
             h.append('<ul>' + ''.join('<li>' + s + '</li>' for s in subs) + '</ul>')
         h.append('</li>')
     for ln in extra_lines:
-        h.append('<li>' + _artist_h(ln) + '</li>')
+        h.append('<li>' + _artist_h(ln).replace('\n', '<br>') + '</li>')
     h.append('</ol>')
     return ''.join(h)
 
 def _drop_terms_for(d):
     """드롭 레코드 → (응모 전 유의사항 HTML, 당첨자 유의사항 HTML). 끔 상태면 ''."""
     def extras(key):
-        return [x.strip()[:300] for x in str(d.get(key) or '').replace('\r', '').split('\n') if x.strip()][:20]
+        # 빈 줄(개행 2개 이상)로 항목을 구분 — 붙여 쓴 줄들은 하나의 번호로 묶는다.
+        out = []
+        for blk in re.split(r'\n\s*\n+', str(d.get(key) or '').replace('\r', '')):
+            lines = [x.strip()[:300] for x in blk.split('\n') if x.strip()]
+            if lines:
+                out.append('\n'.join(lines))
+        return out[:20]
     entry = ''
     if d.get('terms_entry_on', True):
         rcp = _artist_h(str(d.get('pi_recipients') or '').strip() or 'KPOP2GETHER, 맵달서울성수')

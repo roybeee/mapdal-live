@@ -5854,6 +5854,7 @@ def api_ticker_save(request: Request, body: dict = Body(...)):
 # ─────────────────────────────────────────────────────────────
 HOME_BLOCKS = [
     ('collections', '컬렉션 — 세계관으로 쇼핑하기'),
+    ('drops',       'NEW/DROPS — 진행 중 이벤트 (자동 · 응모중→오픈예정→발표 순 6개)'),
     ('kpop',        'KPOP — 새로 들어온 앨범 (K2G 카탈로그 · 최신 8종 자동)'),
     ('space',       '공간 소개 — 하나의 건물, 완성되는 팬 경험 (층별 안내)'),
     ('kfood',       'K-FOOD — 분식을 배송합니다 (떡볶이·김밥·BOWL)'),
@@ -5861,6 +5862,101 @@ HOME_BLOCKS = [
     ('trust',       '신뢰 스트립 — 전 세계 배송·DDP·차트 집계 USP'),
 ]
 HOME_BLOCK_LABELS = dict(HOME_BLOCKS)
+
+_HOME_DROPS_CACHE = {'t': 0.0, 'body': None}
+_HOME_DROPS_ENTRY_CATS = {'FANSIGN', 'VIDEOCALL', 'PHOTO', 'LUCKYDRAW'}
+
+def _home_drops_fmt(s, prefix):
+    dt = _drop_dt(s)
+    if not dt:
+        return ''
+    return '%s %d/%d %02d:%02d' % (prefix, dt.month, dt.day, dt.hour, dt.minute)
+
+def _home_drops_html():
+    """홈 NEW/DROPS 코너: 응모중(마감 임박순) → 오픈 예정 → 발표 순 최대 6개
+    (서버 렌더 · 60초 캐시 · 드롭 저장/삭제 시 즉시 갱신). 없으면 '' → 블록 숨김."""
+    try:
+        if _HOME_DROPS_CACHE['body'] is not None and time.time() - _HOME_DROPS_CACHE['t'] < 60:
+            return _HOME_DROPS_CACHE['body']
+        ensure_ready()
+        now = kst_now()
+        cs = [_drop_card(d, now) for d in _drops_all()
+              if isinstance(d, dict) and d.get('on', True)]
+        on = sorted([c for c in cs if c['status'] == 'ON_SALE'], key=lambda c: c['sales_end'] or '9999')
+        up = sorted([c for c in cs if c['status'] == 'UPCOMING'], key=lambda c: c['sales_start'] or '9999')
+        an = sorted([c for c in cs if c['status'] == 'ENDED' and c['announce'] in ('ANNOUNCED', 'RESERVED')],
+                    key=lambda c: c.get('announce_at') or '', reverse=True)
+        picks = (on + up + an)[:6]
+        if not picks:
+            _HOME_DROPS_CACHE.update(t=time.time(), body='')
+            return ''
+        e = _artist_h
+        cards = []
+        for c in picks:
+            if c['status'] == 'ON_SALE':
+                st = '응모중' if c['category'] in _HOME_DROPS_ENTRY_CATS else '진행중'
+                cls, meta = 'live', _home_drops_fmt(c['sales_end'], '마감')
+            elif c['status'] == 'UPCOMING':
+                st, cls, meta = '오픈 예정', 'soon', _home_drops_fmt(c['sales_start'], '오픈')
+            elif c['announce'] == 'ANNOUNCED':
+                st, cls, meta = '발표 완료', 'done', _home_drops_fmt(c['announce_at'], '발표')
+            else:
+                st, cls, meta = '발표 예정', 'soon', _home_drops_fmt(c['announce_at'], '발표')
+            dd = c.get('dday')
+            dday = ('<span class="dh-dday">D-%d</span>' % dd) if isinstance(dd, int) and 0 <= dd <= 99                    and c['status'] in ('ON_SALE', 'UPCOMING') else ''
+            img = str(c.get('image') or '').strip()
+            cover_style = ('background-image:linear-gradient(180deg,rgba(20,20,20,.06),rgba(20,20,20,.52)),'
+                           'url(\'%s\');background-size:cover;background-position:center' % e(img))                 if img else ('background:%s' % e(c.get('cat_grad') or 'linear-gradient(135deg,#3A3A3A,#141414)'))
+            big = '' if img else ('<span class="dh-big">%s</span>'
+                                  % e((c.get('artist') or c.get('cat_label') or 'MAPDAL').upper()))
+            cards.append(
+                '<a class="dh-card" href="/new-drops?id=%d">'
+                '<div class="dh-cover" style="%s">'
+                '<span class="dh-tag %s">%s · %s</span>%s%s</div>'
+                '<div class="dh-body"><h3>%s</h3><div class="dh-meta">%s%s</div></div></a>'
+                % (num(c.get('id')), cover_style, cls, e(c.get('cat_label') or 'EVENT'), st,
+                   dday, big, e(c.get('title')),
+                   e(c.get('artist') or 'MAPDAL SEOUL'), (' · ' + e(meta)) if meta else ''))
+        out = (
+            '<section id="drops-home">\n'
+            '<style>'
+            '#drops-home .dh-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}'
+            '#drops-home .dh-card{display:block;background:#fff;border:1px solid var(--line);'
+            'text-decoration:none;color:var(--ink);overflow:hidden;'
+            'transition:transform .15s ease,box-shadow .15s ease}'
+            '#drops-home .dh-card:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(20,20,20,.09)}'
+            '#drops-home .dh-cover{position:relative;height:210px;display:flex;align-items:flex-end;padding:16px}'
+            '#drops-home .dh-big{font-family:var(--disp);font-size:34px;line-height:1.02;color:#fff;'
+            'letter-spacing:.01em;word-break:keep-all}'
+            '#drops-home .dh-tag{position:absolute;top:12px;left:12px;font-family:var(--mono);font-size:10px;'
+            'letter-spacing:.1em;padding:5px 9px;background:var(--ink);color:#fff}'
+            '#drops-home .dh-tag.live{background:var(--red)}'
+            '#drops-home .dh-tag.soon{background:var(--ink);color:var(--amber)}'
+            '#drops-home .dh-tag.done{background:var(--amber);color:var(--ink)}'
+            '#drops-home .dh-dday{position:absolute;top:12px;right:12px;font-family:var(--mono);'
+            'font-size:11px;letter-spacing:.08em;padding:5px 9px;background:#fff;color:var(--ink)}'
+            '#drops-home .dh-body{padding:14px 16px 16px}'
+            '#drops-home .dh-body h3{font-size:14.5px;font-weight:800;line-height:1.45;letter-spacing:-.01em;'
+            'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:42px}'
+            '#drops-home .dh-meta{font-family:var(--mono);font-size:11px;color:var(--steel);'
+            'margin-top:8px;letter-spacing:.02em}'
+            '@media(max-width:1024px){#drops-home .dh-grid{grid-template-columns:repeat(2,1fr)}}'
+            '@media(max-width:640px){#drops-home .dh-grid{grid-template-columns:1fr;gap:12px}'
+            '#drops-home .dh-cover{height:180px}}'
+            '</style>\n'
+            '  <div class="sec-head">\n'
+            '    <div>\n'
+            '      <div class="kicker">NEW / DROPS</div>\n'
+            '      <h2>지금 진행 중인 이벤트</h2>\n'
+            '    </div>\n'
+            '    <a class="more" href="/new-drops">전체 이벤트 →</a>\n'
+            '  </div>\n'
+            '  <div class="dh-grid">' + ''.join(cards) + '</div>\n'
+            '</section>')
+        _HOME_DROPS_CACHE.update(t=time.time(), body=out)
+        return out
+    except Exception:
+        return ''
 
 _HOME_KPOP_CACHE = {'t': 0.0, 'body': None}
 
@@ -5947,7 +6043,12 @@ def homeblocks_conf():
             seen.add(bid)
     for bid, lb in HOME_BLOCKS:
         if bid not in seen:
-            order.append({'id': bid, 'label': lb, 'on': True})
+            entry = {'id': bid, 'label': lb, 'on': True}
+            if bid == 'drops':                # 기존 저장 구성 — 컬렉션 바로 뒤에 기본 배치
+                ci = next((i for i, b in enumerate(order) if b['id'] == 'collections'), None)
+                if ci is not None:
+                    order.insert(ci + 1, entry); continue
+            order.append(entry)
     return {'blocks': order, 'updated': (r.get('updated') or '') if r else '',
             'by_admin': (r.get('by_admin') or '') if r else '', 'is_default': not r}
 
@@ -5984,7 +6085,7 @@ def _homeblocks_found(html):
         if s >= 0 and e > 0:
             found['collections'] = _hb_span_with_comment(html, s, e + len('</section>'))
     for bid, marker in (('kfood', '<section id="kfood"'), ('journal', '<section id="journal"'),
-                        ('kpop', '<section id="kpop-home">')):
+                        ('kpop', '<section id="kpop-home">'), ('drops', '<section id="drops-home">')):
         s = html.find(marker)
         if s >= 0:
             e = html.find('</section>', s)
@@ -6004,14 +6105,20 @@ def _homeblocks_apply(html, path=''):
         conf = homeblocks_conf()
         found = _homeblocks_found(html)
         if conf['is_default']:
-            # 저장 이력 없음 → 원본 순서 유지, KPOP 코너만 컬렉션 뒤에 기본 삽입
-            if 'kpop' in found or 'collections' not in found:
+            # 저장 이력 없음 → 원본 순서 유지, 컬렉션 뒤에 NEW/DROPS → KPOP 기본 삽입
+            if 'collections' not in found:
                 return html
-            kp = _home_kpop_html()
-            if not kp:
+            add = ''
+            if 'drops' not in found:
+                dp = _home_drops_html()
+                if dp: add += '\n\n' + dp
+            if 'kpop' not in found:
+                kp = _home_kpop_html()
+                if kp: add += '\n\n' + kp
+            if not add:
                 return html
             e0 = found['collections'][1]
-            return html[:e0] + '\n\n' + kp + html[e0:]
+            return html[:e0] + add + html[e0:]
         if not found:
             return html
         pieces = {bid: html[s:e] for bid, (s, e) in found.items()}
@@ -6019,6 +6126,10 @@ def _homeblocks_apply(html, path=''):
             kp = _home_kpop_html()
             if kp:
                 pieces['kpop'] = kp
+        if 'drops' not in pieces:
+            dp = _home_drops_html()
+            if dp:
+                pieces['drops'] = dp
         first = min(s for s, _ in found.values())
         out = html
         for _bid, (s, e) in sorted(found.items(), key=lambda kv: -kv[1][0]):
@@ -6053,7 +6164,12 @@ def api_homeblocks_save(request: Request, body: dict = Body(...)):
             seen.add(bid)
     for bid, _lb in HOME_BLOCKS:
         if bid not in seen:
-            order.append({'id': bid, 'on': True})
+            entry = {'id': bid, 'on': True}
+            if bid == 'drops':                # 저장 시에도 컬렉션 바로 뒤에 기본 배치
+                ci = next((i for i, b in enumerate(order) if b['id'] == 'collections'), None)
+                if ci is not None:
+                    order.insert(ci + 1, entry); continue
+            order.append(entry)
     _setting_put('home_blocks', order, a['name'])
     audit(a, '홈블록저장', '', ' → '.join(('%s%s' % (b['id'], '' if b['on'] else '(숨김)')) for b in order))
     return {'ok': True}
@@ -6550,6 +6666,7 @@ def api_drops_save(request: Request, body: dict = Body(...)):
     if len(json.dumps(ds, ensure_ascii=False)) > 8000000:
         raise HTTPException(400, '저장 용량 초과 — 오래된 이벤트를 삭제해 주세요')
     _setting_put('drops', ds, a['name'])
+    _HOME_DROPS_CACHE['body'] = None          # 홈 NEW/DROPS 코너 즉시 갱신
     audit(a, 'NEW/DROPS저장', '#%s' % rec['id'], title[:60])
     return {'ok': True, 'id': rec['id']}
 
@@ -6566,6 +6683,7 @@ def api_drops_delete(request: Request, body: dict = Body(...)):
             try: run('UPDATE products SET soldout=1 WHERE id=?', (po['product_id'],))
             except Exception: pass
     _setting_put('drops', nd, a['name'])
+    _HOME_DROPS_CACHE['body'] = None
     audit(a, 'NEW/DROPS삭제', '#%d' % did, '')
     return {'ok': True}
 

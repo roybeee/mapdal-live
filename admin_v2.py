@@ -2610,7 +2610,8 @@ function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,
  <b>노출</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_on" ${v.on!==false?'checked':''}> 사이트에 표시</label></span>
  <b>제목 *</b><span><input id="dr_title" style="width:100%" value="${esc(v.title||'')}" placeholder="예) 스타라이트 1st MINI 발매 기념 대면 팬사인회 EVENT"></span>
  <b>아티스트</b><span><input id="dr_artist" style="width:100%" value="${esc(v.artist||'')}" placeholder="예) 스타라이트"></span>
- <b>유형</b><span><select id="dr_cat"><option value="">선택</option>${DRCATS.map(c=>`<option value="${c.id}" ${v.category===c.id?'selected':''}>${esc(c.label)}</option>`).join('')}</select></span>
+ <b>유형</b><span><div id="dr_cats" style="display:flex;gap:6px;flex-wrap:wrap">${DRCATS.map(c=>{const on=(v.categories&&v.categories.length?v.categories:[v.category]).includes(c.id);return `<label class="drcat${on?' on':''}" style="display:inline-flex;align-items:center;padding:6px 12px;border:1.5px solid ${on?'#141414':'#ddd'};border-radius:999px;background:${on?'#141414':'#fff'};color:${on?'#fff':'#444'};cursor:pointer;font-size:12px;font-weight:700;user-select:none"><input type="checkbox" value="${c.id}" ${on?'checked':''} style="display:none" onchange="const l=this.parentElement,k=this.checked;l.style.background=k?'#141414':'#fff';l.style.color=k?'#fff':'#444';l.style.borderColor=k?'#141414':'#ddd'">${esc(c.label)}</label>`}).join('')}</div>
+ <span class="hint">복수 선택 가능(최대 4개) — 목록 앞쪽의 선택이 대표 유형(카드 색상·구버전 호환 기준)이 되고, 당첨자 유의사항 표준 문구는 영상통화 &gt; 팬사인회 &gt; 공통 순으로 자동 선택됩니다.</span></span>
  <b>배너 이미지</b><span><div style="display:flex;gap:6px"><input id="dr_img" style="flex:1" value="${esc(v.image||'')}" placeholder="이미지 주소 — 오른쪽 버튼으로 업로드하면 자동 입력" onchange="drImgPrev()"><button class="btn sm" type="button" onclick="document.getElementById('dr_imgfile').click()">업로드</button><input type="file" id="dr_imgfile" accept="image/*" style="display:none" onchange="drUpMain(this)"></div><div id="dr_imgpv" style="margin-top:6px"></div></span>
  <b>판매 시작</b><span><input type="datetime-local" id="dr_start" value="${esc(v.sales_start||'')}"> <span class="hint">비우면 즉시 판매중</span></span>
  <b>판매 종료</b><span><input type="datetime-local" id="dr_end" value="${esc(v.sales_end||'')}"> <span class="hint">비우면 상시 판매</span></span>
@@ -2642,7 +2643,8 @@ async function saveDrop(id){try{
  const sched=[...document.querySelectorAll('#dr_sched .drsched')].map(x=>({name:x.querySelector('.ds-n').value,date:x.querySelector('.ds-d').value,time:x.querySelector('.ds-t').value,desc:x.querySelector('.ds-x').value}));
  const winners=[...document.querySelectorAll('#dr_wins .drwin')].map(x=>({title:x.querySelector('.dw-t').value,type:x.querySelector('.dw-y').value,list:x.querySelector('.dw-l').value}));
  const body={id:id||undefined,on:$('#dr_on').checked,title:$('#dr_title').value,artist:$('#dr_artist').value,
-  category:$('#dr_cat').value,image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
+  categories:[...document.querySelectorAll('#dr_cats input:checked')].map(x=>x.value),
+  image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
   schedule:sched,options:drOptsCollect(),
   notice:$('#dr_notice').value,chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
@@ -5894,7 +5896,7 @@ def _home_drops_html():
         cards = []
         for c in picks:
             if c['status'] == 'ON_SALE':
-                st = '응모중' if c['category'] in _HOME_DROPS_ENTRY_CATS else '진행중'
+                st = '응모중' if set(c.get('cats') or []) & _HOME_DROPS_ENTRY_CATS else '진행중'
                 cls, meta = 'live', _home_drops_fmt(c['sales_end'], '마감')
             elif c['status'] == 'UPCOMING':
                 st, cls, meta = '오픈 예정', 'soon', _home_drops_fmt(c['sales_start'], '오픈')
@@ -6203,6 +6205,18 @@ DROP_CATS = [
 ]
 DROP_CAT_MAP = {c[0]: c for c in DROP_CATS}
 
+def _drop_cats(d):
+    """드롭 레코드 → 유효 유형 ID 목록 (다중 · 구버전 단일 category 호환 · 최대 4개)."""
+    cs = d.get('categories')
+    if not isinstance(cs, list) or not cs:
+        cs = [d.get('category')]
+    out, seen = [], set()
+    for x in cs:
+        cid = str(x or '').strip().upper()
+        if cid in DROP_CAT_MAP and cid not in seen:
+            out.append(cid); seen.add(cid)
+    return out[:4]
+
 def _drops_all():
     try:
         r = one("SELECT value FROM site_settings WHERE key='drops'")
@@ -6243,11 +6257,14 @@ def _drop_card(d, now):
     dday = None
     if status == 'ON_SALE' and en: dday = (en.date() - now.date()).days
     elif status == 'UPCOMING' and st: dday = (st.date() - now.date()).days
-    cat = DROP_CAT_MAP.get(str(d.get('category') or ''))
+    cats = _drop_cats(d)
+    first = DROP_CAT_MAP.get(cats[0]) if cats else None
     return {'id': num(d.get('id')), 'title': str(d.get('title') or ''), 'artist': str(d.get('artist') or ''),
-            'category': str(d.get('category') or ''),
-            'cat_label': cat[1] if cat else (str(d.get('category') or '') or 'EVENT'),
-            'cat_grad': cat[2] if cat else 'linear-gradient(135deg,#3A3A3A,#141414)',
+            'category': (cats[0] if cats else str(d.get('category') or '')),
+            'cats': cats,
+            'cat_label': (' · '.join(DROP_CAT_MAP[x][1] for x in cats) if cats
+                          else (str(d.get('category') or '') or 'EVENT')),
+            'cat_grad': first[2] if first else 'linear-gradient(135deg,#3A3A3A,#141414)',
             'image': str(d.get('image') or ''),
             'sales_start': str(d.get('sales_start') or ''), 'sales_end': str(d.get('sales_end') or ''),
             'announce_at': str(d.get('announce_at') or ''),
@@ -6492,9 +6509,9 @@ def _drop_terms_for(d):
         entry = _drop_terms_html(items, extras('entry_extra'))
     winner = ''
     if d.get('terms_winner_on', True):
-        cat = str(d.get('category') or '').upper()
-        tpl = (DROP_TERMS_WINNER_VIDEOCALL if cat == 'VIDEOCALL'
-               else DROP_TERMS_WINNER_FANSIGN if cat == 'FANSIGN'
+        cats = set(_drop_cats(d))
+        tpl = (DROP_TERMS_WINNER_VIDEOCALL if 'VIDEOCALL' in cats
+               else DROP_TERMS_WINNER_FANSIGN if 'FANSIGN' in cats
                else DROP_TERMS_WINNER_DEFAULT)
         winner = _drop_terms_html(tpl, extras('winner_extra'))
     return entry, winner
@@ -6539,7 +6556,7 @@ def api_drops_public(request: Request):
         pri = {'ON_SALE': 0, 'UPCOMING': 1, 'ENDED': 2}
         rows_ = sorted(cards, key=lambda c: (pri.get(c['status'], 3), _drop_sortkey(c, c['status'])))
     if catf:
-        rows_ = [c for c in rows_ if c['category'] == catf]
+        rows_ = [c for c in rows_ if catf in (c.get('cats') or [c['category']])]
     return JSONResponse({'rows': rows_, 'counts': counts,
                          'cats': [{'id': x[0], 'label': x[1]} for x in DROP_CATS],
                          'now': now.strftime('%Y-%m-%dT%H:%M')},
@@ -6563,7 +6580,7 @@ def api_drop_public_detail(did: int):
     for x in ds:
         if num(x.get('id')) == did or not x.get('on', True): continue
         xc = _drop_card(x, now)
-        xc['_rank'] = 0 if (art and xc['artist'].strip().lower() == art) else (1 if (c['category'] and xc['category'] == c['category']) else 2)
+        xc['_rank'] = 0 if (art and xc['artist'].strip().lower() == art) else (1 if set(xc.get('cats') or []) & set(c.get('cats') or []) else 2)
         rel.append(xc)
     rel.sort(key=lambda x: (x['_rank'], -num(x.get('id'))))
     for x in rel: x.pop('_rank', None)
@@ -6628,12 +6645,16 @@ def api_drops_save(request: Request, body: dict = Body(...)):
     ds = [d for d in _drops_all() if isinstance(d, dict)]
     did = num(body.get('id'))
     cur = next((d for d in ds if num(d.get('id')) == did), None) if did else None
+    cats_in = body.get('categories')
+    if not isinstance(cats_in, list):
+        cats_in = [body.get('category')]
+    cats = _drop_cats({'categories': cats_in})
     rec = {'id': (did if cur else (max([num(d.get('id')) for d in ds] + [0]) + 1)),
            'created': ((cur or {}).get('created') or now_iso()), 'updated': now_iso(),
            'on': bool(body.get('on', True)),
            'title': title[:120],
            'artist': re.sub(r'\s+', ' ', str(body.get('artist') or '')).strip()[:60],
-           'category': str(body.get('category') or '').strip().upper()[:20],
+           'category': (cats[0] if cats else ''), 'categories': cats,
            'image': str(body.get('image') or '').strip()[:400],
            'sales_start': str(body.get('sales_start') or '').strip()[:16],
            'sales_end': str(body.get('sales_end') or '').strip()[:16],

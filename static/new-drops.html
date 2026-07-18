@@ -338,9 +338,10 @@ footer li a:hover{color:#fff}
 @media(max-width:640px){
   .header-inner{padding:0 18px}
   .nd-hero-in{padding:38px 20px 32px}
-  .nd-tabs-in{padding:10px 14px;gap:8px}
-  .nd-tab{font-size:14.5px;padding:10px 16px}
-  .nd-tab .n{min-width:20px;height:20px;font-size:11px}
+  .nd-tabs-in{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 14px;overflow-x:visible;
+    -webkit-mask-image:none;mask-image:none}
+  .nd-tab{font-size:clamp(12px,3.6vw,14px);letter-spacing:0;padding:11px 6px;justify-content:center;min-width:0}
+  .nd-tab .n{min-width:20px;height:20px;font-size:11px;margin-left:5px}
   .nd-wrap{padding:26px 18px 72px}
   .nd-bc{padding:20px 18px 0}
   .nd-det{padding:18px 18px 52px}

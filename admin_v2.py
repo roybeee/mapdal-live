@@ -6514,9 +6514,92 @@ def _ko_spacer():
                 _KIWI = False
     return _KIWI
 
+# ── 영문 자동 보정 — 붙여 쓴 영문 분리(단어 빈도 DP) + 오탈자 교정(편집거리 1)
+_EN_TYPO = {'recieve': 'receive', 'seperate': 'separate', 'occured': 'occurred',
+            'definately': 'definitely', 'adress': 'address', 'wich': 'which'}
+_EN_PROTECT = {'mapdal', 'seongsu', 'kpop', 'kdrama', 'kfood', 'kbeauty', 'kculture',
+               'kcon', 'kstyle', 'hallyu', 'bbgirls', 'poca', 'pocaalbum', 'kakao',
+               'kakaotalk', 'facetalk', 'photocard', 'fansign', 'glg', 'mealzip',
+               'solapi', 'tteokbokki', 'gimbap', 'bibimbap'}
+_WF = None
+
+def _en_freq():
+    """wordfreq 지연 로드 싱글턴 — 미설치 시 False(영문 보정 건너뜀)."""
+    global _WF
+    if _WF is None:
+        try:
+            from wordfreq import zipf_frequency
+            _WF = zipf_frequency
+        except Exception:
+            _WF = False
+    return _WF
+
+def _en_segment(run):
+    """붙여 쓴 영문(15자 이상)을 단어 빈도 DP로 분리 — 원문 대소문자 보존.
+    미등록 조각이 나오면 오분리 위험으로 보고 원문을 유지한다."""
+    zf = _en_freq()
+    if not zf:
+        return run
+    low = run.lower()
+    if zf(low, 'en') >= 2.0:                      # 이미 실제 단어(전문용어 등)
+        return run
+    n = len(low)
+    best = [-990.0] * (n + 1); best[0] = 0.0; back = [0] * (n + 1)
+    for i in range(1, n + 1):
+        for j in range(max(0, i - 24), i):
+            w = low[j:i]; f = zf(w, 'en')
+            sc = (f - 9.0) if f > 0 else (-8.0 if len(w) == 1 else -99.0)
+            if best[j] + sc > best[i]:
+                best[i] = best[j] + sc; back[i] = j
+    cuts = []; i = n
+    while i > 0:
+        cuts.append(i); i = back[i]
+    cuts.append(0); cuts.reverse()
+    words = [run[cuts[k]:cuts[k + 1]] for k in range(len(cuts) - 1)]
+    if len(words) < 3:
+        return run
+    for w in words:
+        if len(w) > 1 and zf(w.lower(), 'en') == 0:
+            return run
+    return ' '.join(words)
+
+def _en_spellfix(w):
+    """소문자 단독 단어(5자+)만 편집거리 1 교정 — 빈도가 크게 뛰는 경우에만 적용."""
+    zf = _en_freq()
+    if not zf or w in _EN_PROTECT:
+        return w
+    f0 = zf(w, 'en')
+    if f0 >= 3.0:                                  # 이미 통용 단어
+        return w
+    letters = 'abcdefghijklmnopqrstuvwxyz'
+    cands = set()
+    for i in range(len(w)):
+        cands.add(w[:i] + w[i + 1:])                               # 삭제
+        if i < len(w) - 1:
+            cands.add(w[:i] + w[i + 1] + w[i] + w[i + 2:])         # 전위
+        for c in letters:
+            cands.add(w[:i] + c + w[i + 1:])                       # 치환
+    for i in range(len(w) + 1):
+        for c in letters:
+            cands.add(w[:i] + c + w[i:])                           # 삽입
+    best, bf = w, 0.0
+    for c in cands:
+        f = zf(c, 'en')
+        if f > bf:
+            best, bf = c, f
+    return best if bf >= max(3.5, f0 + 2.0) else w
+
+def _en_fix_line(s):
+    """한 줄 내 영문 보정: run-on 분리 → 문장부호 뒤 공백 → 오탈자 사전·교정."""
+    s = re.sub(r'[A-Za-z]{15,}', lambda m: _en_segment(m.group(0)), s)
+    s = re.sub(r'([a-z])\.([A-Z])', r'\1. \2', s)                  # 소문자.대문자 → 문장 경계
+    s = re.sub(r'([A-Za-z])([,;])([A-Za-z])', r'\1\2 \3', s)       # 쉼표 뒤 공백(숫자 제외)
+    return re.sub(r'(?<![A-Za-z0-9])[a-z]{5,}(?![A-Za-z0-9])',
+                  lambda m: _EN_TYPO.get(m.group(0)) or _en_spellfix(m.group(0)), s)
+
 def _ko_autofix(text):
-    """유의사항·공지 저장 시 맞춤법·띄어쓰기 자동 보정. 빈 줄(항목 구분) 구조는 그대로 유지.
-    이미 정상 띄어쓰기인 줄은 건드리지 않고, 붙여 쓴(run-on) 줄만 띄어쓰기를 복원한다."""
+    """유의사항·공지 저장 시 한·영 맞춤법·띄어쓰기 자동 보정. 빈 줄(항목 구분) 구조는 그대로 유지.
+    이미 정상 띄어쓰기인 줄은 건드리지 않고, 붙여 쓴(run-on) 부분만 복원한다."""
     raw = str(text or '').replace('\r', '')
     if not raw.strip():
         return raw
@@ -6527,6 +6610,7 @@ def _ko_autofix(text):
             for a, b in _KO_TYPO.items():
                 s = s.replace(a, b)
             s = re.sub(r'([가-힣])([.,!?])([가-힣])', r'\1\2 \3', s)   # 문장부호 뒤 공백
+            s = _en_fix_line(s)                                        # 영문 분리·오탈자
             if re.search(r'[가-힣]{12,}', s):                          # run-on 줄만 복원
                 kiwi = _ko_spacer()
                 if kiwi:

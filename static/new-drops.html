@@ -591,7 +591,16 @@ function detailSections(c){var s=[];
  if(c.content_html)s.push({id:'sec-info',label:'이벤트 안내',eyebrow:'EVENT DETAIL',title:'이벤트 안내',body:'<div class="body">'+c.content_html+'</div>'});
  if(c.benefit_html)s.push({id:'sec-benefit',label:'KPOP2GETHER X 맵달SEOUL 특전',eyebrow:'SPECIAL BENEFIT',title:'KPOP2GETHER X 맵달SEOUL 특전',body:'<div class="body">'+c.benefit_html+'</div>'});
  if(c.entry_terms_html)s.push({id:'sec-entry',label:'응모 전 유의사항',eyebrow:'ENTRY NOTICE',title:'응모 전 유의사항',body:c.entry_terms_html});
- if(c.winner_terms_html)s.push({id:'sec-winner',label:'당첨자 유의사항',eyebrow:'WINNER NOTICE',title:'당첨자 유의사항',body:c.winner_terms_html});
+ if(c.winner_terms&&c.winner_terms.length){
+  c.winner_terms.forEach(function(w){
+   var k=String(w.kind||'DEFAULT');
+   s.push({id:'sec-winner'+(k==='DEFAULT'?'':'-'+k.toLowerCase()),
+    label:w.label||'당첨자 유의사항',
+    eyebrow:(k==='FANSIGN'?'FANSIGN WINNER NOTICE':k==='VIDEOCALL'?'VIDEOCALL WINNER NOTICE':'WINNER NOTICE'),
+    title:w.label||'당첨자 유의사항',body:w.html||''})});
+ }else if(c.winner_terms_html){ /* 구버전 API 호환 */
+  s.push({id:'sec-winner',label:'당첨자 유의사항',eyebrow:'WINNER NOTICE',title:'당첨자 유의사항',body:c.winner_terms_html});
+ }
  return s}
 function bindAnav(){var nav=$('#ndAnav');if(!nav||!('IntersectionObserver' in window))return;
  var links={};nav.querySelectorAll('a').forEach(function(a){links[a.dataset.sec]=a});

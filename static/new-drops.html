@@ -654,7 +654,6 @@ function renderDetail(c){
   +relSideHTML(c)
   +'<div class="nd-info"><h4>EVENT INFO — 이벤트 안내</h4>'+infoRows(c)+'</div>'
   +ledHTML(c)
-  +(c.notice?'<div class="nd-notice"><h5>구매 전 안내사항</h5>'+c.notice.split('\n').filter(function(x){return x.trim()}).map(function(x){return '<p>· '+esc(x)+'</p>'}).join('')+'</div>':'')
   +optBlock
   +(c.chart_note?'<div class="nd-chart">본 이벤트 대상 음반 구매 수량은 한터차트·써클차트 판매량 집계에 100% 반영됩니다.</div>':'')
   +'<div class="nd-cta">'+ctaHTML(c)+'</div>'

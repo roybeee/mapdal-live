@@ -2624,6 +2624,12 @@ function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,
  <b>구매 전 안내</b><span><textarea id="dr_notice" rows="3" style="width:100%" placeholder="줄바꿈으로 여러 항목 — 상세페이지 [구매 전 안내사항]에 표시">${esc(v.notice||'')}</textarea></span>
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
  <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="6" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지를 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"></div></span>
+ <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="4" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지를 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"></div></span>
+ <b>응모 전 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_te_on" ${v.terms_entry_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 이벤트명·제공받는 자만 바뀌고 나머지는 항상 같은 포맷</span></label>
+ <input id="dr_pi" style="width:100%;margin-top:6px" value="${esc(v.pi_recipients||'')}" placeholder="개인정보를 제공받는 자 — 예) KPOP2GETHER, 스타쉽엔터테인먼트 (비우면 'KPOP2GETHER, 맵달서울성수')">
+ <textarea id="dr_te_extra" rows="2" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나 (표준 문구 뒤에 이어서 번호가 붙습니다)">${esc(v.entry_extra||'')}</textarea></span>
+ <b>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_tw_on" ${v.terms_winner_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형이 영상통화/팬사인회/기타인지에 따라 표준 문구가 자동 선택됩니다</span></label>
+ <textarea id="dr_tw_extra" rows="2" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나">${esc(v.winner_extra||'')}</textarea></span>
  <b>발표 공지</b><span><textarea id="dr_annnotice" rows="3" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
  <b>당첨 그룹</b><span><div id="dr_wins">${(v.winners||[]).map(drWinRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_wins').insertAdjacentHTML('beforeend',drWinRow())">+ 당첨 그룹 추가</button></span>
  </div>
@@ -2640,6 +2646,8 @@ async function saveDrop(id){try{
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
   schedule:sched,options:drOptsCollect(),
   notice:$('#dr_notice').value,chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
+  benefit_html:$('#dr_benefit').value,terms_entry_on:$('#dr_te_on').checked,terms_winner_on:$('#dr_tw_on').checked,
+  pi_recipients:$('#dr_pi').value.trim(),entry_extra:$('#dr_te_extra').value,winner_extra:$('#dr_tw_extra').value,
   announce_notice:$('#dr_annnotice').value,winners:winners};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  toast('저장 완료 — 사이트에 즉시 반영 (#'+d.id+')');closeM();loadDrops();
@@ -2647,6 +2655,7 @@ async function saveDrop(id){try{
 async function delDrop(id){if(!confirm('#'+id+' 이벤트를 삭제할까요? 되돌릴 수 없습니다.'))return;
  try{await api('/admin/api/drops/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});toast('삭제 완료');loadDrops()}catch(e){toast(e.message)}}
 async function drUpMain(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);$('#dr_img').value=u;drImgPrev();toast('이미지 업로드 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
+async function drUpBenefit(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);const t=$('#dr_benefit');t.value=(t.value?t.value+'\n':'')+'<img src="'+u+'" alt="" style="max-width:100%;display:block;margin:0 auto">';toast('특전 본문에 이미지 삽입 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
 async function drUpBody(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);const t=$('#dr_html');t.value=(t.value?t.value+'\n':'')+'<img src="'+u+'" alt="" style="max-width:100%;display:block;margin:0 auto">';toast('본문에 이미지 삽입 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
 function drImgPrev(){const el=document.getElementById('dr_img');if(!el)return;const u=el.value.trim();
  $('#dr_imgpv').innerHTML=u?`<img src="${esc(u)}" style="max-width:280px;max-height:140px;object-fit:cover;border:1px solid #e3e1db;border-radius:4px">`:''}
@@ -6263,6 +6272,117 @@ def _drop_opts_public(d):
         legacy.append(o['name'])
     return opts, legacy
 
+# ── 표준 유의사항 템플릿 — 이벤트마다 바뀌는 값({TITLE}·{RECIPIENTS})만 치환하고
+#   나머지는 항상 같은 포맷으로 자동 표시한다. 항목: (본문, [하위 항목…]).
+#   응모 흐름은 mapdal 실제 방식(주문자 정보 기준·주문번호 당첨 확인)에 맞춰 적었다.
+DROP_TERMS_ENTRY = [
+    ('본 이벤트는 맵달SEOUL 온라인몰(mapdal.kr) 회원·비회원 모두 참여 가능합니다.', []),
+    ('개인정보(성함·연락처·생년월일 등)가 올바르게 기재되었는지에 대한 확인과 기재 책임은 본인에게 있습니다.', []),
+    ('응모 및 당첨자 추첨은 주문 시 입력하신 주문자 정보 기준으로 처리되며, 당첨자 연락처 수정이나 양도는 불가합니다. '
+     '양도 또는 대리 참여 정황이 확인될 경우 해당 계정으로 당첨된 모든 내역에 불이익이 발생할 수 있고, '
+     '그로 인해 발생하는 피해에 대한 책임은 전적으로 당사자에게 있습니다. 당첨자 본인이 아닌 경우 '
+     '이벤트 참여가 불가하오니 응모 시 유의해 주시기 바랍니다.', []),
+    ('신분증 및 여권에 표기된 한글 이름(내국인) 또는 영문명(외국인)으로 응모해 주시기 바랍니다. '
+     '(Foreign winners can only enter if their name and passport\'s English name are the same.)',
+     ['본인 확인 가능한 신분증 — 대한민국 국적: 여권, 주민등록증, 운전면허증, 청소년증(주민센터 발급), '
+      '모바일 신분증(정부24·행정안전부&경찰청·PASS 발급)',
+      '대한민국 국적 외: 여권, 외국인등록증 (Foreigner: Passport or alien registration card only)',
+      '사진·생년월일(6자리)·성명이 명확히 기재되고 공공기관의 기관장이 발행한, 유효기간이 만료되지 않은 '
+      '실물 신분증만 인정됩니다. (학생증·사본·사진·등본 등 불인정)',
+      '신분증 정보가 응모 정보와 불일치할 경우 참여가 제한되며, 위·변조가 의심되는 경우 인정되지 않습니다.',
+      '내국인 미성년자를 제외한 모든 고객은 학생증(대학교 학생증 포함)을 본인 확인용으로 사용할 수 없습니다. '
+      'All customers except Korean minors cannot use a student ID card (including university ID) for identity verification.']),
+    ('본 상품은 이벤트 응모권이 포함된 상품으로 구매와 동시에 응모가 이뤄집니다. '
+     '응모 기간 종료 후에는 교환 및 환불이 불가하므로 신중한 구매를 부탁드립니다.', []),
+    ('당첨자를 포함한 응모자들이 응모 시 구입한 앨범 및 증정 상품은 해당 이벤트 종료 후 순차 배송될 예정입니다.', []),
+    ('구성품 누락으로 인한 문의 시 택배 개봉 영상을 반드시 첨부하여 문의처로 접수해 주시기 바랍니다.', []),
+    ('개인정보 보호법에 따라 상품 발송 및 이벤트 진행을 위한 개인정보를 아래와 같이 수집·제공합니다.',
+     ['개인정보를 제공받는 자: {RECIPIENTS}',
+      '수집 항목: 이름, 생년월일, 회원 ID, 연락처, 이메일, 배송주소 등',
+      '수집 목적: {TITLE} 응모',
+      '활용 기간: 이용 목적 달성 후 폐기 (이벤트 종료 이후 7일)',
+      '정해진 기간 내 정확한 정보 등록이 되지 않은 경우 이벤트 당첨은 무효 처리됩니다.']),
+    ('본 이벤트는 사정에 따라 일부 또는 전체가 변경되거나 취소될 수 있습니다.', []),
+]
+DROP_TERMS_WINNER_VIDEOCALL = [
+    ('본 이벤트는 각 당첨자와 아티스트의 개별 영상 통화로 진행되는 온라인 팬사인회입니다. '
+     '영상통화로 진행되는 온라인 이벤트로, 당첨자 분들은 반드시 영상통화가 가능한 핸드폰을 미리 준비해 주시기 바랍니다.', []),
+    ('당첨자는 핸드폰을 미리 준비하여 차례를 기다린 후, 핸드폰으로 걸려온 영상 통화를 받습니다.', []),
+    ('아티스트와 함께 영상 통화 팬사인회를 진행하며 마무리되면 전화를 종료해 주시기 바랍니다. '
+     '당첨자 본인이 전화를 종료하지 않는 경우 이벤트 진행이 강제 종료될 수 있습니다.', []),
+    ('종료 후, 당첨자분들에게 구매하신 앨범 중 1장에 사인을 하여 발송드릴 예정입니다.', []),
+    ('아티스트에게 무리한 부탁 및 사적인 질문은 불가하며, 통화 내용이 부적절하다고 판단될 경우 현장 스태프에 의해 '
+     '통화가 중단되고 이후 이벤트 참여가 제한될 수 있으니 협조 부탁드립니다.', []),
+    ('사인 앨범 내 To.는 이벤트 응모 시 작성해 주신 본명(한글 또는 영문)으로만 받을 수 있습니다. (PS 요청은 불가합니다.)', []),
+    ('당첨자에 한하여 팬사인회 전에 영상 통화 및 사인에 필요한 개인 정보(성함/핸드폰 연락처 및 카카오 ID)를 수령할 예정입니다.', []),
+    ('영상통화는 정보를 제공해 주신 핸드폰 연락처 및 카카오 ID로만 진행 가능하며, '
+     '영상통화 시간은 당첨자 분들에게 모두 동일하게 적용됩니다.', []),
+    ('영상통화 이벤트는 안내된 일정에 따라 진행되며, 2번 이상 전화를 받지 않는 경우 진행이 불가하오니 '
+     '일정을 확인하시고 통화가 가능하신 분들에 한해 응모해 주시기 바랍니다.', []),
+    ('해당 이벤트는 기존 오프라인 팬사인회와 동일하게 당첨자 본인만 진행 가능합니다.', []),
+    ('영상통화 진행 시 화면에는 당첨자 본인만 나와야 하며, 당첨자 외 여러 명이 화면에 함께 나오거나 '
+     '본인 대신 타인이 참여하는 경우 이벤트 진행이 강제 종료될 수 있습니다.', []),
+    ('영상통화 시 녹음 및 촬영, SNS 라이브 방송 중계(인스타그램/페이스북/유튜브 라이브 등)를 금지합니다.', []),
+    ('위에 안내드린 내용 외에도 진행에 지나친 방해가 될 경우 스태프의 제재를 받을 수 있습니다.', []),
+    ('영상통화 시작 전 신분증 확인 절차가 있을 수 있으니, 당첨자 분은 영상통화 시작 전 신분증을 준비해 주시기 바랍니다.', []),
+    ('부득이한 사정 또는 스케줄로 불참하는 멤버가 있을 수 있으며, 불참 공지는 이벤트 직전 공지될 수 있는 점 양해 부탁드립니다.', []),
+]
+DROP_TERMS_WINNER_FANSIGN = [
+    ('본 이벤트는 당첨자와 아티스트가 대면으로 진행하는 이벤트입니다. 행사 일시·장소는 이벤트 안내를 확인해 주시기 바랍니다.', []),
+    ('입장 전 본인 확인(신분증) 절차가 진행되오니, 유효기간이 만료되지 않은 실물 신분증을 반드시 지참해 주시기 바랍니다.', []),
+    ('이벤트 참여는 당첨자 본인만 가능하며 양도·대리 참여는 불가합니다. 확인될 경우 참여가 제한되고 '
+     '당첨이 무효 처리될 수 있습니다.', []),
+    ('사인 앨범 내 To.는 이벤트 응모 시 작성해 주신 본명(한글 또는 영문)으로만 받을 수 있습니다. (PS 요청은 불가합니다.)', []),
+    ('아티스트에게 무리한 부탁 및 사적인 질문은 불가하며, 부적절하다고 판단될 경우 현장 스태프에 의해 진행이 중단되고 '
+     '이후 이벤트 참여가 제한될 수 있습니다.', []),
+    ('행사장 내 지정된 구역 외 촬영·녹음 및 SNS 라이브 방송 중계(인스타그램/페이스북/유튜브 라이브 등)는 금지됩니다.', []),
+    ('당첨자에 한하여 행사 진행에 필요한 개인 정보(성함/연락처)를 사전 수령할 예정입니다.', []),
+    ('안내드린 내용 외에도 진행에 지나친 방해가 될 경우 스태프의 제재를 받을 수 있습니다.', []),
+    ('부득이한 사정 또는 스케줄로 불참하는 멤버가 있을 수 있으며, 불참 공지는 이벤트 직전 공지될 수 있는 점 양해 부탁드립니다.', []),
+]
+DROP_TERMS_WINNER_DEFAULT = [
+    ('당첨자 발표는 본 페이지 [당첨자 발표]에서 확인하실 수 있으며, 당첨자에게는 주문 시 입력하신 연락처로 개별 안내를 드립니다.', []),
+    ('이벤트 참여·수령은 당첨자 본인만 가능하며 양도·대리 수령은 불가합니다.', []),
+    ('본인 확인이 필요한 경우 유효기간이 만료되지 않은 실물 신분증으로 확인 절차가 진행될 수 있습니다.', []),
+    ('당첨자에 한하여 진행에 필요한 개인 정보(성함/연락처)를 사전 수령할 예정입니다.', []),
+    ('구매하신 상품 및 증정품은 이벤트 종료 후 순차 발송·진행됩니다.', []),
+    ('본 이벤트는 사정에 따라 일부 또는 전체가 변경되거나 취소될 수 있습니다.', []),
+]
+
+def _drop_terms_html(items, extra_lines):
+    """(본문,[하위]) 목록 + 추가 줄 → 번호 목록 HTML (사용자 입력은 이스케이프)."""
+    h = ['<ol class="nd-tlist">']
+    for text, subs in items:
+        h.append('<li>' + text)
+        if subs:
+            h.append('<ul>' + ''.join('<li>' + s + '</li>' for s in subs) + '</ul>')
+        h.append('</li>')
+    for ln in extra_lines:
+        h.append('<li>' + _artist_h(ln) + '</li>')
+    h.append('</ol>')
+    return ''.join(h)
+
+def _drop_terms_for(d):
+    """드롭 레코드 → (응모 전 유의사항 HTML, 당첨자 유의사항 HTML). 끔 상태면 ''."""
+    def extras(key):
+        return [x.strip()[:300] for x in str(d.get(key) or '').replace('\r', '').split('\n') if x.strip()][:20]
+    entry = ''
+    if d.get('terms_entry_on', True):
+        rcp = _artist_h(str(d.get('pi_recipients') or '').strip() or 'KPOP2GETHER, 맵달서울성수')
+        title = _artist_h(str(d.get('title') or ''))
+        items = [(t.replace('{RECIPIENTS}', rcp).replace('{TITLE}', title),
+                  [s.replace('{RECIPIENTS}', rcp).replace('{TITLE}', title) for s in subs])
+                 for t, subs in DROP_TERMS_ENTRY]
+        entry = _drop_terms_html(items, extras('entry_extra'))
+    winner = ''
+    if d.get('terms_winner_on', True):
+        cat = str(d.get('category') or '').upper()
+        tpl = (DROP_TERMS_WINNER_VIDEOCALL if cat == 'VIDEOCALL'
+               else DROP_TERMS_WINNER_FANSIGN if cat == 'FANSIGN'
+               else DROP_TERMS_WINNER_DEFAULT)
+        winner = _drop_terms_html(tpl, extras('winner_extra'))
+    return entry, winner
+
 def _migrate_new_drops_page_edits():
     """new-drops.html의 DB 편집본이 있으면 옵션 카드 UI(mpDropOptUI)가 반영된
     최신 정적본으로 교체 (멱등 — 이미 반영된 편집본은 건드리지 않는다)."""
@@ -6340,9 +6460,11 @@ def api_drop_public_detail(did: int):
               'buy_url': str(d.get('buy_url') or ''),
               'buy_label': (str(d.get('buy_label') or '').strip() or '구매하기'),
               'chart_note': bool(d.get('chart_note')),
+              'benefit_html': str(d.get('benefit_html') or ''),
               'announce_notice': str(d.get('announce_notice') or ''),
               'winner_groups': (_drop_winner_groups(d, masked=True) if c['announce'] == 'ANNOUNCED' else []),
               'related': rel[:8]})
+    c['entry_terms_html'], c['winner_terms_html'] = _drop_terms_for(d)
     return JSONResponse(c, headers={'Cache-Control': 'no-store'})
 
 def _drop_url_ok(u):
@@ -6407,6 +6529,12 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'chart_note': bool(body.get('chart_note')),
            'notice': str(body.get('notice') or '')[:2000],
            'content_html': str(body.get('content_html') or '')[:200000],
+           'benefit_html': str(body.get('benefit_html') or '')[:200000],
+           'terms_entry_on': bool(body.get('terms_entry_on', True)),
+           'terms_winner_on': bool(body.get('terms_winner_on', True)),
+           'pi_recipients': str(body.get('pi_recipients') or '').strip()[:120],
+           'entry_extra': str(body.get('entry_extra') or '').replace('\r', '')[:2000],
+           'winner_extra': str(body.get('winner_extra') or '').replace('\r', '')[:2000],
            'announce_notice': str(body.get('announce_notice') or '')[:2000],
            'winners': winners}
     try:

@@ -2603,7 +2603,11 @@ function drOptsCollect(){
   managed:parseInt(c.querySelector('.do_mng').value,10)||0,
   items:[...c.querySelectorAll('.do_items > div')].map(r=>({k:r.querySelector('.doi_k').value,t:r.querySelector('.doi_t').value.trim()})).filter(x=>x.t)
  })).filter(o=>o.name)}
-function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_label:'구매하기',schedule:[],options:[],winners:[]};
+function dropEdit(id){const _v0=id?DR.find(x=>x.id===id):null,_vv=_v0||{};
+const _lx=(_vv.winner_fansign_extra===undefined&&_vv.winner_videocall_extra===undefined)?(_vv.winner_extra||''):'';
+const _lxV=(_lx&&((_vv.categories&&_vv.categories.length?_vv.categories:[_vv.category]).includes('VIDEOCALL')))?_lx:'';
+const _lxF=(_lx&&!_lxV)?_lx:'';
+const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_label:'구매하기',schedule:[],options:[],winners:[]};
  $('#mbox').classList.add('wide');
  $('#mbox').innerHTML=`<h3>${r?`이벤트 편집 <span class="tag">#${r.id}</span>`:'새 이벤트'}</h3>
  <div class="kv">
@@ -2622,15 +2626,16 @@ function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,
  <b>옵션 구성</b><span><div id="dr_opts2">${(v.options||[]).map(drOptCard).join('')}</div>
  <button class="btn sm ghost" type="button" onclick="drOptAdd()">+ 옵션 추가</button>
  <div class="hint" style="margin-top:5px">가격을 입력한 옵션은 사이트에서 <b>수량 선택 카드</b>(메이크스타형)로 표시되고, 저장하면 구매용 상품이 자동 생성·연동됩니다. 재고를 비우면 무제한 판매이며, <b>저장할 때마다 입력한 재고 수치로 재설정</b>됩니다. 가격 없이 이름만 넣으면 예전처럼 안내 목록으로만 표시됩니다. 구매형 옵션이 하나라도 있으면 [구매 링크] 버튼 대신 옵션 카드가 노출됩니다.</div></span>
- <b>구매 전 안내</b><span><textarea id="dr_notice" rows="3" style="width:100%" placeholder="줄바꿈으로 여러 항목 — 상세페이지 [구매 전 안내사항]에 표시">${esc(v.notice||'')}</textarea></span>
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
- <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="6" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지를 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"></div></span>
- <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="4" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지를 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"></div></span>
+ <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지를 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"></div></span>
+ <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지를 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"></div></span>
  <b>응모 전 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_te_on" ${v.terms_entry_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 이벤트명·제공받는 자만 바뀌고 나머지는 항상 같은 포맷</span></label>
  <input id="dr_pi" style="width:100%;margin-top:6px" value="${esc(v.pi_recipients||'')}" placeholder="개인정보를 제공받는 자 — 예) KPOP2GETHER, 스타쉽엔터테인먼트 (비우면 'KPOP2GETHER, 맵달서울성수')">
- <textarea id="dr_te_extra" rows="2" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나 (표준 문구 뒤에 이어서 번호가 붙습니다)">${esc(v.entry_extra||'')}</textarea></span>
- <b>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_tw_on" ${v.terms_winner_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 팬사인회·영상통화가 모두 있으면 [대면 팬사인회]·[영상통화] 두 섹션이 선택 순서대로 각각 표시되고, 그 외 유형만 있으면 공통 문구가 표시됩니다. 추가 항목은 마지막 섹션 끝에 붙습니다.</span></label>
- <textarea id="dr_tw_extra" rows="2" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나">${esc(v.winner_extra||'')}</textarea></span>
+ <textarea id="dr_te_extra" rows="5" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 한 줄에 하나 (표준 문구 뒤에 이어서 번호가 붙습니다)">${esc(v.entry_extra||'')}</textarea></span>
+ <b>대면 팬사인회<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twf_on" ${(v.winner_fansign_on!==undefined?v.winner_fansign_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [팬사인회]가 선택된 이벤트에 표시됩니다 (대면 표준 9항목)</span></label>
+ <textarea id="dr_twf_extra" rows="5" style="width:100%;margin-top:6px" placeholder="대면 팬사인회 섹션에만 추가할 항목 — 한 줄에 하나 (표준 문구 뒤에 번호가 이어집니다)">${esc(v.winner_fansign_extra!==undefined?v.winner_fansign_extra:_lxF)}</textarea></span>
+ <b>영상통화<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twv_on" ${(v.winner_videocall_on!==undefined?v.winner_videocall_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [영상통화]가 선택된 이벤트에 표시됩니다 (영상통화 표준 15항목). 두 유형 모두 선택 시 두 섹션이 유형 선택 순서대로 각각 표시되고, 팬사인회·영상통화가 아닌 유형만 있으면 공통 문구가 표시됩니다.</span></label>
+ <textarea id="dr_twv_extra" rows="5" style="width:100%;margin-top:6px" placeholder="영상통화 섹션에만 추가할 항목 — 한 줄에 하나">${esc(v.winner_videocall_extra!==undefined?v.winner_videocall_extra:_lxV)}</textarea></span>
  <b>발표 공지</b><span><textarea id="dr_annnotice" rows="3" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
  <b>당첨 그룹</b><span><div id="dr_wins">${(v.winners||[]).map(drWinRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_wins').insertAdjacentHTML('beforeend',drWinRow())">+ 당첨 그룹 추가</button></span>
  </div>
@@ -2647,9 +2652,11 @@ async function saveDrop(id){try{
   image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
   schedule:sched,options:drOptsCollect(),
-  notice:$('#dr_notice').value,chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
-  benefit_html:$('#dr_benefit').value,terms_entry_on:$('#dr_te_on').checked,terms_winner_on:$('#dr_tw_on').checked,
-  pi_recipients:$('#dr_pi').value.trim(),entry_extra:$('#dr_te_extra').value,winner_extra:$('#dr_tw_extra').value,
+  chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
+  benefit_html:$('#dr_benefit').value,terms_entry_on:$('#dr_te_on').checked,
+  winner_fansign_on:$('#dr_twf_on').checked,winner_fansign_extra:$('#dr_twf_extra').value,
+  winner_videocall_on:$('#dr_twv_on').checked,winner_videocall_extra:$('#dr_twv_extra').value,
+  pi_recipients:$('#dr_pi').value.trim(),entry_extra:$('#dr_te_extra').value,
   announce_notice:$('#dr_annnotice').value,winners:winners};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  toast('저장 완료 — 사이트에 즉시 반영 (#'+d.id+')');closeM();loadDrops();
@@ -6508,17 +6515,28 @@ def _drop_terms_for(d):
                  for t, subs in DROP_TERMS_ENTRY]
         entry = _drop_terms_html(items, extras('entry_extra'))
     winners = []
-    if d.get('terms_winner_on', True):
-        picked = [x for x in _drop_cats(d) if x in ('FANSIGN', 'VIDEOCALL')]
-        specs = [(('FANSIGN', '대면 팬사인회 당첨자 유의사항', DROP_TERMS_WINNER_FANSIGN)
-                  if x == 'FANSIGN' else
-                  ('VIDEOCALL', '영상통화 당첨자 유의사항', DROP_TERMS_WINNER_VIDEOCALL))
-                 for x in picked] \
-            or [('DEFAULT', '당첨자 유의사항', DROP_TERMS_WINNER_DEFAULT)]
-        ex = extras('winner_extra')
-        for i, (kind, label, tpl) in enumerate(specs):   # 유형 선택 순서대로 · 추가 항목은 마지막 섹션에
-            winners.append({'kind': kind, 'label': label,
-                            'html': _drop_terms_html(tpl, ex if i == len(specs) - 1 else [])})
+    has_new = any(k in d for k in ('winner_fansign_on', 'winner_videocall_on',
+                                   'winner_fansign_extra', 'winner_videocall_extra'))
+    legacy_on = d.get('terms_winner_on', True)           # 구버전 단일 토글 폴백
+    fs_on = d.get('winner_fansign_on', legacy_on)
+    vc_on = d.get('winner_videocall_on', legacy_on)
+    fs_ex, vc_ex = extras('winner_fansign_extra'), extras('winner_videocall_extra')
+    legacy_ex = [] if has_new else extras('winner_extra')
+    picked = [x for x in _drop_cats(d) if x in ('FANSIGN', 'VIDEOCALL')]
+    specs = []
+    for x in picked:                                      # 유형 선택 순서대로
+        if x == 'FANSIGN' and fs_on:
+            specs.append(['FANSIGN', '대면 팬사인회 당첨자 유의사항',
+                          DROP_TERMS_WINNER_FANSIGN, list(fs_ex)])
+        elif x == 'VIDEOCALL' and vc_on:
+            specs.append(['VIDEOCALL', '영상통화 당첨자 유의사항',
+                          DROP_TERMS_WINNER_VIDEOCALL, list(vc_ex)])
+    if not picked and (fs_on or vc_on):                   # 그 외 유형만 → 공통 문구
+        specs = [['DEFAULT', '당첨자 유의사항', DROP_TERMS_WINNER_DEFAULT, fs_ex + vc_ex]]
+    if specs and legacy_ex:
+        specs[-1][3].extend(legacy_ex)                    # 구버전 추가 항목: 마지막 섹션 규칙 유지
+    for kind, label, tpl, ex in specs:
+        winners.append({'kind': kind, 'label': label, 'html': _drop_terms_html(tpl, ex)})
     return entry, winners
 
 def _migrate_new_drops_page_edits():
@@ -6592,7 +6610,6 @@ def api_drop_public_detail(did: int):
     for x in rel: x.pop('_rank', None)
     pub_opts, legacy_names = _drop_opts_public(d)
     c.update({'schedule': sched,
-              'notice': str(d.get('notice') or ''),
               'content_html': str(d.get('content_html') or ''),
               'options': legacy_names,
               'opts': pub_opts,
@@ -6673,14 +6690,15 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'buy_label': str(body.get('buy_label') or '').strip()[:20],
            'options': _drop_opts_norm(body.get('options')),
            'chart_note': bool(body.get('chart_note')),
-           'notice': str(body.get('notice') or '')[:2000],
            'content_html': str(body.get('content_html') or '')[:200000],
            'benefit_html': str(body.get('benefit_html') or '')[:200000],
            'terms_entry_on': bool(body.get('terms_entry_on', True)),
-           'terms_winner_on': bool(body.get('terms_winner_on', True)),
+           'winner_fansign_on': bool(body.get('winner_fansign_on', True)),
+           'winner_videocall_on': bool(body.get('winner_videocall_on', True)),
            'pi_recipients': str(body.get('pi_recipients') or '').strip()[:120],
            'entry_extra': str(body.get('entry_extra') or '').replace('\r', '')[:2000],
-           'winner_extra': str(body.get('winner_extra') or '').replace('\r', '')[:2000],
+           'winner_fansign_extra': str(body.get('winner_fansign_extra') or '').replace('\r', '')[:2000],
+           'winner_videocall_extra': str(body.get('winner_videocall_extra') or '').replace('\r', '')[:2000],
            'announce_notice': str(body.get('announce_notice') or '')[:2000],
            'winners': winners}
     try:

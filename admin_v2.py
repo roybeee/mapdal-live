@@ -510,6 +510,8 @@ def ensure_ready():
     except Exception: pass
     try: _migrate_storefront_header_page_edits() # DB 편집본에도 개편된 상단 헤더를 멱등 반영
     except Exception: pass
+    try: _migrate_new_drops_page_edits() # NEW/DROPS 편집본에 옵션 카드 UI 반영 (멱등)
+    except Exception: pass
     try: _artists_migrate_ordinal() # 구버전이 만든 'N집' 서수 표기 팀 병합·정정 (멱등)
     except Exception: pass
     try: _artists_migrate_variants() # 구버전이 만든 역순 표기('있지 (ITZY)'류) 중복 팀 병합 (멱등)
@@ -2574,6 +2576,33 @@ function drWinRow(g){g=g||{};return `<div class="drwin" style="border:1px solid 
   <input placeholder="유형 (예: 팬사인회)" class="dw-y" value="${esc(g.type||'')}">
   <button class="btn sm ghost" type="button" onclick="this.closest('.drwin').remove()">✕ 그룹 삭제</button></div>
  <textarea class="dw-l" rows="5" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7" placeholder="한 줄에 한 명 — 주문번호  ·  주문번호,이름  ·  주문번호,이름,뱃지&#10;예) MPD2607170001,홍길동,영통+포카">${esc(g.list||'')}</textarea></div>`}
+const DROPT_KINDS=[['album','앨범'],['card','포토카드'],['ticket','응모권'],['gift','특전'],['etc','기타']];
+function drOptItem(it){it=it||{};
+ return `<div style="display:flex;gap:6px;margin-bottom:5px">
+ <select class="doi_k" style="width:96px">${DROPT_KINDS.map(k=>`<option value="${k[0]}" ${it.k===k[0]?'selected':''}>${k[1]}</option>`).join('')}</select>
+ <input class="doi_t" style="flex:1" placeholder="구성품 — 예) BBGIRLS 3rd SINGLE ALBUM 1매" value="${esc(it.t||'')}">
+ <button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
+function drOptCard(o){o=(typeof o==='string')?{name:o}:(o||{});
+ return `<div class="dropt" style="border:1px solid #ddd;background:#fafaf7;padding:9px 9px 8px;margin-bottom:8px">
+ <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+  <input class="do_name" placeholder="옵션명 * — 예) For. 민영 포토회" style="flex:2;min-width:170px" value="${esc(o.name||'')}">
+  <input class="do_price" type="number" min="0" placeholder="가격(원)" style="width:105px" value="${o.price||''}">
+  <input class="do_stock" type="number" min="0" placeholder="재고 (비움=무제한)" style="width:135px" value="${o.stock==null?'':o.stock}">
+  <button class="btn sm ghost" type="button" style="color:var(--bad)" onclick="this.closest('.dropt').remove()">옵션 삭제</button></div>
+ ${o.product_id?`<div class="hint mono" style="margin-top:4px">연동 상품 <a href="/p/${encodeURIComponent(o.product_id)}" target="_blank">${esc(o.product_id)}</a>${o.managed?' · 자동 관리(이름·가격·재고 동기화)':' · 수동 연결 — 상품 정보는 [상품·재고]에서'}</div>`:''}
+ <input type="hidden" class="do_pid" value="${esc(o.product_id||'')}"><input type="hidden" class="do_mng" value="${o.managed?1:0}">
+ <div class="do_items" style="margin-top:7px">${(o.items||[]).map(drOptItem).join('')}</div>
+ <button class="btn sm ghost" type="button" onclick="this.previousElementSibling.insertAdjacentHTML('beforeend',drOptItem())">+ 구성품</button></div>`}
+function drOptAdd(){document.getElementById('dr_opts2').insertAdjacentHTML('beforeend',drOptCard({items:[{}]}))}
+function drOptsCollect(){
+ return [...document.querySelectorAll('#dr_opts2 .dropt')].map(c=>({
+  name:c.querySelector('.do_name').value.trim(),
+  price:parseInt(c.querySelector('.do_price').value,10)||0,
+  stock:c.querySelector('.do_stock').value===''?null:Math.max(0,parseInt(c.querySelector('.do_stock').value,10)||0),
+  product_id:c.querySelector('.do_pid').value,
+  managed:parseInt(c.querySelector('.do_mng').value,10)||0,
+  items:[...c.querySelectorAll('.do_items > div')].map(r=>({k:r.querySelector('.doi_k').value,t:r.querySelector('.doi_t').value.trim()})).filter(x=>x.t)
+ })).filter(o=>o.name)}
 function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_label:'구매하기',schedule:[],options:[],winners:[]};
  $('#mbox').classList.add('wide');
  $('#mbox').innerHTML=`<h3>${r?`이벤트 편집 <span class="tag">#${r.id}</span>`:'새 이벤트'}</h3>
@@ -2589,7 +2618,9 @@ function dropEdit(id){const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,
  <b>구매 링크</b><span><input id="dr_buy" style="width:100%" value="${esc(v.buy_url||'')}" placeholder="/album-detail?uid=…  ·  /kpop  ·  /p/상품ID  ·  https://…"></span>
  <b>버튼 문구</b><span><input id="dr_buylabel" value="${esc(v.buy_label||'구매하기')}"></span>
  <b>행사 일정</b><span><div id="dr_sched">${(v.schedule||[]).map(drSchedRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_sched').insertAdjacentHTML('beforeend',drSchedRow())">+ 일정 추가</button></span>
- <b>옵션 구성</b><span><textarea id="dr_opts" rows="4" style="width:100%" placeholder="한 줄에 하나 (표시용) — 예)&#10;For. 대면 팬사인회&#10;For. 영상통화 (멤버별)">${esc((v.options||[]).join('\n'))}</textarea></span>
+ <b>옵션 구성</b><span><div id="dr_opts2">${(v.options||[]).map(drOptCard).join('')}</div>
+ <button class="btn sm ghost" type="button" onclick="drOptAdd()">+ 옵션 추가</button>
+ <div class="hint" style="margin-top:5px">가격을 입력한 옵션은 사이트에서 <b>수량 선택 카드</b>(메이크스타형)로 표시되고, 저장하면 구매용 상품이 자동 생성·연동됩니다. 재고를 비우면 무제한 판매이며, <b>저장할 때마다 입력한 재고 수치로 재설정</b>됩니다. 가격 없이 이름만 넣으면 예전처럼 안내 목록으로만 표시됩니다. 구매형 옵션이 하나라도 있으면 [구매 링크] 버튼 대신 옵션 카드가 노출됩니다.</div></span>
  <b>구매 전 안내</b><span><textarea id="dr_notice" rows="3" style="width:100%" placeholder="줄바꿈으로 여러 항목 — 상세페이지 [구매 전 안내사항]에 표시">${esc(v.notice||'')}</textarea></span>
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
  <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="6" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지를 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"></div></span>
@@ -2607,7 +2638,7 @@ async function saveDrop(id){try{
  const body={id:id||undefined,on:$('#dr_on').checked,title:$('#dr_title').value,artist:$('#dr_artist').value,
   category:$('#dr_cat').value,image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
-  schedule:sched,options:$('#dr_opts').value.split('\n').map(s=>s.trim()).filter(Boolean),
+  schedule:sched,options:drOptsCollect(),
   notice:$('#dr_notice').value,chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
   announce_notice:$('#dr_annnotice').value,winners:winners};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -6119,6 +6150,137 @@ def _drop_sortkey(c, tab):
     if tab == 'WINNER_ANNOUNCEMENT': return c.get('announce_at') or ''
     return c.get('sales_end') or c.get('sales_start') or ''
 
+# ── 드롭 옵션 v2 — 메이크스타형 구조화 옵션(수량 구매) + 상품 자동 연동 ─────
+#   options 원소: 문자열(구버전·표시용) | {name, price, stock, product_id, managed,
+#   items:[{k,t}]}. 가격이 있으면 저장 시 mpd:: 상품을 자동 생성·동기화한다.
+#   mpd:: 프리픽스는 SHOP 그리드·사이트맵·아티스트 굿즈 매칭(모두 mp::만 조회)에서
+#   자동 제외되고, /p/ 상세·장바구니·결제 재고 원자 차감은 그대로 동작한다.
+DROP_OPT_KINDS = [('album', '앨범'), ('card', '포토카드'), ('ticket', '응모권'),
+                  ('gift', '특전'), ('etc', '기타')]
+_DROP_OPT_KIND_SET = {k for k, _ in DROP_OPT_KINDS}
+
+def _drop_opts_norm(raw):
+    """옵션 입력 정규화 — 구버전 문자열·신버전 객체 모두 수용 (최대 20옵션·12구성품)."""
+    out = []
+    for o in (raw or [])[:20]:
+        if isinstance(o, str):
+            s = o.strip()[:80]
+            if s:
+                out.append({'name': s, 'price': 0, 'stock': None,
+                            'product_id': '', 'managed': 0, 'items': []})
+            continue
+        if not isinstance(o, dict):
+            continue
+        name = re.sub(r'\s+', ' ', str(o.get('name') or '')).strip()[:80]
+        if not name:
+            continue
+        stock = o.get('stock')
+        stock = None if stock in (None, '') else max(0, num(stock))
+        items = []
+        for it in (o.get('items') or [])[:12]:
+            if not isinstance(it, dict):
+                continue
+            t = re.sub(r'\s+', ' ', str(it.get('t') or '')).strip()[:120]
+            if not t:
+                continue
+            k = str(it.get('k') or 'etc').lower()
+            items.append({'k': (k if k in _DROP_OPT_KIND_SET else 'etc'), 't': t})
+        out.append({'name': name, 'price': max(0, num(o.get('price'))),
+                    'stock': stock,
+                    'product_id': str(o.get('product_id') or '').strip()[:80],
+                    'managed': 1 if num(o.get('managed')) else 0, 'items': items})
+    return out
+
+def _drop_product_sync(rec, prev_opts, actor):
+    """가격 있는 옵션 ↔ mpd:: 상품 동기화 (생성·이름/가격/재고/이미지 갱신).
+    편집기에서 제거되거나 가격이 지워진 관리 상품은 판매중지(soldout=1) 처리해
+    이미 담긴 장바구니·직접 링크로도 구매되지 않게 한다."""
+    try: ensure_ready()
+    except Exception: pass
+    pc, nm, pr = _state['pcols'], _state['pname'], _state['pprice']
+    if not pc or not nm:
+        return rec['options']
+    keep = set()
+    for o in rec['options']:
+        pid = o.get('product_id') or ''
+        if o['price'] <= 0:                                # 표시 전용 옵션
+            if o.get('managed') and pid:
+                run('UPDATE products SET soldout=1 WHERE id=?', (pid,))
+                o['product_id'] = ''
+            o['managed'] = 0
+            continue
+        pname = ('%s — %s' % (rec['title'], o['name']))[:300]
+        sold = 1 if (o['stock'] is not None and o['stock'] == 0) else 0
+        if o.get('managed') and pid and one('SELECT id FROM products WHERE id=?', (pid,)):
+            sets, args = ['%s=?' % nm, 'stock=?', 'soldout=?'], [pname, o['stock'], sold]
+            if pr: sets.append('%s=?' % pr); args.append(o['price'])
+            if 'img' in pc: sets.append('img=?'); args.append(str(rec.get('image') or '')[:300])
+            run('UPDATE products SET %s WHERE id=?' % ','.join(sets), tuple(args + [pid]))
+        elif pid and one('SELECT id FROM products WHERE id=?', (pid,)):
+            o['managed'] = 0                               # 기존 상품 수동 연결 — 상품은 불변
+        else:
+            pid = 'mpd::' + uid()
+            cols, vals = ['id', nm, 'stock', 'soldout'], [pid, pname, o['stock'], sold]
+            if pr: cols.append(pr); vals.append(o['price'])
+            for c, v in (('img', str(rec.get('image') or '')[:300]), ('category', ''),
+                         ('descr', ''), ('created_at', now_iso()), ('related_ids', '[]')):
+                if c in pc: cols.append(c); vals.append(v)
+            run('INSERT INTO products(%s) VALUES(%s)'
+                % (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals))
+            audit(actor, 'NEW/DROPS옵션상품', pid, pname[:80])
+            o['managed'] = 1
+        o['product_id'] = pid
+        keep.add(pid)
+    for po in _drop_opts_norm(prev_opts):
+        if po.get('managed') and po.get('product_id') and po['product_id'] not in keep:
+            run('UPDATE products SET soldout=1 WHERE id=?', (po['product_id'],))
+            audit(actor, 'NEW/DROPS옵션중지', po['product_id'], po.get('name') or '')
+    return rec['options']
+
+def _drop_opts_public(d):
+    """공개 상세용 옵션 — 연동 상품의 실시간 가격·품절·잔여(10개 이하)를 덧붙인다.
+    반환: (신형 opts 목록, 구형 문자열 목록 — 캐시된 구버전 페이지 호환)."""
+    opts, legacy = [], []
+    nm, pr = _state.get('pname') or 'name', _state.get('pprice') or 'price'
+    for o in _drop_opts_norm(d.get('options')):
+        e = {'name': o['name'], 'items': o['items'], 'price': o['price'],
+             'pid': '', 'soldout': 0, 'left': None}
+        if o['price'] > 0 and o.get('product_id'):
+            try:
+                r = one('SELECT %s AS price, stock, soldout FROM products WHERE id=?'
+                        % pr, (o['product_id'],))
+            except Exception:
+                r = None
+            if r:
+                e['pid'] = o['product_id']
+                e['price'] = num(r.get('price')) or o['price']
+                stk = r.get('stock')
+                e['soldout'] = 1 if (num(r.get('soldout'))
+                                     or (stk is not None and num(stk) <= 0)) else 0
+                if stk is not None and 0 < num(stk) <= 10:
+                    e['left'] = num(stk)
+        opts.append(e)
+        legacy.append(o['name'])
+    return opts, legacy
+
+def _migrate_new_drops_page_edits():
+    """new-drops.html의 DB 편집본이 있으면 옵션 카드 UI(mpDropOptUI)가 반영된
+    최신 정적본으로 교체 (멱등 — 이미 반영된 편집본은 건드리지 않는다)."""
+    try:
+        row = one("SELECT html FROM page_edits WHERE path='new-drops.html'")
+        if not row or 'mpDropOptUI' in (row.get('html') or ''):
+            return
+        fp = os.path.join(BASE, 'static', 'new-drops.html')
+        if not os.path.isfile(fp):
+            return
+        fresh = open(fp, encoding='utf-8').read()
+        if 'mpDropOptUI' not in fresh:
+            return
+        run("UPDATE page_edits SET html=?, updated=? WHERE path='new-drops.html'",
+            (fresh, now_iso()))
+    except Exception:
+        pass
+
 @admin_router.get('/api/drops')
 def api_drops_public(request: Request):
     try: ensure_ready()
@@ -6169,10 +6331,12 @@ def api_drop_public_detail(did: int):
         rel.append(xc)
     rel.sort(key=lambda x: (x['_rank'], -num(x.get('id'))))
     for x in rel: x.pop('_rank', None)
+    pub_opts, legacy_names = _drop_opts_public(d)
     c.update({'schedule': sched,
               'notice': str(d.get('notice') or ''),
               'content_html': str(d.get('content_html') or ''),
-              'options': [str(x)[:80] for x in (d.get('options') or []) if str(x or '').strip()][:40],
+              'options': legacy_names,
+              'opts': pub_opts,
               'buy_url': str(d.get('buy_url') or ''),
               'buy_label': (str(d.get('buy_label') or '').strip() or '구매하기'),
               'chart_note': bool(d.get('chart_note')),
@@ -6239,12 +6403,18 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'schedule': sched,
            'buy_url': str(body.get('buy_url') or '').strip()[:300],
            'buy_label': str(body.get('buy_label') or '').strip()[:20],
-           'options': [str(x)[:80] for x in (body.get('options') or []) if str(x or '').strip()][:40],
+           'options': _drop_opts_norm(body.get('options')),
            'chart_note': bool(body.get('chart_note')),
            'notice': str(body.get('notice') or '')[:2000],
            'content_html': str(body.get('content_html') or '')[:200000],
            'announce_notice': str(body.get('announce_notice') or '')[:2000],
            'winners': winners}
+    try:
+        rec['options'] = _drop_product_sync(rec, (cur or {}).get('options'), a)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, '옵션 상품 연동에 실패했습니다: %s' % e)
     if cur:
         ds = [rec if num(x.get('id')) == num(rec['id']) else x for x in ds]
     else:
@@ -6262,6 +6432,11 @@ def api_drops_delete(request: Request, body: dict = Body(...)):
     ds = [d for d in _drops_all() if isinstance(d, dict)]
     nd = [d for d in ds if num(d.get('id')) != did]
     if len(nd) == len(ds): raise HTTPException(404, '이벤트를 찾을 수 없습니다')
+    gone = next((d for d in ds if num(d.get('id')) == did), None) or {}
+    for po in _drop_opts_norm(gone.get('options')):   # 연동 상품 판매중지 — 잔여 링크 구매 차단
+        if po.get('managed') and po.get('product_id'):
+            try: run('UPDATE products SET soldout=1 WHERE id=?', (po['product_id'],))
+            except Exception: pass
     _setting_put('drops', nd, a['name'])
     audit(a, 'NEW/DROPS삭제', '#%d' % did, '')
     return {'ok': True}

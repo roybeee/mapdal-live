@@ -2703,13 +2703,12 @@ const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_la
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
  <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지를 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"></div></span>
  <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지를 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"></div></span>
- <b>응모 전 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_te_on" ${v.terms_entry_on!==false?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 이벤트명·제공받는 자만 바뀌고 나머지는 항상 같은 포맷</span></label>
- <input id="dr_pi" style="width:100%;margin-top:6px" value="${esc(v.pi_recipients||'')}" placeholder="개인정보를 제공받는 자 — 예) KPOP2GETHER, 스타쉽엔터테인먼트 (비우면 'KPOP2GETHER, 맵달서울성수')">
- <textarea id="dr_te_extra" rows="10" style="width:100%;margin-top:6px" placeholder="이 이벤트에만 추가할 항목 — 빈 줄 1개면 다음 번호로 넘어갑니다 (붙여 쓴 줄은 한 항목, 저장 시 맞춤법·띄어쓰기 자동 보정)">${esc(v.entry_extra||'')}</textarea></span>
- <b>대면 팬사인회<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twf_on" ${(v.winner_fansign_on!==undefined?v.winner_fansign_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [팬사인회]가 선택된 이벤트에 표시됩니다 (대면 표준 9항목)</span></label>
- <textarea id="dr_twf_extra" rows="10" style="width:100%;margin-top:6px" placeholder="대면 팬사인회 섹션에만 추가할 항목 — 빈 줄 1개면 다음 번호 (저장 시 맞춤법·띄어쓰기 자동 보정)">${esc(v.winner_fansign_extra!==undefined?v.winner_fansign_extra:_lxF)}</textarea></span>
- <b>영상통화<br>당첨자 유의사항</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_twv_on" ${(v.winner_videocall_on!==undefined?v.winner_videocall_on:(v.terms_winner_on!==false))?'checked':''}> 표준 문구 자동 표시 <span class="hint">— 유형에 [영상통화]가 선택된 이벤트에 표시됩니다 (영상통화 표준 15항목). 두 유형 모두 선택 시 두 섹션이 유형 선택 순서대로 각각 표시되고, 팬사인회·영상통화가 아닌 유형만 있으면 공통 문구가 표시됩니다.</span></label>
- <textarea id="dr_twv_extra" rows="10" style="width:100%;margin-top:6px" placeholder="영상통화 섹션에만 추가할 항목 — 빈 줄 1개면 다음 번호 (저장 시 맞춤법·띄어쓰기 자동 보정)">${esc(v.winner_videocall_extra!==undefined?v.winner_videocall_extra:_lxV)}</textarea></span>
+ <b>응모 전 유의사항</b><span><span class="hint">입력한 내용이 그대로 표시됩니다 — 번호·기호를 직접 적어 주세요. 빈 줄은 문단 간격으로 표시됩니다.</span>
+ <textarea id="dr_te_extra" rows="14" style="width:100%;margin-top:6px" placeholder="예)&#10;1) 본 이벤트는 맵달SEOUL 온라인몰 회원·비회원 모두 참여 가능합니다.&#10;2) 개인정보 기재 책임은 본인에게 있습니다.">${esc(v.entry_extra||'')}</textarea></span>
+ <b>대면 팬사인회<br>당첨자 유의사항</b><span><span class="hint">유형에 [팬사인회]가 선택된 이벤트에 표시됩니다. 입력한 그대로 노출되며, 비우면 섹션이 표시되지 않습니다.</span>
+ <textarea id="dr_twf_extra" rows="14" style="width:100%;margin-top:6px" placeholder="예)&#10;1) 대면 사인회 당일 좌석은 랜덤으로 지정됩니다.&#10;2) 사인은 해당 사인지에만 받으실 수 있습니다.">${esc(v.winner_fansign_extra!==undefined?v.winner_fansign_extra:_lxF)}</textarea></span>
+ <b>영상통화<br>당첨자 유의사항</b><span><span class="hint">유형에 [영상통화]가 선택된 이벤트에 표시됩니다. 두 유형 모두 선택 시 유형 선택 순서대로 각각 표시됩니다.</span>
+ <textarea id="dr_twv_extra" rows="14" style="width:100%;margin-top:6px" placeholder="예)&#10;1) 본 이벤트는 당첨자와 아티스트의 개별 영상통화로 진행됩니다.&#10;2) 신분 확인 절차가 진행됩니다.">${esc(v.winner_videocall_extra!==undefined?v.winner_videocall_extra:_lxV)}</textarea></span>
  <b>발표 공지</b><span><textarea id="dr_annnotice" rows="6" style="width:100%" placeholder="당첨자 발표 페이지 상단 공지 (비우면 기본 안내만 표시)">${esc(v.announce_notice||'')}</textarea></span>
  <b>당첨 그룹</b><span><div id="dr_wins">${(v.winners||[]).map(drWinRow).join('')}</div><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_wins').insertAdjacentHTML('beforeend',drWinRow())">+ 당첨 그룹 추가</button></span>
  </div>
@@ -2727,10 +2726,10 @@ async function saveDrop(id){try{
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
   schedule:sched,options:drOptsCollect(),
   chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
-  benefit_html:$('#dr_benefit').value,terms_entry_on:$('#dr_te_on').checked,
-  winner_fansign_on:$('#dr_twf_on').checked,winner_fansign_extra:$('#dr_twf_extra').value,
-  winner_videocall_on:$('#dr_twv_on').checked,winner_videocall_extra:$('#dr_twv_extra').value,
-  pi_recipients:$('#dr_pi').value.trim(),entry_extra:$('#dr_te_extra').value,
+  benefit_html:$('#dr_benefit').value,
+  winner_fansign_extra:$('#dr_twf_extra').value,
+  winner_videocall_extra:$('#dr_twv_extra').value,
+  entry_extra:$('#dr_te_extra').value,
   announce_notice:$('#dr_annnotice').value,winners:winners};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  toast('저장 완료 — 사이트에 즉시 반영 (#'+d.id+')');closeM();loadDrops();
@@ -6841,6 +6840,24 @@ def _ko_autofix(text):
         out.append(s)
     return '\n'.join(out)
 
+def _drop_terms_raw_html(raw):
+    """관리자가 입력한 유의사항 텍스트 → HTML (입력 그대로).
+
+    자동 번호 매김(<ol>)과 표준 문구 병합을 하지 않는다. 관리자가 적은 번호·기호·
+    줄바꿈을 그대로 보여주는 것이 원칙이며, 빈 줄은 문단 간격으로만 반영한다.
+    """
+    txt = str(raw or '').replace('\r', '').strip()
+    if not txt:
+        return ''
+    out = []
+    for blk in re.split(r'\n\s*\n+', txt):
+        lines = [x.rstrip() for x in blk.split('\n') if x.strip()]
+        if not lines:
+            continue
+        out.append('<p>' + '<br>'.join(_artist_h(x) for x in lines) + '</p>')
+    return '<div class="nd-tbody">' + ''.join(out) + '</div>'
+
+
 def _drop_terms_html(items, extra_lines):
     """(본문,[하위]) 목록 + 추가 줄 → 번호 목록 HTML (사용자 입력은 이스케이프)."""
     h = ['<ol class="nd-tlist">']
@@ -6855,46 +6872,33 @@ def _drop_terms_html(items, extra_lines):
     return ''.join(h)
 
 def _drop_terms_for(d):
-    """드롭 레코드 → (응모 전 유의사항 HTML, 당첨자 유의사항 HTML). 끔 상태면 ''."""
-    def extras(key):
-        # 빈 줄이 1개 이상 있으면 다음 번호로 — 붙여 쓴 줄들은 하나의 번호로 묶는다.
-        out = []
-        for blk in re.split(r'\n\s*\n+', str(d.get(key) or '').replace('\r', '')):
-            lines = [x.strip()[:300] for x in blk.split('\n') if x.strip()]
-            if lines:
-                out.append('\n'.join(lines))
-        return out[:20]
-    entry = ''
-    if d.get('terms_entry_on', True):
-        rcp = _artist_h(str(d.get('pi_recipients') or '').strip() or 'KPOP2GETHER, 맵달서울성수')
-        title = _artist_h(str(d.get('title') or ''))
-        items = [(t.replace('{RECIPIENTS}', rcp).replace('{TITLE}', title),
-                  [s.replace('{RECIPIENTS}', rcp).replace('{TITLE}', title) for s in subs])
-                 for t, subs in DROP_TERMS_ENTRY]
-        entry = _drop_terms_html(items, extras('entry_extra'))
+    """드롭 레코드 → (응모 전 유의사항 HTML, 당첨자 유의사항 목록).
+
+    표준 문구 자동 병합·자동 번호 매김을 하지 않는다. 관리자가 입력창에 적은
+    내용을 그대로 노출한다. 비어 있으면 해당 섹션은 표시되지 않는다.
+    """
+    entry = _drop_terms_raw_html(d.get('entry_extra'))
+    fs_html = _drop_terms_raw_html(d.get('winner_fansign_extra'))
+    vc_html = _drop_terms_raw_html(d.get('winner_videocall_extra'))
+    legacy = _drop_terms_raw_html(d.get('winner_extra'))
+
     winners = []
-    has_new = any(k in d for k in ('winner_fansign_on', 'winner_videocall_on',
-                                   'winner_fansign_extra', 'winner_videocall_extra'))
-    legacy_on = d.get('terms_winner_on', True)           # 구버전 단일 토글 폴백
-    fs_on = d.get('winner_fansign_on', legacy_on)
-    vc_on = d.get('winner_videocall_on', legacy_on)
-    fs_ex, vc_ex = extras('winner_fansign_extra'), extras('winner_videocall_extra')
-    legacy_ex = [] if has_new else extras('winner_extra')
     picked = [x for x in _drop_cats(d) if x in ('FANSIGN', 'VIDEOCALL')]
-    specs = []
     for x in picked:                                      # 유형 선택 순서대로
-        if x == 'FANSIGN' and fs_on:
-            specs.append(['FANSIGN', '대면 팬사인회 당첨자 유의사항',
-                          DROP_TERMS_WINNER_FANSIGN, list(fs_ex)])
-        elif x == 'VIDEOCALL' and vc_on:
-            specs.append(['VIDEOCALL', '영상통화 당첨자 유의사항',
-                          DROP_TERMS_WINNER_VIDEOCALL, list(vc_ex)])
-    if not picked and (fs_on or vc_on):                   # 그 외 유형만 → 공통 문구
-        specs = [['DEFAULT', '당첨자 유의사항', DROP_TERMS_WINNER_DEFAULT, fs_ex + vc_ex]]
-    if specs and legacy_ex:
-        specs[-1][3].extend(legacy_ex)                    # 구버전 추가 항목: 마지막 섹션 규칙 유지
-    for kind, label, tpl, ex in specs:
-        winners.append({'kind': kind, 'label': label, 'html': _drop_terms_html(tpl, ex)})
+        if x == 'FANSIGN' and fs_html:
+            winners.append({'kind': 'FANSIGN', 'label': '대면 팬사인회 당첨자 유의사항',
+                            'html': fs_html})
+        elif x == 'VIDEOCALL' and vc_html:
+            winners.append({'kind': 'VIDEOCALL', 'label': '영상통화 당첨자 유의사항',
+                            'html': vc_html})
+    if not picked:                                        # 그 외 유형만 선택된 경우
+        merged = ''.join([fs_html, vc_html]) or legacy
+        if merged:
+            winners.append({'kind': 'DEFAULT', 'label': '당첨자 유의사항', 'html': merged})
+    elif legacy and winners:                              # 구버전 필드는 마지막 섹션에 덧붙임
+        winners[-1]['html'] += legacy
+    elif legacy and not winners:
+        winners.append({'kind': 'DEFAULT', 'label': '당첨자 유의사항', 'html': legacy})
     return entry, winners
 
 def _migrate_new_drops_page_edits():
@@ -7050,13 +7054,12 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'chart_note': bool(body.get('chart_note')),
            'content_html': str(body.get('content_html') or '')[:200000],
            'benefit_html': str(body.get('benefit_html') or '')[:200000],
-           'terms_entry_on': bool(body.get('terms_entry_on', True)),
-           'winner_fansign_on': bool(body.get('winner_fansign_on', True)),
-           'winner_videocall_on': bool(body.get('winner_videocall_on', True)),
-           'pi_recipients': str(body.get('pi_recipients') or '').strip()[:120],
-           'entry_extra': _ko_autofix(body.get('entry_extra'))[:2000],
-           'winner_fansign_extra': _ko_autofix(body.get('winner_fansign_extra'))[:2000],
-           'winner_videocall_extra': _ko_autofix(body.get('winner_videocall_extra'))[:2000],
+           # 유의사항은 관리자가 입력한 원문 그대로 저장한다.
+           #   맞춤법 자동보정(_ko_autofix)을 적용하지 않는다 — 표준 약관 문구가
+           #   임의로 바뀌면 안 되고, 화면에도 입력 그대로 노출되어야 하기 때문이다.
+           'entry_extra': str(body.get('entry_extra') or '')[:20000],
+           'winner_fansign_extra': str(body.get('winner_fansign_extra') or '')[:20000],
+           'winner_videocall_extra': str(body.get('winner_videocall_extra') or '')[:20000],
            'announce_notice': _ko_autofix(body.get('announce_notice'))[:2000],
            'winners': winners}
     try:
@@ -10178,7 +10181,14 @@ window.fetch=function(u,o){
  return OF.apply(this,arguments)};
 })();</script>"""
 
-DROPINPUT_SNIPPET = r"""<script id="mpDropInput">(function(){
+DROPINPUT_SNIPPET = r"""<style id="mpTbodyCss">
+/* 유의사항 원문 표시 박스 — .nd-tlist 와 동일한 카드 룩, 자동 번호만 없음 */
+.nd-tbody{background:#fff;border:1px solid var(--line);padding:26px 28px;
+  display:flex;flex-direction:column;gap:14px}
+.nd-tbody p{margin:0;font-size:13.5px;line-height:1.85;color:#2E2E2C;white-space:normal}
+@media(max-width:760px){.nd-tbody{padding:20px 18px}}
+</style>
+<script id="mpDropInput">(function(){
 /* NEW/DROPS 응모 자유입력 필드 — opt.input 이 지정된 옵션을 텍스트 입력으로 렌더링하고
    검증 통과분을 mapdal_drop_sel 에 적재한다(기존 선택값과 동일 경로 → 주문 자동 부착). */
 if(!/^\/new-drops(?:\.html)?$/.test(location.pathname))return;

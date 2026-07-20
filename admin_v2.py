@@ -3690,6 +3690,18 @@ h2{font-size:19px;margin-bottom:18px}
 .savebar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #ddd;padding:12px 18px;display:flex;gap:10px;justify-content:center;z-index:50}
 .savebar .in{width:100%;max-width:820px;display:flex;gap:10px;justify-content:flex-end;align-items:center}
 .savebar .stat{margin-right:auto;font-size:12px;color:#888}
+.kvlist{display:flex;flex-direction:column;gap:8px}
+.kvrow{display:grid;grid-template-columns:180px 1fr auto;gap:8px;align-items:start}
+.kvrow input,.kvrow textarea{width:100%;padding:9px 10px;border:1px solid #d9d7d0;background:#fff;font:400 13.5px 'IBM Plex Sans KR',sans-serif;color:var(--black)}
+.kvrow input:focus,.kvrow textarea:focus{outline:none;border-color:var(--red)}
+.kvrow textarea{resize:vertical;min-height:40px;line-height:1.55}
+.kvrow .kvk{font-weight:600;background:#faf9f5}
+.kvops{display:flex;gap:4px}
+.kvops button{width:28px;height:38px;border:1px solid #d9d7d0;background:#fff;cursor:pointer;font-size:12px;color:#777;line-height:1}
+.kvops button:hover{border-color:var(--red);color:var(--red)}
+.kvbar{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.kvempty{padding:14px;border:1px dashed #d9d7d0;background:#faf9f5;font-size:12.5px;color:#999;text-align:center}
+@media(max-width:640px){.kvrow{grid-template-columns:1fr;gap:5px}.kvops{justify-content:flex-end}.kvops button{width:auto;padding:0 12px}}
 #toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--black);color:#fff;padding:10px 20px;display:none;z-index:200;font-weight:700}
 </style></head><body>
 <header><a class="back" href="/admin/dashboard">← 대시보드</a><h1>MAPDAL<span>SEOUL</span></h1><span id="ptitle" style="font-size:13px;color:#bbb"></span></header>
@@ -3717,9 +3729,15 @@ h2{font-size:19px;margin-bottom:18px}
   <div style="display:flex;align-items:center;gap:10px"><input type="color" id="fbc" value="#050505" style="width:54px;height:40px;padding:2px;border:1px solid #ccc;background:#fff;cursor:pointer"><span style="font-size:12px;color:#888">배지의 글자색은 흰색으로 고정됩니다.</span></div>
  </div>
  <div class="f"><label>짧은 설명</label><textarea id="fd" rows="3" placeholder="목록·상단 요약 설명 (선택)"></textarea></div>
- <div class="f"><label>구매정보 탭</label>
-  <textarea id="finfo" rows="5" placeholder="한 줄에 하나씩 · 형식: 제목|내용&#10;예)&#10;판매|맵달서울성수 · MAPDAL SEOUL (성수)&#10;형태|음반 (CD) — 구성은 상세 참조&#10;차트 반영|본 스토어 판매량은 한터차트에 집계됩니다"></textarea>
-  <span style="font-size:12px;color:#888">비워두면 카테고리 기본값이 표시됩니다. 상품명·분류 행은 자동 표시되므로 적지 않아도 됩니다.</span></div>
+ <div class="f"><label>구매정보 탭 <span style="font-weight:400;color:#aaa">— 항목별로 입력</span></label>
+  <div id="infoRows" class="kvlist"></div>
+  <div class="kvbar">
+   <button class="btn sm" type="button" onclick="addInfoRow()">＋ 항목 추가</button>
+   <button class="btn sm ghost" type="button" onclick="loadInfoPreset()">카테고리 기본값 불러오기</button>
+   <button class="btn sm ghost" type="button" onclick="clearInfoRows()">전체 비우기</button>
+  </div>
+  <datalist id="infoLabelOpts"></datalist>
+  <span style="font-size:12px;color:#888">항목을 하나도 입력하지 않으면 카테고리 기본값이 표시됩니다. 상품명·분류 행은 자동 표시되므로 적지 않아도 됩니다. 내용에 <b>//</b> 를 넣으면 그 자리에서 줄바꿈됩니다.</span></div>
  <div class="f"><label>배송/교환 탭</label>
   <textarea id="fship" rows="5" placeholder="한 줄에 하나씩 · 형식: 제목|내용&#10;예)&#10;국내배송|3,000원 (30,000원 이상 무료)&#10;교환/반품|미개봉·미사용에 한해 수령 7일 이내"></textarea>
   <span style="font-size:12px;color:#888">비워두면 기본 배송 안내가 표시됩니다. 최대 12행.</span></div>
@@ -3853,7 +3871,7 @@ async function init(){
  $('#fc').innerHTML=catOptions('');
  if(PAGE.mode==='new'){
  $('#h2title').textContent='신규 상품 등록';$('#ptitle').textContent='상품 등록';
-  $('#saveBtn').textContent='등록';renderBlocks();renderRelated();return;
+  $('#saveBtn').textContent='등록';renderInfoRows();renderBlocks();renderRelated();return;
  }
  $('#h2title').textContent='상품 상세 편집';$('#ptitle').textContent='상세 편집';
  $('#fslabel').textContent='재고 *';
@@ -3864,7 +3882,9 @@ async function init(){
   const _dc=Number(d.discount_pct)||0;
   if(d.price!=null)$('#fp').value=_dc>0?(d.list_price||d.price):d.price;
   $('#fdc').value=_dc;fpCalc();
-  $('#fs').value=d.stock;$('#fd').value=d.descr;$('#finfo').value=d.info_rows||'';$('#fship').value=d.ship_rows||'';$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
+  $('#fs').value=d.stock;$('#fd').value=d.descr;
+  _info=infoParse(d.info_rows||'').map(([k,v])=>[k,String(v||'').split('//').join('\n')]);renderInfoRows();
+  $('#fship').value=d.ship_rows||'';$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
@@ -3884,16 +3904,67 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,info_rows:$('#finfo').value,ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
+     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,info_rows:$('#finfo').value,ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
+    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
   toast('저장되었습니다');
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
 }
+/* ── 구매정보 탭: 항목별 입력칸 ─────────────────────────────── */
+const INFO_LABELS=['판매','형태','발매/공급','차트 반영','랜덤 구성','구성','구성품','수량',
+ '보관','배송','안내','원산지','유통기한','용량/중량','알레르기 정보',
+ '사이즈','소재','세탁 방법','제조사','품질보증기준','A/S 책임자'];
+const _SELLER=['판매','맵달서울성수 · MAPDAL SEOUL (성수)'];
+const INFO_PRESET={
+ album:[_SELLER,['형태','음반 (CD) — 구성은 상세 참조'],['발매/공급','912엔터테인먼트 (KPOP2GETHER)'],
+        ['차트 반영','본 스토어 판매량은 한터차트에 집계됩니다'],
+        ['랜덤 구성','버전/포토카드 랜덤 상품은 선택 불가 · 중복 발송 가능']],
+ md:[_SELLER,['구성','상세 설명 참조'],['제조사','상세 설명 참조']],
+ kfood:[_SELLER,['보관','콜드체인 · 수령 후 냉장/냉동 보관'],['배송','보냉 포장 · 신선 배송'],
+        ['원산지','상세 설명 참조'],['유통기한','상세 설명 참조'],
+        ['안내','상세 설명의 원산지·알레르기 정보 확인']],
+ apparel:[_SELLER,['사이즈','상세 설명의 실측 사이즈 표 참조'],['소재','상세 설명 참조'],
+          ['세탁 방법','상세 설명 참조']],
+ living:[_SELLER,['구성품','상세 설명 참조'],['소재','상세 설명 참조']]
+};
+let _info=[];
+function infoParse(raw){const o=[];String(raw||'').replace(/\r/g,'').split('\n').forEach(L=>{
+ L=L.trim();if(!L)return;const i=L.indexOf('|');const k=(i<0?L:L.slice(0,i)).trim();
+ const v=(i<0?'':L.slice(i+1)).trim();if(k)o.push([k,v])});return o}
+function infoSerialize(){return _info.map(([k,v])=>[String(k||'').trim(),String(v||'').trim()])
+ .filter(([k])=>k).map(([k,v])=>k+'|'+v.replace(/\r?\n/g,'//')).join('\n')}
+function renderInfoRows(){
+ const dl=$('#infoLabelOpts');
+ if(dl&&!dl.children.length)dl.innerHTML=INFO_LABELS.map(x=>'<option value="'+esc(x)+'">').join('');
+ const w=$('#infoRows');
+ if(!_info.length){w.innerHTML='<div class="kvempty">등록된 항목이 없습니다 — 비워두면 카테고리 기본값이 표시됩니다.</div>';return}
+ w.innerHTML=_info.map((r,i)=>
+  '<div class="kvrow">'
+  +'<input class="kvk" list="infoLabelOpts" placeholder="항목명 (예: 형태)" value="'+esc(r[0])+'" oninput="_info['+i+'][0]=this.value">'
+  +'<textarea rows="1" placeholder="내용" oninput="_info['+i+'][1]=this.value;autoGrow(this)">'+esc(r[1])+'</textarea>'
+  +'<span class="kvops">'
+  +'<button type="button" title="위로" onclick="moveInfoRow('+i+',-1)">↑</button>'
+  +'<button type="button" title="아래로" onclick="moveInfoRow('+i+',1)">↓</button>'
+  +'<button type="button" title="삭제" onclick="delInfoRow('+i+')">×</button>'
+  +'</span></div>').join('');
+ w.querySelectorAll('textarea').forEach(autoGrow)}
+function autoGrow(t){t.style.height='auto';t.style.height=Math.max(40,t.scrollHeight)+'px'}
+function addInfoRow(){_info.push(['','']);renderInfoRows();
+ const n=$('#infoRows').querySelectorAll('.kvk');if(n.length)n[n.length-1].focus()}
+function delInfoRow(i){_info.splice(i,1);renderInfoRows()}
+function moveInfoRow(i,d){const j=i+d;if(j<0||j>=_info.length)return;
+ const t=_info[i];_info[i]=_info[j];_info[j]=t;renderInfoRows()}
+function clearInfoRows(){if(_info.length&&!confirm('구매정보 항목을 모두 지울까요?'))return;
+ _info=[];renderInfoRows()}
+function loadInfoPreset(){const c=$('#fc').value;
+ if(!c)return toast('먼저 카테고리를 선택하세요');
+ const p=INFO_PRESET[c];if(!p)return toast('이 카테고리의 기본값이 없습니다');
+ if(_info.length&&!confirm('현재 입력한 항목을 카테고리 기본값으로 바꿀까요?'))return;
+ _info=p.map(x=>[x[0],x[1]]);renderInfoRows();toast('기본값을 불러왔습니다')}
 init();
 </script></body></html>'''
 
@@ -3976,10 +4047,29 @@ _PDP_META_DEFAULT = {
     ],
 }
 
-def _kv_rows_html(raw, limit=12):
-    """'제목|내용' 줄 목록 → <tr><th>..</th><td>..</td></tr> (최대 12행).
+# 맵달서울 고객센터 — PDP [배송/교환] 탭 '공급관련 정보' 행에 노출.
+# 대표번호 개통 시 Render 환경변수 MAPDAL_CS_TEL 만 바꾸면 전 상품에 즉시 반영된다.
+MAPDAL_CS_TEL = os.getenv('MAPDAL_CS_TEL', '010-8176-8525')
+
+
+def _esc(x):
+    """모듈 레벨 HTML 이스케이프.
+
+    (버그 수정) 기존 _kv_rows_html 은 PDP 라우트 내부 지역함수 h() 를 참조해
+    관리자가 커스텀 행을 실제로 입력한 순간 NameError → 500 이 났다.
+    이제 모듈 레벨 함수를 쓴다.
+    """
+    return (str(x if x is not None else '')
+            .replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;').replace('"', '&quot;'))
+
+
+def _kv_rows_html(raw, limit=16):
+    """'제목|내용' 줄 목록 → <tr><th>..</th><td>..</td></tr> (최대 limit행).
 
     상품별 구매정보·배송/교환 탭을 관리자에서 직접 편집하기 위한 저장 형식.
+    내용 안의 '//' 는 셀 내부 줄바꿈(<br>)으로 변환된다 — 전자상거래법
+    고시항목(청약철회·분쟁처리 등)처럼 한 칸에 여러 줄이 필요한 안내문 지원.
     빈 값이면 '' 을 돌려주어 호출부가 카테고리 기본값을 쓰도록 한다.
     """
     out = []
@@ -3988,11 +4078,13 @@ def _kv_rows_html(raw, limit=12):
         if not line:
             continue
         k, _, v = line.partition('|')
-        k = k.strip()[:40]
-        v = v.strip()[:400]
+        k = k.strip()[:60]
+        v = v.strip()[:1500]
         if not k:
             continue
-        out.append('<tr><th>%s</th><td>%s</td></tr>' % (h(k), h(v)))
+        segs = [s.strip() for s in v.split('//') if s.strip()]
+        cell = '<br>'.join(_esc(s) for s in segs)
+        out.append('<tr><th>%s</th><td>%s</td></tr>' % (_esc(k), cell))
         if len(out) >= limit:
             break
     return ''.join(out)
@@ -4140,7 +4232,7 @@ header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1
 .tab-panel .descbody{font-size:14.5px;line-height:1.85;color:#333;white-space:pre-wrap}
 .detail-imgs img{max-width:100%%;height:auto;display:block;margin:12px auto;border-radius:2px}
 .info-table{width:100%%;border-collapse:collapse;font-size:13.5px}
-.info-table th{text-align:left;width:130px;padding:12px 10px;background:#faf9f5;border:1px solid var(--line);font-weight:600;vertical-align:top}
+.info-table th{text-align:left;width:168px;padding:12px 10px;background:#faf9f5;border:1px solid var(--line);font-weight:600;vertical-align:top;word-break:keep-all;line-height:1.5}
 .info-table td{padding:12px 12px;border:1px solid var(--line);color:#444;line-height:1.6;vertical-align:top}
 .qna-wrap{max-width:1440px;margin:8px auto 0;padding:0 48px 40px}
 .qna-wrap h2{font-family:var(--disp);font-size:22px;font-weight:400;margin-bottom:14px}
@@ -4287,7 +4379,10 @@ def pdp(pid: str):
     if not _state['pcols']: raise HTTPException(404)
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'list_price'):
+    # (버그 수정) info_rows·ship_rows 가 SELECT 목록에서 빠져 있어 관리자가 저장한
+    # 상품별 구매정보·배송/교환 커스텀 행이 상세페이지에 전혀 반영되지 않았다.
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'list_price',
+              'info_rows', 'ship_rows', 'badge', 'badge_color', 'discount_pct'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r:
@@ -4372,15 +4467,41 @@ def pdp(pid: str):
     _SHIP_DEFAULT = [
         ('국내배송', '3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고'),
         ('맵달드림', '서울 당일배송 · 성수 1F/4F 픽업'),
-        ('교환/반품', '미개봉·미사용에 한해 수령 7일 이내 · 신선식품 및 개봉 상품은 불가'),
         ('해외배송', 'DDP(관·부가세 포함) 지원 — global@mealzip.kr 문의'),
+        ('공급관련 정보',
+         '고객센터 ' + MAPDAL_CS_TEL + '//'
+         '배송안내: 전국 배송이 가능하며, 토요일과 공휴일을 제외하고 평균 2~5일 소요됩니다.//'
+         '도서지역은 2~4일 지연될 수 있으며 배송비가 추가될 수 있으니 이 점 양해하여 주시기 바랍니다.'),
+        ('청약철회 및 계약해제',
+         '교환/반품 안내: 고객변심 및 주문착오에 의한 교환/반품은 제품 수령일로부터 7일 이내 가능합니다.//'
+         '불량제품 또는 제품에 의한 문제 발생 시 전액(해당 제품) 교환/환불해 드립니다.//'
+         '(단, 상품 수령일로부터 30일 이내) 교환 및 반품 시에는 배송된 포장박스와 포장재를 '
+         '사용하여 그대로 복원해 주시기 바랍니다.'),
+        ('교환/반품/보증 조건과 절차',
+         '※ 교환/반품이 불가한 경우//'
+         '- 제품 또는 사은품을 개봉하여 상품이 훼손되었거나 일부가 분실된 경우//'
+         '- 교환/반품 가능기간을 초과하였을 경우//'
+         '- 기타 사용자의 과실이 인정되는 경우//'
+         '교환/반품배송비: 고객변심에 의한 교환 및 반품 시 발생되는 배송비는 고객님 부담입니다.//'
+         '- 교환 시: 반송비＋재발송비 = 6,000원//'
+         '- 반품 시: 초기 배송비(무료배송 포함)＋반송비 = 6,000원'),
+        ('분쟁처리 사항',
+         '상품의 불량에 의한 반품, 교환, A/S, 환불, 품질보증 및 피해보상 등에 관한 사항은 '
+         '소비자분쟁해결기준(공정거래위원회 고시)에 따라 받으실 수 있습니다.//'
+         '대금 환불 및 환불 지연에 따른 배상금 지급 조건, 절차 등은 「전자상거래 등에서의 '
+         '소비자보호에 관한 법률」에 따라 처리합니다.'),
+        ('거래약관',
+         '미성년자가 법정대리인의 동의 없이 구매계약을 체결한 경우, 미성년자와 법정대리인은 '
+         '구매계약을 취소할 수 있습니다.'),
     ]
     # 상품별 커스텀 행이 있으면 기본값을 덮어쓴다(관리자 [상품 등록/수정]에서 편집).
     _ci = _kv_rows_html(r.get('info_rows'))
     if _ci:
         inforows = _ci
-    shiprows = _kv_rows_html(r.get('ship_rows')) or ''.join(
-        '<tr><th>%s</th><td>%s</td></tr>' % (h(k), h(v)) for k, v in _SHIP_DEFAULT)
+    shiprows = _kv_rows_html(r.get('ship_rows'), limit=20) or ''.join(
+        '<tr><th>%s</th><td>%s</td></tr>'
+        % (h(k), '<br>'.join(h(s.strip()) for s in v.split('//') if s.strip()))
+        for k, v in _SHIP_DEFAULT)
     # 뷰어수(상품 id 기반 안정값 60~139)
     try:
         _seed = int(re.sub(r'\D', '', pid)[-4:] or '0')

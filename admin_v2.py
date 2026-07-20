@@ -10180,6 +10180,19 @@ function load(cb){
  fetch('/api/drops/'+encodeURIComponent(id)).then(function(r){return r.ok?r.json():null})
   .then(function(d){loading=false;if(d){DATA=d;cb(d)}})
   .catch(function(){loading=false});}
+/* 선택형(동의) 카드 보정 — 정적 optCard()는 판매중(ON_SALE)일 때만 '필수' 배지를 달고
+   버튼을 활성화한다. 오픈 전에도 미리 선택해 둘 수 있어야 하므로 배지·활성화를 보정한다.
+   (구매 버튼 자체는 정적 코드가 계속 잠가두므로 조기 결제 위험은 없다.) */
+function fixChoice(){
+ var box=document.getElementById('ndOpts');if(!box)return;
+ [].forEach.call(box.querySelectorAll('.nd-oq'),function(card){
+  if(card.classList.contains('mp-din'))return;      /* 입력형은 별도 처리 */
+  var t=card.querySelector('.nd-oq-t');
+  if(t&&!t.querySelector('.nd-req')){
+   var b=document.createElement('span');b.className='nd-req';b.textContent='필수';
+   t.appendChild(b)}
+  [].forEach.call(card.querySelectorAll('.nd-oq-opt[disabled]'),function(btn){
+   btn.removeAttribute('disabled')});});}
 function paint(){
  var box=document.getElementById('ndOpts');if(!box)return;
  if(!DATA)return load(function(){paint()});
@@ -10194,7 +10207,7 @@ function paint(){
   if(cards[i].classList.contains('mp-din'))return;/* 이미 교체됨 */
   var w=document.createElement('div');w.innerHTML=build(o,i,live);
   box.replaceChild(w.firstChild,cards[i]);});
- bind();}
+ bind();fixChoice();}
 function bind(){
  document.querySelectorAll('.mp-din').forEach(function(el){
   if(el.dataset.bound)return;el.dataset.bound='1';
@@ -10238,6 +10251,11 @@ function guard(ev){
  document.querySelectorAll('.mp-din').forEach(function(el){
   if(bad)return;
   if(el.__mpCheck&&!el.__mpCheck(true))bad=el});
+ /* 선택형(동의) 카드도 미선택이면 차단 — 정적 코드는 .sel 클래스로 선택 상태를 표시한다 */
+ if(!bad)[].forEach.call(document.querySelectorAll('.nd-oq'),function(card){
+  if(bad||card.classList.contains('mp-din'))return;
+  if(!card.querySelector('.nd-oq-opt'))return;
+  if(!card.classList.contains('sel')&&!card.querySelector('.nd-oq-opt.on'))bad=card});
  if(bad){ev.preventDefault();ev.stopImmediatePropagation();
   try{if(bad.scrollIntoView)bad.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}
   var f=bad.querySelector('.mp-din-i');if(f)f.focus();

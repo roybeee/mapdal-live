@@ -1652,6 +1652,7 @@ def api_system(request: Request):
             'google_oauth': bool(_genv('GOOGLE_CLIENT_ID')),
             'apple_oauth': bool(_genv('APPLE_CLIENT_ID')),
             'kakao_oauth': bool(_genv('KAKAO_CLIENT_ID')),
+            'naver_oauth': bool(_genv('NAVER_CLIENT_ID') and _genv('NAVER_CLIENT_SECRET')),
             'solapi': '설정됨 (발신 %s%s)' % (cf['sender'], ' · 알림톡 연동' if cf['pf'] else ' · SMS만') if cf['key'] else '미설정 (기록 모드)',
             'paykey_col': _state['paykey'] or '(감지 안 됨)', 'time_kst': kst_now().strftime('%Y-%m-%d %H:%M')}
 
@@ -1881,10 +1882,12 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="hint" style="margin-bottom:10px">▲▼로 순서를 바꾸고, [노출] 체크를 끄면 홈에서 숨겨집니다. 히어로 슬라이드 자체는 [메인배너] 탭에서 관리합니다. [기본값 복원]을 누르면 원본 순서·전체 노출로 돌아갑니다.</div>
   <div id="hbbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-cust" style="display:none">
+  <div class="panel"><h3>소셜 로그인 연동 <span class="tag">카카오 · 네이버 · Google · Apple</span></h3>
+  <div id="oauthStat" class="loading">연동 상태를 확인하는 중…</div></div>
   <div class="panel"><h3>통합 고객·계정 <span class="tag">회원 · 비회원 주문 · 포인트 · 동의</span></h3>
   <div class="toolbar grow"><input id="aq" placeholder="고객번호 · 이름 · 이메일 · 전화" onkeydown="if(event.key==='Enter')loadAccounts(1)">
   <select id="ast" onchange="loadAccounts(1)"><option value="">상태 전체</option><option>ACTIVE</option><option>GUEST</option><option>LOCKED</option><option>WITHDRAWN</option><option>MERGED</option></select>
-  <select id="apv" onchange="loadAccounts(1)"><option value="">가입방법 전체</option><option value="email">이메일</option><option value="google">Google</option><option value="kakao">카카오</option><option value="apple">Apple</option></select>
+  <select id="apv" onchange="loadAccounts(1)"><option value="">가입방법 전체</option><option value="email">이메일</option><option value="google">Google</option><option value="kakao">카카오</option><option value="naver">네이버</option><option value="apple">Apple</option></select>
   <select id="avf" onchange="loadAccounts(1)"><option value="">인증 전체</option><option value="phone">휴대폰 인증</option><option value="none">인증 없음</option></select>
   <select id="aseg" onchange="loadAccounts(1)"><option value="">구매 전체</option><option value="buyer">구매 고객</option><option value="no_order">주문 없는 가입자</option></select>
   <select id="aissue" onchange="loadAccounts(1)"><option value="">점검 전체</option><option value="duplicate">중복계정 의심</option></select>
@@ -1931,7 +1934,7 @@ async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';tr
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
 const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['artists','아티스트',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>loadAccounts(1),notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -2102,6 +2105,32 @@ async function saveExternalInventory(id,status){try{await api('/admin/api/invent
 async function inventoryHistory(id){try{const d=await api('/admin/api/inventory/history?variant_id='+encodeURIComponent(id));$('#mbox').innerHTML=`<h3>재고 변경 이력</h3><table><tr><th>일시</th><th>작업</th><th class="right">증감</th><th>변경</th><th>담당/사유</th></tr>${d.rows.map(x=>`<tr><td class="mono">${esc((x.created_at||'').replace('T',' '))}</td><td>${esc(x.kind)}</td><td class="right mono">${x.quantity>0?'+':''}${x.quantity}</td><td class="mono">${x.before_qty} → ${x.after_qty}</td><td>${esc(x.by_admin)}<div class="group-sub">${esc(x.reason)}</div></td></tr>`).join('')||'<tr><td colspan="5" class="loading">아직 변경 이력이 없습니다.</td></tr>'}</table><div style="text-align:right;margin-top:12px"><button class="btn ghost" onclick="closeM()">닫기</button></div>`;$('#mbg').style.display='flex'}catch(e){toast(e.message)}}
 
 let accountPage=1;
+async function loadOAuthStatus(){
+ const el=document.getElementById('oauthStat');if(!el)return;
+ try{
+  const d=await api('/admin/api/oauth-status');
+  const warn=(d.warnings||[]).map(w=>'<div style="background:#fff3df;border-left:4px solid #FFB000;padding:9px 12px;font-size:12.5px;margin-bottom:10px">'+esc(w)+'</div>').join('');
+  const cards=(d.providers||[]).map(p=>{
+   const ok=p.ready;
+   const badge=ok?'<span style="background:#0a8f4d;color:#fff;font-size:11px;font-weight:700;padding:3px 8px">활성</span>'
+                 :'<span style="background:#efeee9;color:#8a8880;font-size:11px;font-weight:700;padding:3px 8px">미설정</span>';
+   const miss=ok?'':'<div style="font-size:11.5px;color:#c0392b;margin-top:7px;line-height:1.7">필요: <span class="mono">'+p.missing.map(esc).join('</span> · <span class="mono">')+'</span></div>';
+   const vars=Object.keys(p.vars||{}).filter(k=>p.vars[k]).map(k=>'<div class="mono" style="font-size:11px;color:#888">'+esc(k)+' = '+esc(p.vars[k])+'</div>').join('');
+   return '<div style="border:1px solid #e3e1db;background:#fff;padding:14px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+    +'<b style="font-size:14px">'+esc(p.name)+'</b>'+badge+'</div>'
+    +'<div style="font-size:12px;color:#666;margin-top:8px">가입 회원 <b style="color:#141414">'+(p.members||0)+'</b>명</div>'
+    +miss+vars
+    +'<div style="font-size:11px;color:#999;margin-top:9px;word-break:break-all;line-height:1.6">'
+    +'<b>'+esc(p.method)+'</b> <span class="mono">'+esc(p.callback)+'</span></div>'
+    +'<a href="'+esc(p.console)+'" target="_blank" rel="noopener" style="display:inline-block;margin-top:9px;font-size:11.5px;color:#E8332A;text-decoration:none">개발자 콘솔 ↗</a>'
+    +'</div>'}).join('');
+  el.classList.remove('loading');
+  el.innerHTML=warn
+   +'<div class="hint" style="margin-bottom:10px">연동 코드는 모두 배포되어 있습니다. <b>미설정</b> 항목은 Render &gt; Environment 에 변수만 추가하면 즉시 활성화됩니다. Callback URL은 각 개발자 콘솔에 <b>한 글자도 다르지 않게</b> 등록해야 합니다.</div>'
+   +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px">'+cards+'</div>';
+ }catch(e){el.classList.remove('loading');
+  el.innerHTML='<div style="font-size:12.5px;color:#c0392b">연동 상태를 불러오지 못했습니다: '+esc(e.message)+'</div>'}}
 async function loadAccounts(page){accountPage=page;const q=new URLSearchParams({page});
  if($('#aq').value)q.set('query',$('#aq').value);if($('#ast').value)q.set('status',$('#ast').value);if($('#apv').value)q.set('provider',$('#apv').value);if($('#avf').value)q.set('verified',$('#avf').value);if($('#aseg').value)q.set('segment',$('#aseg').value);if($('#aissue').value)q.set('issue',$('#aissue').value);if($('#asup').value)q.set('support',$('#asup').value);if($('#amk').checked)q.set('marketing','1');
  $('#clist').innerHTML='<div class="loading">통합 고객을 불러오는 중…</div>';try{const d=await api('/admin/api/accounts?'+q);
@@ -2157,7 +2186,7 @@ async function loadMembers(){try{const d=await api('/admin/api/members');
  $('#clist').innerHTML=`<div class="hint" style="margin-bottom:8px">소셜 계정(Google/Apple)으로 가입한 회원 목록입니다. 총 ${d.total}명.</div>
  <table><tr><th>이름</th><th>이메일</th><th>가입방법</th><th>휴대폰</th><th>성별/출생</th><th class="right">포인트</th><th>가입일시</th><th></th></tr>
  ${d.rows.map(m=>`<tr><td>${esc(m.name)||'-'}</td><td class="mono">${esc(m.email)||'-'}</td>
- <td>${({google:'Google',apple:'Apple',email:'이메일',kakao:'카카오'})[m.provider]||esc(m.provider)}</td>
+ <td>${({google:'Google',apple:'Apple',email:'이메일',kakao:'카카오',naver:'네이버'})[m.provider]||esc(m.provider)}</td>
  <td class="mono">${esc(m.phone)||'-'}${m.verified?' <span class="st PAID" style="font-size:10px">인증</span>':''}</td>
  <td>${m.gender==='F'?'여':m.gender==='M'?'남':'-'}${m.birth?' · '+esc(m.birth):''}</td>
  <td class="right mono">${m.points.toLocaleString()}P</td><td class="mono">${esc(m.created)}</td>
@@ -4958,6 +4987,194 @@ def auth_kakao_cb(request: Request):
     resp.delete_cookie('mp_oauth')
     return resp
 
+# ═══════════════════════════════════════════════════════════════════════
+# 네이버 로그인 (OAuth 2.0)
+#   콘솔: https://developers.naver.com/apps
+#   필요 환경변수: NAVER_CLIENT_ID / NAVER_CLIENT_SECRET
+#   Callback URL 등록값: https://mapdal.kr/auth/naver/callback
+#   제공 항목(검수 신청): 이름·이메일·휴대전화번호·성별·생일·연령대
+# ═══════════════════════════════════════════════════════════════════════
+@admin_router.get('/admin/api/oauth-status')
+def admin_oauth_status(request: Request):
+    a = get_actor(request); need(a, 0)
+    def _mask(v):
+        v = (v or '').strip()
+        if not v: return ''
+        return v[:6] + '…' + v[-4:] if len(v) > 14 else v[:3] + '…'
+    ap = _apple_conf()
+    origin = _burl(request)
+    out = []
+    for key, name, need, got, console in (
+        ('kakao', '카카오',
+         ['KAKAO_CLIENT_ID'],
+         {'KAKAO_CLIENT_ID': _genv('KAKAO_CLIENT_ID'), 'KAKAO_CLIENT_SECRET': _genv('KAKAO_CLIENT_SECRET')},
+         'https://developers.kakao.com/console/app'),
+        ('naver', '네이버',
+         ['NAVER_CLIENT_ID', 'NAVER_CLIENT_SECRET'],
+         {'NAVER_CLIENT_ID': _genv('NAVER_CLIENT_ID'), 'NAVER_CLIENT_SECRET': _genv('NAVER_CLIENT_SECRET')},
+         'https://developers.naver.com/apps'),
+        ('google', 'Google',
+         ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
+         {'GOOGLE_CLIENT_ID': _genv('GOOGLE_CLIENT_ID'), 'GOOGLE_CLIENT_SECRET': _genv('GOOGLE_CLIENT_SECRET')},
+         'https://console.cloud.google.com/apis/credentials'),
+        ('apple', 'Apple',
+         ['APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY'],
+         ap, 'https://developer.apple.com/account/resources/identifiers/list/serviceId'),
+    ):
+        missing = [k for k in need if not (got.get(k) or '').strip()]
+        try:
+            cnt = num((one("SELECT COUNT(*) AS c FROM members WHERE provider=?", (key,)) or {}).get('c'))
+        except Exception:
+            cnt = 0
+        out.append({'key': key, 'name': name, 'ready': not missing, 'missing': missing,
+                    'members': cnt, 'console': console,
+                    'callback': origin + '/auth/' + key + '/callback',
+                    'method': 'POST' if key == 'apple' else 'GET',
+                    'vars': {k: _mask(v) for k, v in got.items()}})
+    extra = []
+    try:
+        import jwt  # noqa: F401
+    except Exception:
+        extra.append('PyJWT[crypto] 미설치 — Apple 로그인이 동작하지 않습니다. requirements.txt 확인 후 재배포하세요.')
+    return {'origin': origin, 'providers': out, 'warnings': extra}
+
+
+@admin_router.get('/auth/soon', response_class=HTMLResponse)
+def auth_soon(request: Request):
+    p = (request.query_params.get('p') or '').strip().lower()
+    meta = {
+        'kakao':  ('카카오', 'KAKAO_CLIENT_ID (REST API 키) · KAKAO_CLIENT_SECRET(선택)',
+                   'https://developers.kakao.com/console/app'),
+        'naver':  ('네이버', 'NAVER_CLIENT_ID · NAVER_CLIENT_SECRET',
+                   'https://developers.naver.com/apps'),
+        'google': ('Google', 'GOOGLE_CLIENT_ID · GOOGLE_CLIENT_SECRET',
+                   'https://console.cloud.google.com/apis/credentials'),
+        'apple':  ('Apple', 'APPLE_CLIENT_ID · APPLE_TEAM_ID · APPLE_KEY_ID · APPLE_PRIVATE_KEY',
+                   'https://developer.apple.com/account/resources/identifiers/list/serviceId'),
+    }.get(p)
+    if not meta:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse('/account', status_code=302)
+    nm, envs, console = meta
+    return HTMLResponse(
+        '<!doctype html><meta charset=utf-8><meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>%s 로그인 준비 중 — MAPDAL SEOUL</title>'
+        '<body style="font-family:\'IBM Plex Sans KR\',sans-serif;background:#F7F6F2;margin:0;'
+        'display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px">'
+        '<div style="background:#fff;border:1px solid #e3e1db;max-width:460px;width:100%%;padding:32px 26px">'
+        '<div style="height:4px;background:#E8332A;margin:-32px -26px 22px"></div>'
+        '<h2 style="font-size:18px;margin:0 0 8px">%s 로그인 준비 중</h2>'
+        '<p style="font-size:13.5px;line-height:1.75;color:#555;margin:0 0 18px">'
+        '연동 코드는 이미 서버에 반영되어 있습니다. 아래 환경변수만 등록하면 즉시 활성화됩니다.</p>'
+        '<div style="background:#faf9f5;border:1px solid #e3e1db;padding:12px 14px;font:12.5px \'IBM Plex Mono\',monospace;'
+        'line-height:1.9;word-break:break-all;margin-bottom:16px">%s</div>'
+        '<p style="font-size:12.5px;line-height:1.8;color:#777;margin:0 0 20px">'
+        'Callback URL: <b style="color:#141414">https://mapdal.kr/auth/%s/callback</b><br>'
+        '개발자 콘솔: <a href="%s" target="_blank" rel="noopener" style="color:#E8332A">%s</a></p>'
+        '<a href="/account" style="display:block;text-align:center;background:#141414;color:#fff;'
+        'text-decoration:none;padding:13px;font-weight:700;font-size:13.5px">다른 방법으로 로그인</a>'
+        '</div></body>' % (_esc(nm), _esc(nm), _esc(envs), _esc(p), _esc(console), _esc(console)))
+
+
+def _naver_conf():
+    return {'id': _genv('NAVER_CLIENT_ID'), 'sec': _genv('NAVER_CLIENT_SECRET')}
+
+
+@admin_router.get('/auth/naver')
+def auth_naver(request: Request):
+    c = _naver_conf()
+    if not (c['id'] and c['sec']):
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px">'
+                            '<h3>네이버 로그인 준비 중</h3><p>관리자가 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET '
+                            '환경변수를 설정하면 활성화됩니다.</p><a href="/account">돌아가기</a>')
+    state = secrets.token_urlsafe(16)
+    oauth_flow_start(request, state, 'naver')
+    q = urllib.parse.urlencode({'client_id': c['id'], 'redirect_uri': _burl(request) + '/auth/naver/callback',
+                                'response_type': 'code', 'state': state, 'auth_type': 'reprompt'})
+    from fastapi.responses import RedirectResponse
+    resp = RedirectResponse('https://nid.naver.com/oauth2.0/authorize?' + q, status_code=302)
+    resp.set_cookie('mp_oauth', state, max_age=600, httponly=True, secure=True, samesite='none')
+    return resp
+
+
+@admin_router.get('/auth/naver/callback')
+def auth_naver_cb(request: Request):
+    try: ensure_ready()
+    except Exception: pass
+    p = request.query_params
+    if p.get('error'):
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px">'
+                            '<h3>네이버 로그인이 취소되었습니다</h3><a href="/account">다시 시도</a>', status_code=400)
+    if not p.get('code') or p.get('state') != (request.cookies.get('mp_oauth') or '_'):
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px">'
+                            '<h3>인증 세션이 만료되었습니다</h3><a href="/account">다시 시도</a>', status_code=400)
+    c = _naver_conf()
+    try:
+        tok = _post_form('https://nid.naver.com/oauth2.0/token', {
+            'grant_type': 'authorization_code', 'client_id': c['id'], 'client_secret': c['sec'],
+            'code': p['code'], 'state': p.get('state') or ''})
+        # 네이버는 HTTP 200 안에 error 필드를 실어 보낸다 — 반드시 별도 확인
+        if tok.get('error') or not tok.get('access_token'):
+            raise ValueError(tok.get('error') or 'no_token')
+        req = urllib.request.Request('https://openapi.naver.com/v1/nid/me',
+                                     headers={'Authorization': 'Bearer ' + tok['access_token']})
+        with urllib.request.urlopen(req, timeout=15) as r2:
+            body = json.loads(r2.read().decode())
+        if str(body.get('resultcode')) != '00':
+            raise ValueError(body.get('message') or 'profile_error')
+        ui = body.get('response') or {}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        code = str(getattr(e, 'args', [''])[0] or 'unknown')[:40]
+        hint = {'invalid_request': 'Callback URL이 콘솔 등록값과 다릅니다. https://mapdal.kr/auth/naver/callback 을 정확히 등록하세요.',
+                'invalid_client': 'NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 값을 확인하세요.',
+                'unauthorized_client': '애플리케이션이 네이버 로그인 사용 설정되어 있는지 확인하세요.',
+                'no_token': '토큰 발급에 실패했습니다. Client Secret을 다시 확인하세요.',
+                'profile_error': '회원 프로필 조회 권한(검수 상태)을 확인하세요.',
+                }.get(code, 'Client ID·Secret·Callback URL 설정을 확인하세요.')
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px;max-width:560px">'
+                            '<h3>네이버 인증에 실패했습니다 <small style="color:#c0392b">(%s)</small></h3>'
+                            '<p style="line-height:1.7">%s</p><a href="/account">다시 시도</a>'
+                            % (_esc(code), _esc(hint)), status_code=400)
+    nid = str(ui.get('id') or '')
+    if not nid:
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px">'
+                            '<h3>네이버 계정 식별자를 받지 못했습니다</h3><a href="/account">다시 시도</a>', status_code=400)
+    rname = (ui.get('name') or ui.get('nickname') or '').strip()
+    try:
+        mid, is_new, linked = oauth_member_finish(p.get('state'), 'naver', nid,
+                                                  (ui.get('email') or '').strip(), rname)
+        # 검수 승인된 선택 항목만 자동 반영 (미승인 항목은 응답에 없음)
+        sets, args = [], []
+        np_ = kphone_norm(ui.get('mobile') or '')
+        if len(np_) >= 10:
+            sets += ['phone=?', 'phone_verified=1']; args.append(np_)
+        g = str(ui.get('gender') or '').upper()
+        if g in ('F', 'M'): sets.append('gender=?'); args.append(g)
+        if ui.get('age'): sets.append('age_range=?'); args.append(str(ui['age'])[:10])
+        by, bd = str(ui.get('birthyear') or ''), str(ui.get('birthday') or '')
+        if by or bd:
+            sets.append('birth=?'); args.append((by + ('-' + bd if bd else '')).strip('-')[:10])
+        if sets:
+            run('UPDATE members SET %s WHERE id=?' % ', '.join(sets), tuple(args + [mid]))
+        sid = member_session_make(mid, request)
+        account_security(one('SELECT * FROM members WHERE id=?', (mid,)),
+                         'IDENTITY_LINKED' if linked else ('SIGNUP' if is_new else 'LOGIN_SUCCESS'),
+                         request, 'naver')
+    except HTTPException as he:
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px">'
+                            '<h3>%s</h3><a href="/account">다시 시도</a>' % _esc(he.detail), status_code=he.status_code)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:50px">'
+                            '<h3>가입 처리 중 오류가 발생했습니다</h3><a href="/account">다시 시도</a>', status_code=500)
+    from fastapi.responses import RedirectResponse
+    resp = RedirectResponse('/account', status_code=302)
+    resp.set_cookie('mp_member', sid, httponly=True, secure=True, samesite='lax', max_age=2592000)
+    resp.delete_cookie('mp_oauth')
+    return resp
+
+
 def _apple_conf():
     return {k: _genv(k) for k in ('APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY')}
 
@@ -5330,15 +5547,24 @@ def account_page(request: Request):
     if m:
         mdata = {'ok': True}
         return HTMLResponse(_brand_apply(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False))))
-    g_on = bool(_genv('GOOGLE_CLIENT_ID'))
-    a_on = all(_apple_conf().values())
-    k_on = bool(_genv('KAKAO_CLIENT_ID'))
-    social = ('<a class="sbtn kakao%s" href="/auth/kakao" style="background:#FEE500;color:#191919;border-color:#FEE500;font-weight:800">TALK · 카카오로 3초만에 시작하기%s</a>'
-              % ('' if k_on else ' off', '' if k_on else ' (준비 중)')
-              + '<a class="sbtn%s" href="/auth/google">G · Google 계정으로 계속하기%s</a>'
-              '<a class="sbtn apple%s" href="/auth/apple">&#63743; · Apple 계정으로 계속하기%s</a>'
-              % ('' if g_on else ' off', '' if g_on else ' (준비 중)',
-                 '' if a_on else ' off', '' if a_on else ' (준비 중)'))
+    _prov = [
+        ('kakao',  '/auth/kakao',  'TALK · 카카오로 3초만에 시작하기',
+         'background:#FEE500;color:#191919;border-color:#FEE500;font-weight:800',
+         bool(_genv('KAKAO_CLIENT_ID'))),
+        ('naver',  '/auth/naver',  'N · 네이버로 계속하기',
+         'background:#03C75A;color:#fff;border-color:#03C75A;font-weight:800',
+         all(_naver_conf().values())),
+        ('google', '/auth/google', 'G · Google 계정으로 계속하기',
+         'background:#fff;color:#141414;border-color:#dadce0', bool(_genv('GOOGLE_CLIENT_ID'))),
+        ('apple',  '/auth/apple',  '&#63743; · Apple 계정으로 계속하기',
+         'background:#000;color:#fff;border-color:#000', all(_apple_conf().values())),
+    ]
+    social = ''.join(
+        '<a class="sbtn %s%s" href="%s" style="%s">%s%s</a>'
+        % (_k, '' if _on else ' off', _href if _on else '/auth/soon?p=' + _k,
+           _style if _on else 'background:#efeee9;color:#9b9a94;border-color:#e3e1db;font-weight:700',
+           _label, '' if _on else ' (준비 중)')
+        for _k, _href, _label, _style, _on in _prov)
     return HTMLResponse(_brand_apply('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
         '</head><body><div class="box"><h1>MAPDAL<span>SEOUL</span></h1><div class="sub">SIGN IN / SIGN UP</div>'
         '<div style="background:#fff3df;border-left:4px solid #FFB000;padding:9px 11px;font-size:12px;margin-bottom:14px"><b>최초 가입 2,000P</b> · 한 고객당 한 번만 지급</div>'

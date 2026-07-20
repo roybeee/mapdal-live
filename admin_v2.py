@@ -6322,6 +6322,12 @@ DROP_OPT_KINDS = [('album', '앨범'), ('card', '포토카드'), ('ticket', '응
                   ('gift', '특전'), ('etc', '기타')]
 _DROP_OPT_KIND_SET = {k for k, _ in DROP_OPT_KINDS}
 
+# 응모 자유입력 필드 타입 — 값은 buyer.selections 로 흘러가 관리자에서 조회된다.
+#   text=일반문자, tel=연락처, birth=생년월일, email=이메일, nation=국적
+DROP_INPUT_TYPES = [('text', '일반 입력'), ('tel', '연락처'), ('birth', '생년월일'),
+                    ('email', '이메일'), ('nation', '국적')]
+_DROP_INPUT_SET = {k for k, _ in DROP_INPUT_TYPES}
+
 def _drop_opts_norm(raw):
     """옵션 입력 정규화 — 구버전 문자열·신버전 객체 모두 수용 (최대 20옵션·12구성품)."""
     out = []
@@ -6330,7 +6336,8 @@ def _drop_opts_norm(raw):
             s = o.strip()[:80]
             if s:
                 out.append({'name': s, 'price': 0, 'stock': None,
-                            'product_id': '', 'managed': 0, 'items': []})
+                            'product_id': '', 'managed': 0, 'items': [],
+                            'input': '', 'placeholder': ''})
             continue
         if not isinstance(o, dict):
             continue
@@ -6348,10 +6355,18 @@ def _drop_opts_norm(raw):
                 continue
             k = str(it.get('k') or 'etc').lower()
             items.append({'k': (k if k in _DROP_OPT_KIND_SET else 'etc'), 't': t})
+        # 자유입력 필드(응모자 이름/연락처/생년월일/이메일/국적 등).
+        #   input 이 지정되면 선택버튼 대신 텍스트 입력으로 렌더링한다.
+        #   미지정('')이면 기존 동작 그대로 — 하위호환 보장.
+        inp = str(o.get('input') or '').strip().lower()
+        if inp not in _DROP_INPUT_SET:
+            inp = ''
+        ph = re.sub(r'\s+', ' ', str(o.get('placeholder') or '')).strip()[:60]
         out.append({'name': name, 'price': max(0, num(o.get('price'))),
                     'stock': stock,
                     'product_id': str(o.get('product_id') or '').strip()[:80],
-                    'managed': 1 if num(o.get('managed')) else 0, 'items': items})
+                    'managed': 1 if num(o.get('managed')) else 0, 'items': items,
+                    'input': inp, 'placeholder': ph})
     return out
 
 def _drop_product_sync(rec, prev_opts, actor):
@@ -6407,7 +6422,8 @@ def _drop_opts_public(d):
     nm, pr = _state.get('pname') or 'name', _state.get('pprice') or 'price'
     for o in _drop_opts_norm(d.get('options')):
         e = {'name': o['name'], 'items': o['items'], 'price': o['price'],
-             'pid': '', 'soldout': 0, 'left': None}
+             'pid': '', 'soldout': 0, 'left': None,
+             'input': o.get('input') or '', 'placeholder': o.get('placeholder') or ''}
         if o['price'] > 0 and o.get('product_id'):
             try:
                 r = one('SELECT %s AS price, stock, soldout FROM products WHERE id=?'
@@ -8480,6 +8496,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
+    if 'mpDropInput' not in html: add += DROPINPUT_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
@@ -10056,6 +10073,131 @@ window.fetch=function(u,o){
   }
  }catch(e){}
  return OF.apply(this,arguments)};
+})();</script>"""
+
+DROPINPUT_SNIPPET = r"""<script id="mpDropInput">(function(){
+/* NEW/DROPS 응모 자유입력 필드 — opt.input 이 지정된 옵션을 텍스트 입력으로 렌더링하고
+   검증 통과분을 mapdal_drop_sel 에 적재한다(기존 선택값과 동일 경로 → 주문 자동 부착). */
+if(!/^\/new-drops(?:\.html)?$/.test(location.pathname))return;
+var CFG={
+ text  :{ph:'이름을 입력해 주세요',              im:'text',  max:40 },
+ tel   :{ph:'010-0000-0000',                     im:'tel',   max:20 },
+ birth :{ph:'YYYY.MM.DD',                        im:'numeric',max:10},
+ email :{ph:'E-mail Address',                    im:'email', max:60 },
+ nation:{ph:'대한민국 or KOREA',                 im:'text',  max:30 }};
+var V={
+ text  :function(v){return v.length>=1?'':'값을 입력해 주세요'},
+ nation:function(v){return v.length>=1?'':'국적을 입력해 주세요'},
+ tel   :function(v){var d=v.replace(/\D/g,'');
+         return (d.length>=9&&d.length<=11)?'':'올바른 연락처를 입력해 주세요'},
+ email :function(v){return /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(v)?'':'올바른 이메일을 입력해 주세요'},
+ birth :function(v){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
+         if(!m)return 'YYYY.MM.DD 형식으로 입력해 주세요';
+         var y=+m[1],mo=+m[2],da=+m[3],dt=new Date(y,mo-1,da),now=new Date();
+         if(dt.getFullYear()!==y||dt.getMonth()!==mo-1||dt.getDate()!==da)return '존재하지 않는 날짜입니다';
+         if(dt>now||y<1900)return '생년월일을 확인해 주세요';
+         return ''}};
+window.mpDropInputVals={};                       /* idx -> 검증 통과값 */
+function norm(t,v){v=v.trim();
+ if(t==='tel'){var d=v.replace(/\D/g,'');
+  if(d.length===11)return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7);
+  if(d.length===10)return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
+  return d}
+ if(t==='birth'){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
+  if(m)return m[1]+'.'+('0'+m[2]).slice(-2)+'.'+('0'+m[3]).slice(-2)}
+ return v}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function build(o,i,live){var t=o.input,c=CFG[t]||CFG.text;
+ var ph=o.placeholder||c.ph;
+ return '<div class="nd-oc nd-oq mp-din" data-di="'+i+'" data-dt="'+esc(t)+'" id="mpdin'+i+'">'
+  +'<div class="nd-oq-t">'+esc(o.name)+(live?'<span class="nd-req">필수</span>':'')+'</div>'
+  +'<div class="nd-oq-c" style="display:block">'
+  +'<input class="mp-din-i" type="text" inputmode="'+c.im+'" maxlength="'+c.max+'" '
+  +'placeholder="'+esc(ph)+'"'+(live?'':' disabled')
+  +' style="width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d8d5cc;'
+  +'background:#fff;font-family:inherit;font-size:13.5px;outline:none">'
+  +'<div class="mp-din-e" style="display:none;color:#E8332A;font-size:11.5px;margin-top:6px"></div>'
+  +'</div></div>'}
+var DATA=null,loading=false;
+function load(cb){
+ if(DATA)return cb(DATA);
+ if(loading)return;
+ var id=new URLSearchParams(location.search).get('id');if(!id)return;
+ loading=true;
+ fetch('/api/drops/'+encodeURIComponent(id)).then(function(r){return r.ok?r.json():null})
+  .then(function(d){loading=false;if(d){DATA=d;cb(d)}})
+  .catch(function(){loading=false});}
+function paint(){
+ var box=document.getElementById('ndOpts');if(!box)return;
+ if(!DATA)return load(function(){paint()});
+ var c=DATA;if(!c.opts)return;
+ var live=c.status==='ON_SALE';
+ c.opts.forEach(function(o,i){
+  if(!o||!o.input)return;
+  if(o.price>0&&o.pid)return;                     /* 판매 옵션은 대상 아님 */
+  var cards=box.children;if(!cards[i])return;
+  if(cards[i].classList.contains('mp-din'))return;/* 이미 교체됨 */
+  var w=document.createElement('div');w.innerHTML=build(o,i,live);
+  box.replaceChild(w.firstChild,cards[i]);});
+ bind();}
+function bind(){
+ document.querySelectorAll('.mp-din').forEach(function(el){
+  if(el.dataset.bound)return;el.dataset.bound='1';
+  var inp=el.querySelector('.mp-din-i'),err=el.querySelector('.mp-din-e');
+  var i=el.dataset.di,t=el.dataset.dt;
+  function check(show){var v=norm(t,inp.value);
+   var msg=(V[t]||V.text)(v);
+   if(msg){delete window.mpDropInputVals[i];el.classList.remove('sel');
+    if(show){err.textContent=msg;err.style.display='block';inp.style.borderColor='#E8332A'}
+    return false}
+   window.mpDropInputVals[i]=v;el.classList.add('sel');
+   err.style.display='none';inp.style.borderColor='#d8d5cc';
+   if(v!==inp.value)inp.value=v;
+   return true}
+  inp.addEventListener('input',function(){check(false)});
+  inp.addEventListener('blur',function(){if(inp.value.trim())check(true)});
+  el.__mpCheck=check;});}
+/* 입력값을 mapdal_drop_sel 에 합류 — 정적 addSel() 이 저장한 직후를 가로챈다.
+   기존 선택값과 동일한 {q,a} 형식이므로 주문 부착·관리자 조회는 수정 불필요. */
+(function(){
+ var P=(window.Storage&&window.Storage.prototype)?window.Storage.prototype:localStorage;
+ var OS=P.setItem;
+ P.setItem=function(k,v){
+  if(k==='mapdal_drop_sel'){
+   try{
+    var vals=window.mpDropInputVals||{},keys=Object.keys(vals);
+    if(keys.length&&DATA&&DATA.opts){
+     var m=JSON.parse(v||'{}'),extra=[];
+     keys.forEach(function(i){var o=DATA.opts[i];
+      if(o&&o.name)extra.push({q:String(o.name).slice(0,120),a:String(vals[i]).slice(0,200)})});
+     Object.keys(m).forEach(function(pid){
+      var e=m[pid];if(!e)return;e.sel=(e.sel||[]);
+      extra.forEach(function(x){
+       if(!e.sel.some(function(s){return s&&s.q===x.q}))e.sel.push(x)})});
+     v=JSON.stringify(m)}
+   }catch(e){}}
+  return OS.call(this,k,v)};})();
+/* 구매/장바구니 클릭 시 미입력 차단 */
+function guard(ev){
+ var bad=null;
+ document.querySelectorAll('.mp-din').forEach(function(el){
+  if(bad)return;
+  if(el.__mpCheck&&!el.__mpCheck(true))bad=el});
+ if(bad){ev.preventDefault();ev.stopImmediatePropagation();
+  try{if(bad.scrollIntoView)bad.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}
+  var f=bad.querySelector('.mp-din-i');if(f)f.focus();
+  return false}}
+document.addEventListener('click',function(ev){
+ var b=ev.target.closest&&ev.target.closest('#ndAddCart,#ndBuyNow');
+ if(b)guard(ev)},true);
+/* 옵션 카드가 다시 그려질 때마다 재적용 */
+var mo=new MutationObserver(function(){paint()});
+function boot(){var box=document.getElementById('ndOpts');
+ if(box){paint();try{mo.observe(box,{childList:true})}catch(e){}}}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(boot,300)});
+else setTimeout(boot,300);
+setInterval(boot,1200);
 })();</script>"""
 
 ARTIST_CHIP_SNIPPET = r"""<script id="mpArtistChip">(function(){

@@ -7828,8 +7828,13 @@ def _checkout_apply(html):
 
 def _order_complete_apply(html):
     """order-complete.html: 토스 confirm 호출 → 이니시스 서버승인 결과(oid) 표시 (멱등)."""
-    if not isinstance(html, str) or "const pk=q.get('paymentKey')" not in html:
-        return html   # order-complete 페이지가 아니면 통과
+    if not isinstance(html, str):
+        return html
+    # 처리 대상: (a) 미변환 토스 원본  (b) 헤더만 변환돼 pk/amt 가 미정의로 남은 파손본
+    #   (b)는 라이브 장애 상태다 — 헤더는 oid 로 바뀌었는데 본문이 pk/amt 를 참조해
+    #   ReferenceError 로 스크립트 전체가 죽고, PAID 검증·장바구니 정리가 동작하지 않는다.
+    if "const pk=q.get('paymentKey')" not in html and 'if(pk&&oid&&amt){' not in html:
+        return _order_complete_copy(html)   # 정상본 / 무관 페이지 — 문구 보정만
     # 토스 결제결과 확인 IIFE 전체 → oid 기반 주문조회로 교체
     _toss_iife_start = "(async function(){\n  const q=new URLSearchParams(location.search);\n  const pk=q.get('paymentKey'),oid=q.get('orderId'),amt=q.get('amount');"
     _new_iife_start = (
@@ -7865,6 +7870,83 @@ def _order_complete_apply(html):
         "      try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
         "    }catch(e){")
     html = html.replace(_toss_body, _new_body, 1)
+    # 구버전 정적본은 drop_sel 정리 라인이 없어 위 치환이 빗나간다. 이 경우 헤더만
+    # 교체되어 pk/amt 미정의 → ReferenceError 로 스크립트 전체가 죽는다(라이브 장애).
+    # 변형본도 동일하게 교체되도록 보조 치환을 둔다.
+    _toss_body_v2 = _toss_body.replace(
+        "try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}",
+        "try{localStorage.removeItem('mapdal_cart');}catch(e){}")
+    if 'if(pk&&oid&&amt){' in html:
+        html = html.replace(_toss_body_v2, _new_body, 1)
+    # 최후 안전망: 그래도 pk/amt 참조가 남아 있으면 조건문만이라도 무해화한다.
+    if 'if(pk&&oid&&amt){' in html:
+        html = html.replace('if(pk&&oid&&amt){', 'if(oid){', 1)
+        html = html.replace(
+            "body:JSON.stringify({paymentKey:pk,orderId:oid,amount:+amt})});",
+            "body:JSON.stringify({orderId:oid})});", 1)
+        html = html.replace(
+            "desc.innerHTML='결제 금액 <b>₩'+(+amt).toLocaleString('ko-KR')+'</b> · '",
+            "desc.innerHTML='결제가 정상 승인되었습니다.'+''+'", 1)
+    html = _order_complete_copy(html)
+    return html
+
+
+_OC_COPY_MARK = '<!--MP_OC_COPY-->'   # 멱등 가드
+
+def _order_complete_copy(html):
+    """주문완료 안내문구를 주문 구성에 맞게 보정 (멱등).
+
+    (1) 콜드체인 문구: 정적 HTML은 전 주문에 '냉동 품목은 콜드체인으로 출고'를
+        무조건 노출한다. 음반/MD/어패럴/리빙만 산 고객에게는 사실과 다르므로
+        주문 items 의 상품 슬러그로 K-Food 포함 여부를 판정해 문구를 분기한다.
+        · K-Food 포함  → 콜드체인 안내 유지
+        · 음반 단독     → 음반 배송 안내
+        · 그 외/혼합    → 일반 배송 안내
+    (2) 포인트 문구: '2,460P가 적립됩니다'는 하드코딩 상수이며 구매 적립 로직이
+        존재하지 않는다(point_apply 는 가입/관리자조정/이관/탈퇴에서만 호출).
+        지킬 수 없는 약속이므로 적립 문구를 제거하고 회원 혜택 안내로 교체한다.
+    """
+    if not isinstance(html, str) or _OC_COPY_MARK in html:
+        return html
+    if "const pk=q.get('paymentKey')" not in html and 'ORDER NO.' not in html:
+        return html
+
+    # (2) 포인트: 허위 적립 문구 → 사실에 맞는 안내로 교체
+    html = html.replace(
+        '<div class="trust-item"><b>포인트</b><span>2,460P가 배송 완료 시점에 적립됩니다.</span></div>',
+        '<div class="trust-item"><b>회원 혜택</b>'
+        '<span>계정 &gt; 주문 내역에서 주문서와 배송 상태를 확인하실 수 있습니다.</span></div>', 1)
+
+    # (1) 콜드체인: 주문 품목 기반 분기 스크립트 주입
+    _copy_js = (
+        "<script id=\"mpOcCopy\">(function(){\n"
+        "  var KFOOD=/(tteokbokki|kimbap-|bowl-)/i;        // K-Food 상품 슬러그\n"
+        "  var ALBUM=/(album-detail|[?&]uid=|^k2g::)/i;     // K2G 앨범 / 음반\n"
+        "  function setDesc(oid){\n"
+        "    var el=document.getElementById('ocDesc')||document.querySelector('.done-hero p');\n"
+        "    if(!el)return;\n"
+        "    function paint(items){\n"
+        "      var food=false,album=false,other=false;\n"
+        "      (items||[]).forEach(function(it){\n"
+        "        var s=String(it.id||it.u||'');\n"
+        "        if(KFOOD.test(s))food=true;\n"
+        "        else if(ALBUM.test(s))album=true;\n"
+        "        else other=true;});\n"
+        "      var msg;\n"
+        "      if(food)msg='주문 확인 메일을 보내드렸습니다. 냉동·냉장 품목은 콜드체인으로 오늘 출고됩니다.';\n"
+        "      else if(album&&!other)msg='주문 확인 메일을 보내드렸습니다. 음반은 안전 포장 후 순차 출고됩니다.';\n"
+        "      else msg='주문 확인 메일을 보내드렸습니다. 상품은 확인 후 순차 출고됩니다.';\n"
+        "      el.textContent=msg;}\n"
+        "    if(!oid){paint(null);return;}\n"
+        "    fetch('/api/orders/'+encodeURIComponent(oid))\n"
+        "      .then(function(r){return r.ok?r.json():null})\n"
+        "      .then(function(d){paint(d&&d.items)})\n"
+        "      .catch(function(){paint(null)});}\n"
+        "  function go(){var q=new URLSearchParams(location.search);\n"
+        "    setDesc(q.get('oid')||q.get('orderId'));}\n"
+        "  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();\n"
+        "})();</script>")
+    html = html.replace('</body>', _copy_js + _OC_COPY_MARK + '</body>', 1)
     return html
 
 

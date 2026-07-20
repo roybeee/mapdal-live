@@ -2602,7 +2602,9 @@ function drOptCard(o){o=(typeof o==='string')?{name:o}:(o||{});
   <input class="do_name" placeholder="옵션명 * — 예) For. 민영 포토회" style="flex:2;min-width:170px" value="${esc(o.name||'')}">
   <input class="do_price" type="number" min="0" placeholder="가격(원)" style="width:105px" value="${o.price||''}">
   <input class="do_stock" type="number" min="0" placeholder="재고 (비움=무제한)" style="width:135px" value="${o.stock==null?'':o.stock}">
-  <button class="btn sm ghost" type="button" style="color:var(--bad)" onclick="this.closest('.dropt').remove()">옵션 삭제</button></div>
+  <button class="btn sm ghost do_up" type="button" title="위로 이동" onclick="drOptMove(this,-1)" style="padding:4px 9px">↑</button>
+  <button class="btn sm ghost do_dn" type="button" title="아래로 이동" onclick="drOptMove(this,1)" style="padding:4px 9px">↓</button>
+  <button class="btn sm ghost" type="button" style="color:var(--bad)" onclick="drOptDel(this)">옵션 삭제</button></div>
  ${o.product_id?`<div class="hint mono" style="margin-top:4px">연동 상품 <a href="/p/${encodeURIComponent(o.product_id)}" target="_blank">${esc(o.product_id)}</a>${o.managed?' · 자동 관리(이름·가격·재고 동기화)':' · 수동 연결 — 상품 정보는 [상품·재고]에서'}</div>`:''}
  <input type="hidden" class="do_pid" value="${esc(o.product_id||'')}"><input type="hidden" class="do_mng" value="${o.managed?1:0}">
  <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -2618,6 +2620,30 @@ function drOptCard(o){o=(typeof o==='string')?{name:o}:(o||{});
  </div>
  <div class="do_items" style="margin-top:7px">${(o.items||[]).map(drOptItem).join('')}</div>
  <button class="btn sm ghost" type="button" onclick="this.previousElementSibling.insertAdjacentHTML('beforeend',drOptItem())">+ 구성품</button></div>`}
+function drOptMove(btn,dir){
+ var card=btn.closest('.dropt');if(!card)return;
+ var box=card.parentNode;
+ if(dir<0){var prev=card.previousElementSibling;
+  if(prev)box.insertBefore(card,prev)}
+ else{var next=card.nextElementSibling;
+  if(next)box.insertBefore(next,card)}
+ drOptArrows();
+ try{card.scrollIntoView({block:'nearest'})}catch(e){}
+ card.style.transition='none';card.style.background='#fff6d8';
+ setTimeout(function(){card.style.transition='background .5s';card.style.background='#fafaf7'},220);}
+function drOptDel(btn){
+ var card=btn.closest('.dropt');if(!card)return;
+ var nm=(card.querySelector('.do_name')||{}).value||'';
+ if(nm.trim()&&!confirm('옵션 “'+nm.trim()+'”을(를) 삭제할까요?'))return;
+ card.remove();drOptArrows();}
+function drOptArrows(){
+ var cards=[].slice.call(document.querySelectorAll('#dr_opts2 .dropt'));
+ cards.forEach(function(c,i){
+  var u=c.querySelector('.do_up'),d=c.querySelector('.do_dn');
+  if(u)u.disabled=(i===0);
+  if(d)d.disabled=(i===cards.length-1);
+  if(u)u.style.opacity=(i===0)?.35:1;
+  if(d)d.style.opacity=(i===cards.length-1)?.35:1;});}
 function drOptInputSync(sel){
  var card=sel.closest('.dropt');if(!card)return;
  var on=!!sel.value;
@@ -2636,7 +2662,8 @@ function drOptInputInit(){
   var sel=c.querySelector('.do_input');if(!sel)return;
   if(sel.dataset.init)return;sel.dataset.init='1';
   if(sel.dataset.v)sel.value=sel.dataset.v;
-  drOptInputSync(sel)})}
+  drOptInputSync(sel)});
+ drOptArrows()}
 function drOptAdd(){document.getElementById('dr_opts2').insertAdjacentHTML('beforeend',drOptCard({items:[{}]}));drOptInputInit()}
 function drOptsCollect(){
  return [...document.querySelectorAll('#dr_opts2 .dropt')].map(c=>({

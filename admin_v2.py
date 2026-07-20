@@ -487,7 +487,8 @@ def ensure_ready():
             try: run('ALTER TABLE %s ADD COLUMN customer_id TEXT' % table)
             except Exception: pass
     pcx = _cols('products')
-    for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids'):
+    for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids',
+                'info_rows', 'ship_rows'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -3516,7 +3517,8 @@ def api_product_detail_get(request: Request):
     if not pid: raise HTTPException(400, 'id required')
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
-    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids', 'list_price'):
+    for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids', 'list_price',
+              'info_rows', 'ship_rows'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -3537,6 +3539,7 @@ def api_product_detail_get(request: Request):
         'sale_price': num(r.get('price')) if _state['pprice'] else None,
         'stock': num(r.get('stock')), 'soldout': num(r.get('soldout')),
         'img': r.get('img') or '', 'descr': r.get('descr') or '',
+        'info_rows': r.get('info_rows') or '', 'ship_rows': r.get('ship_rows') or '',
         'category': norm_cat(r.get('category')),
         'badge': (r.get('badge') or '').strip(),
         'badge_color': badge_color(r.get('badge_color')),
@@ -3568,6 +3571,8 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         'badge': ('badge', 30, None),
         'badge_color': ('badge_color', 7, badge_color),
         'gallery': ('gallery', None, _clean_gallery),
+        'info_rows': ('info_rows', 3000, None),
+        'ship_rows': ('ship_rows', 3000, None),
     }
     for k, (col, limit, fn) in field_map.items():
         if k not in body or not col or (col not in _state['pcols'] and col != _state['pname']):
@@ -3713,6 +3718,12 @@ h2{font-size:19px;margin-bottom:18px}
   <div style="display:flex;align-items:center;gap:10px"><input type="color" id="fbc" value="#050505" style="width:54px;height:40px;padding:2px;border:1px solid #ccc;background:#fff;cursor:pointer"><span style="font-size:12px;color:#888">배지의 글자색은 흰색으로 고정됩니다.</span></div>
  </div>
  <div class="f"><label>짧은 설명</label><textarea id="fd" rows="3" placeholder="목록·상단 요약 설명 (선택)"></textarea></div>
+ <div class="f"><label>구매정보 탭</label>
+  <textarea id="finfo" rows="5" placeholder="한 줄에 하나씩 · 형식: 제목|내용&#10;예)&#10;판매|맵달서울성수 · MAPDAL SEOUL (성수)&#10;형태|음반 (CD) — 구성은 상세 참조&#10;차트 반영|본 스토어 판매량은 한터차트에 집계됩니다"></textarea>
+  <span style="font-size:12px;color:#888">비워두면 카테고리 기본값이 표시됩니다. 상품명·분류 행은 자동 표시되므로 적지 않아도 됩니다.</span></div>
+ <div class="f"><label>배송/교환 탭</label>
+  <textarea id="fship" rows="5" placeholder="한 줄에 하나씩 · 형식: 제목|내용&#10;예)&#10;국내배송|3,000원 (30,000원 이상 무료)&#10;교환/반품|미개봉·미사용에 한해 수령 7일 이내"></textarea>
+  <span style="font-size:12px;color:#888">비워두면 기본 배송 안내가 표시됩니다. 최대 12행.</span></div>
 </div>
 <div class="card"><h3>대표 이미지</h3>
  <div id="fzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
@@ -3854,7 +3865,7 @@ async function init(){
   const _dc=Number(d.discount_pct)||0;
   if(d.price!=null)$('#fp').value=_dc>0?(d.list_price||d.price):d.price;
   $('#fdc').value=_dc;fpCalc();
-  $('#fs').value=d.stock;$('#fd').value=d.descr;$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
+  $('#fs').value=d.stock;$('#fd').value=d.descr;$('#finfo').value=d.info_rows||'';$('#fship').value=d.ship_rows||'';$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
@@ -3874,12 +3885,12 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
+     img:$('#fi').value,descr:$('#fd').value,info_rows:$('#finfo').value,ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
+    img:$('#fi').value,descr:$('#fd').value,info_rows:$('#finfo').value,ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
   toast('저장되었습니다');
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
@@ -3965,6 +3976,28 @@ _PDP_META_DEFAULT = {
          '서울 당일배송 · 성수 픽업 가능'),
     ],
 }
+
+def _kv_rows_html(raw, limit=12):
+    """'제목|내용' 줄 목록 → <tr><th>..</th><td>..</td></tr> (최대 12행).
+
+    상품별 구매정보·배송/교환 탭을 관리자에서 직접 편집하기 위한 저장 형식.
+    빈 값이면 '' 을 돌려주어 호출부가 카테고리 기본값을 쓰도록 한다.
+    """
+    out = []
+    for line in str(raw or '').replace('\r', '').split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        k, _, v = line.partition('|')
+        k = k.strip()[:40]
+        v = v.strip()[:400]
+        if not k:
+            continue
+        out.append('<tr><th>%s</th><td>%s</td></tr>' % (h(k), h(v)))
+        if len(out) >= limit:
+            break
+    return ''.join(out)
+
 
 def _pdp_meta_html(cat):
     """카테고리 → (badges_html, brand_text, benefits_html)"""
@@ -4141,23 +4174,19 @@ max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
         <button data-tab="qa">배송/교환</button>
       </div>
       <div class="tab-panel on" id="tab-desc">
-        <div class="descbody">%(descr)s</div>
+        %(descrblock)s
         %(detailhtml)s
       </div>
       <div class="tab-panel" id="tab-info">
         <table class="info-table">
           <tr><th>상품명</th><td>%(name)s</td></tr>
           <tr><th>분류</th><td>%(catlabel)s</td></tr>
-          <tr><th>판매</th><td>맵달서울성수 · MAPDAL SEOUL (성수)</td></tr>
           %(inforows)s
         </table>
       </div>
       <div class="tab-panel" id="tab-qa">
         <table class="info-table">
-          <tr><th>국내배송</th><td>3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고</td></tr>
-          <tr><th>맵달드림</th><td>서울 당일배송 · 성수 1F/4F 픽업</td></tr>
-          <tr><th>교환/반품</th><td>미개봉·미사용에 한해 수령 7일 이내 · 신선식품 및 개봉 상품은 불가</td></tr>
-          <tr><th>해외배송</th><td>DDP(관·부가세 포함) 지원 — global@mealzip.kr 문의</td></tr>
+          %(shiprows)s
         </table>
       </div>
     </div>
@@ -4339,6 +4368,20 @@ def pdp(pid: str):
         inforows = '<tr><th>구성품</th><td>상세 설명 참조</td></tr>'
     else:
         inforows = '<tr><th>구성</th><td>상세 설명 참조</td></tr>'
+    # 판매 행은 모든 카테고리 공통(기본값) — 커스텀이 없을 때만 사용
+    inforows = '<tr><th>판매</th><td>맵달서울성수 · MAPDAL SEOUL (성수)</td></tr>' + inforows
+    _SHIP_DEFAULT = [
+        ('국내배송', '3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고'),
+        ('맵달드림', '서울 당일배송 · 성수 1F/4F 픽업'),
+        ('교환/반품', '미개봉·미사용에 한해 수령 7일 이내 · 신선식품 및 개봉 상품은 불가'),
+        ('해외배송', 'DDP(관·부가세 포함) 지원 — global@mealzip.kr 문의'),
+    ]
+    # 상품별 커스텀 행이 있으면 기본값을 덮어쓴다(관리자 [상품 등록/수정]에서 편집).
+    _ci = _kv_rows_html(r.get('info_rows'))
+    if _ci:
+        inforows = _ci
+    shiprows = _kv_rows_html(r.get('ship_rows')) or ''.join(
+        '<tr><th>%s</th><td>%s</td></tr>' % (h(k), h(v)) for k, v in _SHIP_DEFAULT)
     # 뷰어수(상품 id 기반 안정값 60~139)
     try:
         _seed = int(re.sub(r'\D', '', pid)[-4:] or '0')
@@ -4352,7 +4395,7 @@ def pdp(pid: str):
         'bcls': 'no' if soldout else 'ok',
         'bmsg': '품절 (SOLD OUT)' if soldout else '구매 가능 · 재고 %d' % num(r.get('stock')),
         'stockjs': num(r.get('stock')),
-        'descr': h(r.get('descr')) or 'MAPDAL SEOUL 상품입니다.',
+        'descrblock': ('<div class="descbody">%s</div>' % h(r.get('descr'))) if str(r.get('descr') or '').strip() else '',
         'imgtag': ('<img src="%s" alt="">' % h(img)) if img else '<span class="ph-word">MAPDAL SEOUL</span>',
         'imgjs': json.dumps(img),
         'og': ('<meta property="og:image" content="%s"><meta name="twitter:card" content="summary_large_image">' % h(_img_og)),
@@ -4361,6 +4404,7 @@ def pdp(pid: str):
         'flavor': flavor, 'badges': badges_html, 'brand': h(brand_line),
         'benefits': benefits_html, 'viewers': viewers,
         'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
+        'shiprows': shiprows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
         'relatedsnippet': _RELATED_WIDGET_SNIPPET}))
 

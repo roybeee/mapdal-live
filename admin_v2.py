@@ -801,7 +801,19 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
         ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         try: client_ip = socket.gethostbyname(socket.gethostname())
         except Exception: client_ip = '127.0.0.1'
-        paymethod = 'Card'
+        # 결제수단은 주문에 저장된 실제 값(이니시스 STEP3 응답 payMethod)을 사용한다.
+        #   'Card' 고정 시 계좌이체/휴대폰 결제건은 hashData 불일치로 취소가 실패한다.
+        #   ※ 가상계좌(VBank)는 환불 API 자체가 다르다(/v2/pg/partialRefund/vacct, JSON).
+        #      고객 환불계좌 정보가 필요하므로 자동 환불 대상에서 제외하고 수동 안내한다.
+        _PM_OK = ('Card', 'DirectBank', 'HPP')
+        paymethod = (r.get('pay_method') or '').strip() or 'Card'
+        if paymethod in ('VBank', 'VBANK', 'Vbank'):
+            raise HTTPException(400,
+                '가상계좌 결제건은 자동 환불이 지원되지 않습니다 — '
+                '고객 환불계좌 확인 후 이니시스 상점관리자에서 직접 처리하세요.')
+        if paymethod not in _PM_OK:
+            raise HTTPException(400,
+                '지원하지 않는 결제수단(%s) — 이니시스 상점관리자에서 직접 취소하세요.' % paymethod)
         # hashData = SHA512(INIAPIKey + type + paymethod + timestamp + clientIp + mid + tid)
         hashdata = hashlib.sha512((iniapi + 'Refund' + paymethod + ts + client_ip + mid + tid).encode('utf-8')).hexdigest()
         payload = urllib.parse.urlencode({

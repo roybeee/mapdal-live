@@ -10140,8 +10140,28 @@ function norm(t,v){v=v.trim();
  return v}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-function build(o,i,live){var t=o.input,c=CFG[t]||CFG.text;
- var ph=o.placeholder||c.ph;
+/* 옵션명 기반 입력 타입 자동 판별 — 관리자가 드롭다운을 지정하지 않아도
+   '응모자 이름/연락처/생년월일/이메일/국적' 류는 자동으로 입력 필드가 된다.
+   이때 구성품(items)에 넣은 안내문은 placeholder 로 승격시킨다. */
+var AUTO=[
+ [/연락처|휴대폰|phone|tel/i,        'tel'   ],
+ [/생년월일|생일|birth/i,            'birth' ],
+ [/이메일|e-?mail/i,                 'email' ],
+ [/국적|nation/i,                    'nation'],
+ [/응모자\s*이름|이름\s*\(name|성함/i,'text'  ]];
+function detect(o){
+ if(o.input)return o.input;
+ var n=String(o.name||'');
+ for(var i=0;i<AUTO.length;i++)if(AUTO[i][0].test(n))return AUTO[i][1];
+ return ''}
+function phOf(o,t){
+ if(o.placeholder)return o.placeholder;
+ /* 구성품이 1개뿐이고 선택지라기보다 안내문이면 placeholder 로 사용 */
+ var it=(o.items||[]);
+ if(it.length===1&&it[0]&&it[0].t)return it[0].t;
+ return (CFG[t]||CFG.text).ph}
+function build(o,i,live){var t=detect(o),c=CFG[t]||CFG.text;
+ var ph=phOf(o,t);
  return '<div class="nd-oc nd-oq mp-din" data-di="'+i+'" data-dt="'+esc(t)+'" id="mpdin'+i+'">'
   +'<div class="nd-oq-t">'+esc(o.name)+(live?'<span class="nd-req">필수</span>':'')+'</div>'
   +'<div class="nd-oq-c" style="display:block">'
@@ -10164,9 +10184,11 @@ function paint(){
  var box=document.getElementById('ndOpts');if(!box)return;
  if(!DATA)return load(function(){paint()});
  var c=DATA;if(!c.opts)return;
- var live=c.status==='ON_SALE';
+ /* 판매 오픈 전(UPCOMING)에도 입력은 허용한다 — 구매 버튼만 잠겨 있으면 충분하고,
+    오픈 직후 응모가 몰리는 특성상 미리 작성해 둘 수 있어야 한다. */
+ var live=true;
  c.opts.forEach(function(o,i){
-  if(!o||!o.input)return;
+  if(!o||!detect(o))return;
   if(o.price>0&&o.pid)return;                     /* 판매 옵션은 대상 아님 */
   var cards=box.children;if(!cards[i])return;
   if(cards[i].classList.contains('mp-din'))return;/* 이미 교체됨 */

@@ -2605,9 +2605,39 @@ function drOptCard(o){o=(typeof o==='string')?{name:o}:(o||{});
   <button class="btn sm ghost" type="button" style="color:var(--bad)" onclick="this.closest('.dropt').remove()">옵션 삭제</button></div>
  ${o.product_id?`<div class="hint mono" style="margin-top:4px">연동 상품 <a href="/p/${encodeURIComponent(o.product_id)}" target="_blank">${esc(o.product_id)}</a>${o.managed?' · 자동 관리(이름·가격·재고 동기화)':' · 수동 연결 — 상품 정보는 [상품·재고]에서'}</div>`:''}
  <input type="hidden" class="do_pid" value="${esc(o.product_id||'')}"><input type="hidden" class="do_mng" value="${o.managed?1:0}">
+ <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+  <span class="hint" style="display:inline">응모자 입력</span>
+  <select class="do_input" data-v="${esc(o.input||'')}" style="width:130px" onchange="drOptInputSync(this)">
+   <option value="">사용 안 함 (선택형)</option>
+   <option value="text">일반 입력</option>
+   <option value="tel">연락처</option>
+   <option value="birth">생년월일</option>
+   <option value="email">이메일</option>
+   <option value="nation">국적</option></select>
+  <input class="do_ph" placeholder="입력창 안내문 (선택)" style="flex:1;min-width:180px" value="${esc(o.placeholder||'')}">
+ </div>
  <div class="do_items" style="margin-top:7px">${(o.items||[]).map(drOptItem).join('')}</div>
  <button class="btn sm ghost" type="button" onclick="this.previousElementSibling.insertAdjacentHTML('beforeend',drOptItem())">+ 구성품</button></div>`}
-function drOptAdd(){document.getElementById('dr_opts2').insertAdjacentHTML('beforeend',drOptCard({items:[{}]}))}
+function drOptInputSync(sel){
+ var card=sel.closest('.dropt');if(!card)return;
+ var on=!!sel.value;
+ var items=card.querySelector('.do_items');
+ var addBtn=items&&items.nextElementSibling;
+ var ph=card.querySelector('.do_ph');
+ if(items)items.style.display=on?'none':'';
+ if(addBtn&&addBtn.tagName==='BUTTON')addBtn.style.display=on?'none':'';
+ if(ph)ph.style.display=on?'':'none';
+ var price=card.querySelector('.do_price'),stock=card.querySelector('.do_stock');
+ if(on){if(price)price.value='';if(stock)stock.value=''}
+ if(price)price.style.display=on?'none':'';
+ if(stock)stock.style.display=on?'none':''}
+function drOptInputInit(){
+ document.querySelectorAll('#dr_opts2 .dropt').forEach(function(c){
+  var sel=c.querySelector('.do_input');if(!sel)return;
+  if(sel.dataset.init)return;sel.dataset.init='1';
+  if(sel.dataset.v)sel.value=sel.dataset.v;
+  drOptInputSync(sel)})}
+function drOptAdd(){document.getElementById('dr_opts2').insertAdjacentHTML('beforeend',drOptCard({items:[{}]}));drOptInputInit()}
 function drOptsCollect(){
  return [...document.querySelectorAll('#dr_opts2 .dropt')].map(c=>({
   name:c.querySelector('.do_name').value.trim(),
@@ -2615,6 +2645,8 @@ function drOptsCollect(){
   stock:c.querySelector('.do_stock').value===''?null:Math.max(0,parseInt(c.querySelector('.do_stock').value,10)||0),
   product_id:c.querySelector('.do_pid').value,
   managed:parseInt(c.querySelector('.do_mng').value,10)||0,
+  input:(c.querySelector('.do_input')||{}).value||'',
+  placeholder:((c.querySelector('.do_ph')||{}).value||'').trim(),
   items:[...c.querySelectorAll('.do_items > div')].map(r=>({k:r.querySelector('.doi_k').value,t:r.querySelector('.doi_t').value.trim()})).filter(x=>x.t)
  })).filter(o=>o.name)}
 function dropEdit(id){const _v0=id?DR.find(x=>x.id===id):null,_vv=_v0||{};
@@ -2657,7 +2689,7 @@ const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_la
   <button class="btn ghost" onclick="closeM()">닫기</button>
   ${can(2)?`<button class="btn" onclick="saveDrop(${r?r.id:0})">저장 (사이트 즉시 반영)</button>`:''}
  </div>`;
- $('#mbg').style.display='flex';drImgPrev();}
+ $('#mbg').style.display='flex';drImgPrev();drOptInputInit();}
 async function saveDrop(id){try{
  const sched=[...document.querySelectorAll('#dr_sched .drsched')].map(x=>({name:x.querySelector('.ds-n').value,date:x.querySelector('.ds-d').value,time:x.querySelector('.ds-t').value,desc:x.querySelector('.ds-x').value}));
  const winners=[...document.querySelectorAll('#dr_wins .drwin')].map(x=>({title:x.querySelector('.dw-t').value,type:x.querySelector('.dw-y').value,list:x.querySelector('.dw-l').value}));

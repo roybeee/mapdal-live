@@ -807,8 +807,19 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
         #   ※ 가상계좌(VBank)는 환불 API 자체가 다르다(/v2/pg/partialRefund/vacct, JSON).
         #      고객 환불계좌 정보가 필요하므로 자동 환불 대상에서 제외하고 수동 안내한다.
         _PM_OK = ('Card', 'DirectBank', 'HPP')
-        paymethod = (r.get('pay_method') or '').strip() or 'Card'
-        if paymethod in ('VBank', 'VBANK', 'Vbank'):
+        # 저장된 결제수단 값의 표기가 모듈마다 다르다.
+        #   · PC(웹표준) STEP3 payMethod → 'Card' / 'DirectBank' / 'VBank' / 'HPP'
+        #   · 모바일 P_TYPE              → 'CARD' / 'BANK' / 'VBANK' / 'HPP' (대문자)
+        # INIAPI 는 value 의 대소문자를 검증하므로(ERR012) 규격 표기로 정규화해서 보낸다.
+        _PM_MAP = {
+            'card': 'Card', 'wcard': 'Card', 'creditcard': 'Card',
+            'directbank': 'DirectBank', 'bank': 'DirectBank', 'trans': 'DirectBank',
+            'vbank': 'VBank', 'vacct': 'VBank',
+            'hpp': 'HPP', 'mobile': 'HPP', 'phone': 'HPP',
+        }
+        _pm_raw = (r.get('pay_method') or '').strip()
+        paymethod = _PM_MAP.get(_pm_raw.lower().replace(' ', ''), _pm_raw) or 'Card'
+        if paymethod == 'VBank':
             raise HTTPException(400,
                 '가상계좌 결제건은 자동 환불이 지원되지 않습니다 — '
                 '고객 환불계좌 확인 후 이니시스 상점관리자에서 직접 처리하세요.')

@@ -10644,12 +10644,19 @@ function bind(){
   function check(show){var v=norm(t,inp.value);
    var msg=(V[t]||V.text)(v);
    if(msg){delete window.mpDropInputVals[i];el.classList.remove('sel');
+    try{if(window.__ndSetOQA)window.__ndSetOQA(i,null)}catch(e){}
     if(show){err.textContent=msg;err.style.display='block';inp.style.borderColor='#E8332A'}
     return false}
    window.mpDropInputVals[i]=v;el.classList.add('sel');
+   /* 정적 unansweredQs()/dropAddCart() 와 동일 소스 공유 — 중복 검증·오알럿 방지 */
+   try{if(window.__ndSetOQA)window.__ndSetOQA(i,v)}catch(e){}
    err.style.display='none';inp.style.borderColor='#d8d5cc';
    if(v!==inp.value)inp.value=v;
    return true}
+  /* 재렌더링(수량 변경 등)으로 입력창이 새로 그려진 경우 기존 값 복원 */
+  var prev=(window.mpDropInputVals||{})[i];
+  if(prev!=null&&!inp.value){inp.value=prev}
+  if(prev!=null)check(false);
   inp.addEventListener('input',function(){check(false)});
   inp.addEventListener('blur',function(){if(inp.value.trim())check(true)});
   el.__mpCheck=check;});}
@@ -10673,18 +10680,55 @@ function bind(){
      v=JSON.stringify(m)}
    }catch(e){}}
   return OS.call(this,k,v)};})();
+/* 선택형(동의) 버튼 — document 위임으로 OQA 기록을 보강한다.
+   정적 bindOpts()는 #ndOpts 노드에 리스너를 걸지만 renderDetail() 재실행으로
+   노드가 교체되면 리스너가 유실된다. 여기서 항상 기록해 검증 소스를 일치시킨다. */
+document.addEventListener('click',function(ev){
+ var qb=ev.target.closest&&ev.target.closest('button.nd-oq-opt');
+ if(!qb||qb.disabled)return;
+ var qi=parseInt(qb.dataset.qi,10);
+ if(isNaN(qi))return;
+ var card=qb.closest('.nd-oq');
+ if(card){[].forEach.call(card.querySelectorAll('.nd-oq-opt'),function(x){x.classList.remove('on')});
+  qb.classList.add('on');card.classList.add('sel');card.classList.remove('miss')}
+ var j=parseInt(qb.dataset.j,10),val=qb.textContent||'';
+ try{var o=DATA&&DATA.opts&&DATA.opts[qi];          /* 원본 값 우선 — esc() 왜곡 방지 */
+  if(o&&o.items&&o.items[j]&&o.items[j].t!=null)val=o.items[j].t}catch(e){}
+ try{if(window.__ndSetOQA)window.__ndSetOQA(qi,val);}catch(e){}
+ try{window.mpDropChoiceVals=window.mpDropChoiceVals||{};window.mpDropChoiceVals[qi]=val}catch(e){}
+},true);
 /* 구매/장바구니 클릭 시 미입력 차단 */
 function guard(ev){
  var bad=null;
  document.querySelectorAll('.mp-din').forEach(function(el){
-  if(bad)return;
-  if(el.__mpCheck&&!el.__mpCheck(true))bad=el});
+  var ok=el.__mpCheck?el.__mpCheck(true):true;   /* 전 항목 검사 — 첫 오류에서 멈추지 않는다 */
+  if(!ok&&!bad)bad=el});
+ /* 정적 스크립트가 재평가되어 OQA가 초기화됐을 수 있으므로 검증 통과값을 다시 주입한다.
+    (setter 경유 — 항상 '현재' OQA를 가리킨다) */
+ if(!bad)try{var vv=window.mpDropInputVals||{};
+  Object.keys(vv).forEach(function(k){
+   if(window.__ndSetOQA)window.__ndSetOQA(k,vv[k])});
+  var cv=window.mpDropChoiceVals||{};
+  Object.keys(cv).forEach(function(k){
+   var card=document.getElementById('ndq'+k);
+   if(card&&!card.querySelector('.nd-oq-opt.on'))return;  /* 화면에서 해제됐으면 반영 안 함 */
+   if(window.__ndSetOQA)window.__ndSetOQA(k,cv[k])})}catch(e){}
  /* 선택형(동의) 카드도 미선택이면 차단 — 정적 코드는 .sel 클래스로 선택 상태를 표시한다 */
  if(!bad)[].forEach.call(document.querySelectorAll('.nd-oq'),function(card){
   if(bad||card.classList.contains('mp-din'))return;
   if(!card.querySelector('.nd-oq-opt'))return;
   if(!card.classList.contains('sel')&&!card.querySelector('.nd-oq-opt.on'))bad=card});
  if(bad){ev.preventDefault();ev.stopImmediatePropagation();
+  /* 정적 알럿이 이 시점에 차단되므로 미완료 항목을 여기서 안내한다. */
+  try{var names=[];
+   [].forEach.call(document.querySelectorAll('#ndOpts > .nd-oq'),function(card){
+    var t=card.querySelector('.nd-oq-t');
+    var nm=t?String(t.textContent||'').replace(/필수\s*$/,'').trim():'';
+    if(card.classList.contains('mp-din')){
+     if(!card.classList.contains('sel')&&nm)names.push(nm)}
+    else if(card.querySelector('.nd-oq-opt')&&!card.querySelector('.nd-oq-opt.on')&&nm)names.push(nm)});
+   if(names.length)alert('필수 선택 항목을 완료해 주세요:\n\u00b7 '+names.slice(0,12).join('\n\u00b7 '));
+  }catch(e){}
   try{if(bad.scrollIntoView)bad.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}
   var f=bad.querySelector('.mp-din-i');if(f)f.focus();
   return false}}

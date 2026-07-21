@@ -848,8 +848,17 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
                     restored += run('UPDATE products SET stock = stock + ?, soldout = 0 WHERE id = ?', (num(it.get('q') or 1), it['id']))
                     catalog_inventory_from_legacy(it['id'])
                 except Exception: pass
-    audit(a, '환불' if refunded else '주문취소', oid, '%s / 금액 %s / 재고복원 %d' % (reason, num(r.get('amount')), restored))
-    return {'ok': True, 'refunded': refunded, 'stock_restored_items': restored}
+    # 적립 회수 — 약관 제10조 제3항. 실패해도 환불/취소는 되돌리지 않는다.
+    revoked = 0
+    try:
+        revoked = point_revoke_purchase(oid, by_admin=(a.get('name') if isinstance(a, dict) else '') or 'ADMIN')
+    except Exception:
+        revoked = 0
+    audit(a, '환불' if refunded else '주문취소', oid,
+          '%s / 금액 %s / 재고복원 %d%s' % (reason, num(r.get('amount')), restored,
+                                          (' / 적립회수 %dP' % revoked) if revoked else ''))
+    return {'ok': True, 'refunded': refunded, 'stock_restored_items': restored,
+            'points_revoked': revoked}
 
 @admin_router.get('/admin/api/products')
 def api_products(request: Request):
@@ -4494,7 +4503,12 @@ def pdp(pid: str):
     # 판매 행은 모든 카테고리 공통(기본값) — 커스텀이 없을 때만 사용
     inforows = '<tr><th>판매</th><td>맵달서울성수 · MAPDAL SEOUL (성수)</td></tr>' + inforows
     _SHIP_DEFAULT = [
-        ('국내배송', '3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고'),
+        ('국내배송', '3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고//'
+                     'NEW/DROPS 상품은 주문 금액과 관계없이 배송비 3,000원이 정액 부과되며 '
+                     '무료배송이 적용되지 않습니다.//'
+                     '제주·도서산간 등 권역별 추가 배송비가 별도 부과될 수 있습니다.'),
+        ('적립', '상품 금액의 1% 적립 (배송비 제외·원 단위 절사·로그인 회원) · '
+                 'NEW/DROPS 상품은 적립 대상에서 제외됩니다.'),
         ('맵달드림', '서울 당일배송 · 성수 1F/4F 픽업'),
         ('해외배송', 'DDP(관·부가세 포함) 지원 — global@mealzip.kr 문의'),
         ('공급관련 정보',
@@ -4559,7 +4573,11 @@ def pdp(pid: str):
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 SIGNUP_BONUS = 2000
-TERMS_VERSION = '2026-07-15'
+# 약관 개정 시 이 값을 시행일로 올린다 → 기존 동의 이력과 불일치하면 재동의를 요구한다.
+#   2026-07-29 개정: 제8조(배송비 기준·NEW/DROPS 정액 배송비·권역별 추가 배송비),
+#                    제10조(구매 적립 1% 신설·NEW/DROPS 적립 제외·취소 시 회수)
+#   개인정보처리방침은 이번 개정 대상이 아니므로 PRIVACY_VERSION 은 유지한다.
+TERMS_VERSION = '2026-07-29'
 PRIVACY_VERSION = '2026-07-15'
 
 def _burl(request: Request):
@@ -4608,6 +4626,33 @@ def point_apply(customer_id, member_id, event_type, amount, event_key, reason=''
     try: run('UPDATE members SET points=? WHERE customer_id=?', (nxt, customer_id))
     except Exception: pass
     return nxt
+
+def point_revoke_purchase(order_id, by_admin=''):
+    """주문 취소·반품 시 해당 주문의 구매 적립을 회수한다 (약관 제10조 제3항).
+
+    - 지급된 PURCHASE_REWARD 합계만큼 차감한다. point_apply 의 max(0, ...) 가드로
+      잔액이 부족하면 잔액 범위까지만 차감되고 음수 잔액은 생기지 않는다.
+    - event_key='purchase_revoke:{oid}' 로 멱등 — 취소 재시도 시 중복 차감되지 않는다.
+    - 회수 실패가 환불/취소 자체를 막지 않는다(호출부에서 예외를 삼킨다).
+    """
+    oid = str(order_id or '')
+    if not oid:
+        return 0
+    o = one('SELECT customer_id, member_id FROM orders WHERE order_id=?', (oid,))
+    if not o:
+        return 0
+    cid = o.get('customer_id') or ''
+    if not cid:
+        return 0
+    g = one("SELECT COALESCE(SUM(amount),0) AS s FROM point_ledger "
+            "WHERE order_id=? AND event_type='PURCHASE_REWARD'", (oid,))
+    granted = num((g or {}).get('s'))
+    if granted <= 0:
+        return 0
+    point_apply(cid, o.get('member_id') or '', 'PURCHASE_REVOKE', -granted,
+                'purchase_revoke:%s' % oid, '주문 취소·반품에 따른 적립 회수',
+                order_id=oid, by_admin=by_admin or 'SYSTEM')
+    return granted
 
 def consent_record(customer_id, member_id, consent_type, granted, version, source, request=None):
     run('INSERT INTO consent_history VALUES(?,?,?,?,?,?,?,?,?)',
@@ -4745,6 +4790,14 @@ def _account_migrate():
             new=new.replace('토스페이먼츠 주식회사</td><td>전자결제(결제 승인·취소) 처리','케이지이니시스</td><td>전자결제(결제 승인·취소) 처리')
             new=new.replace('대금 결제는 토스페이먼츠를 통한','대금 결제는 케이지이니시스를 통한')
             new=new.replace('현재 결제 시 사용 기능은 준비 중입니다. 포인트는 현금으로 환급되지 않으며 회원 탈퇴 시 소멸합니다.','현재 자동 지급 정책은 고객당 최초 가입 시 2,000P 1회 제공뿐이며, 구매·래플 적립과 결제 사용은 운영하지 않습니다. 포인트는 현금으로 환급되지 않으며 회원 탈퇴 시 소멸합니다.')
+            # ── 2026-07-29 시행: 구매 적립 1% 신설 + NEW/DROPS 정액 배송비·적립 제외 ──
+            new=new.replace('현재 자동 지급 정책은 고객당 최초 가입 시 2,000P 1회 제공뿐이며, 구매·래플 적립과 결제 사용은 운영하지 않습니다. 포인트는 현금으로 환급되지 않으며 회원 탈퇴 시 소멸합니다.','포인트는 최초 가입 시 2,000P(고객당 1회)와 구매 적립 1%(상품 금액 기준·배송비 제외·원 단위 절사)로 지급됩니다. NEW/DROPS 상품은 적립 대상에서 제외되며, 주문 취소·반품 시 해당 적립은 회수됩니다. 결제 시 사용 기능은 운영하지 않습니다. 포인트는 현금으로 환급되지 않으며 회원 탈퇴 시 소멸합니다.')
+            new=new.replace('현재 자동 지급 정책은 고객당 최초 가입 시 2,000P 1회 제공뿐입니다.','포인트는 최초 가입 2,000P(1회)와 구매 적립 1%로 지급되며, NEW/DROPS 상품은 적립에서 제외됩니다.')
+            new=new.replace('구매 적립과 래플 추가 적립은 운영하지 않습니다.','구매 적립은 상품 금액의 1%이며(배송비 제외), NEW/DROPS 상품은 적립 대상에서 제외됩니다.')
+            new=new.replace('공고일: 2026년 7월 15일 · 시행일: 2026년 7월 15일','공고일: 2026년 7월 21일 · 시행일: 2026년 7월 29일')
+            new=new.replace('시행일: 2026년 7월 15일','시행일: 2026년 7월 29일')
+            new=new.replace('이 약관은 2026년 7월 15일부터 시행합니다.','이 약관은 2026년 7월 29일부터 시행합니다. 다만 2026년 7월 29일 이전에 결제가 완료된 주문에 대해서는 종전 약관을 적용합니다.')
+            new=new.replace('3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고','3,000원 · 30,000원 이상 무료 (NEW/DROPS 상품은 금액 무관 3,000원 정액·무료배송 미적용) · 제주·도서산간 등 권역별 추가 배송비 별도 · 오후 2시 이전 결제 시 당일 출고')
             new=new.replace('<tr><td>회원가입(필수)</td><td>이름, 성별, 연령대, 생년월일, 휴대폰 번호, 이메일 주소, 비밀번호(이메일 가입 시, 일방향 암호화 저장)</td><td>회원 식별·관리, 주문내역 연동, 본인 확인, 연령·성별 기반 상품 추천 및 통계, 생일 혜택 제공</td><td>회원가입 화면, 카카오·Google 계정 연동(동의 항목에 한함)</td></tr>',
                             '<tr><td>회원가입(필수)</td><td>이름, 이메일 주소, 비밀번호(이메일 가입 시, 일방향 암호화 저장), 이용약관·개인정보 동의 이력</td><td>회원 식별·관리, 로그인, 고객 문의 처리, 최초 가입 혜택 제공</td><td>회원가입 화면, 카카오·Google·Apple 계정 연동(동의 항목에 한함)</td></tr>')
             new=new.replace('<tr><td>선택</td><td>배송지 정보(수령인, 주소, 연락처), 환불계좌(은행·계좌번호·예금주), 마케팅 수신 동의 여부</td><td>배송지 자동 입력 편의, 환불 처리, 이벤트·혜택 안내</td><td>마이페이지, 카카오 배송지 연동(동의 시)</td></tr>',
@@ -5413,7 +5466,7 @@ async function receipts(){
  '<div class="hint">세금계산서·현금영수증은 결제 시 신청 내역에 따라 토스 영수증에서 확인됩니다.</div></div>'}
 
 async function pointsPane(){const d=await api('/api/member/points');
- $('#pane').innerHTML='<div class="panel"><h3>포인트 <span class="tagst s5">'+d.balance.toLocaleString()+'P</span></h3><div class="hint">현재 자동 지급 정책은 <b>최초 가입 2,000P</b>뿐입니다. 구매 적립과 래플 추가 적립은 운영하지 않습니다.</div>'+
+ $('#pane').innerHTML='<div class="panel"><h3>포인트 <span class="tagst s5">'+d.balance.toLocaleString()+'P</span></h3><div class="hint">최초 가입 <b>2,000P</b>(1회) · 구매 시 상품 금액의 <b>1% 적립</b>(배송비 제외 · 원 단위 절사).<br>NEW/DROPS 상품은 적립 대상에서 제외되며, 주문 취소·반품 시 해당 적립은 회수됩니다.</div>'+
  (d.rows.length?'<table style="margin-top:14px"><tr><th>일시</th><th>구분</th><th>사유</th><th class="r">증감</th><th class="r">잔액</th></tr>'+d.rows.map(x=>'<tr><td class="mono">'+esc(x.created)+'</td><td>'+esc(x.type)+'</td><td>'+esc(x.reason)+'</td><td class="r mono" style="color:'+(x.amount>=0?'#0a7d38':'var(--red)')+'">'+(x.amount>0?'+':'')+x.amount.toLocaleString()+'P</td><td class="r mono">'+x.balance.toLocaleString()+'P</td></tr>').join('')+'</table>':'<div class="empty">포인트 이력이 없습니다</div>')+'</div>'}
 
 async function likesPane(){const d=await api('/api/member/likes');
@@ -6054,7 +6107,7 @@ PRIVACY_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><me
 TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>이용약관 — MAPDAL SEOUL</title>''' + _POLICY_CSS + '''</head><body>
 <header><a href="/">MAPDAL<span>SEOUL</span></a></header><main>
 <h1>이용약관</h1>
-<div class="meta">시행일: 2026년 7월 15일</div>
+<div class="meta">공고일: 2026년 7월 21일 · 시행일: 2026년 7월 29일<br>주요 개정: 제8조(배송비 기준·NEW/DROPS 정액 배송비·권역별 추가 배송비), 제10조(구매 적립 1% 신설·NEW/DROPS 적립 제외)</div>
 
 <h2>제1조 (목적)</h2>
 <p>이 약관은 맵달서울성수(이하 "회사")가 운영하는 MAPDAL SEOUL 온라인 몰(mapdal.kr, 이하 "몰")에서 제공하는 전자상거래 서비스의 이용 조건 및 절차, 회사와 이용자의 권리·의무를 규정함을 목적으로 합니다.</p>
@@ -6083,8 +6136,12 @@ TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta
 <h2>제7조 (결제)</h2>
 <p>대금 결제는 케이지이니시스를 통한 신용·체크카드, 계좌이체, 간편결제 등 몰이 제공하는 방법으로 할 수 있습니다. 회사는 카드번호 등 결제수단 정보를 직접 저장하지 않으며, 결제 금액은 서버에서 재검증됩니다.</p>
 
-<h2>제8조 (배송)</h2>
+<h2>제8조 (배송 및 배송비)</h2>
 <p>회사는 결제 확인 후 영업일 기준 통상 2~5일 이내 상품을 발송합니다(냉장·냉동 식품은 콜드체인 배송). 천재지변, 물류 사정 등 불가항력 사유가 있는 경우 그 기간은 배송 기간에서 제외됩니다.</p>
+<ol><li>국내 기본 배송비는 3,000원이며, <span class="hl">1회 주문 상품 금액 합계가 30,000원 이상인 경우 기본 배송비가 면제</span>됩니다.</li>
+<li><span class="hl">NEW/DROPS 상품은 한정 수량·개별 출고 상품으로, 주문 금액과 관계없이 배송비 3,000원이 정액으로 부과되며 무료배송 기준이 적용되지 않습니다.</span> NEW/DROPS 상품이 다른 상품과 함께 주문된 경우 해당 주문 전체에 정액 배송비가 적용됩니다.</li>
+<li>제주 및 도서·산간 등 <span class="hl">권역에 따라 추가 배송비가 별도로 부과될 수 있으며</span>, 해당 금액과 부과 기준은 주문 화면 및 상품 상세의 배송 안내에 표시합니다.</li>
+<li>배송비의 기준 금액과 정책은 변경될 수 있으며, 변경 시 적용일 이전에 몰에 공지합니다. 이미 결제가 완료된 주문에는 결제 시점의 정책이 적용됩니다.</li></ol>
 
 <h2>제9조 (청약철회 및 반품·교환)</h2>
 <ol><li>이용자는 상품을 공급받은 날부터 7일 이내에 청약철회를 할 수 있습니다.</li>
@@ -6096,7 +6153,15 @@ TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta
 <li>청약철회 시 회사는 상품 반환을 받은 날부터 3영업일 이내에 대금을 환급합니다. 단순 변심에 의한 반품 배송비는 이용자가 부담합니다.</li></ol>
 
 <h2>제10조 (포인트)</h2>
-<p>현재 포인트 자동 지급 정책은 고객당 최초 가입 시 2,000P 1회 제공뿐입니다. 구매 금액 적립, 래플 추가 적립 및 결제 시 사용은 운영하지 않습니다. 향후 정책을 신설하거나 변경하는 경우 적용일과 기준을 별도로 공지합니다. 포인트는 현금으로 환급되지 않으며 회원 탈퇴 시 소멸합니다.</p>
+<ol><li>회사는 회원에게 다음의 기준으로 포인트를 지급합니다.
+<ul><li>최초 가입 혜택: 고객당 1회 2,000P</li>
+<li><span class="hl">구매 적립: 결제 완료된 주문의 상품 금액 기준 1%</span> (원 단위 절사, 배송비 제외)</li></ul></li>
+<li><span class="hl">NEW/DROPS 상품은 적립 대상에서 제외</span>되며, 해당 상품 금액은 적립 기준 금액에 산입하지 않습니다.</li>
+<li>구매 적립은 결제 승인이 완료된 시점에 지급되며, 주문이 취소·반품·환불되는 경우 해당 주문으로 지급된 포인트는 회수됩니다. 회수 시점에 잔액이 부족한 경우 잔액 범위에서 차감합니다.</li>
+<li>비회원(로그인하지 않은 상태)의 주문은 적립 대상이 아닙니다.</li>
+<li>결제 시 포인트 사용 기능은 현재 운영하지 않으며, 개시 시 사용 단위와 조건을 별도로 공지합니다.</li>
+<li>적립률 및 지급 기준은 변경될 수 있으며, 회원에게 불리한 변경은 적용일 30일 전부터 공지합니다. 이미 지급된 포인트는 변경 전 기준에 따릅니다.</li>
+<li>포인트는 현금으로 환급되지 않으며 회원 탈퇴 시 소멸합니다.</li></ol>
 
 <h2>제11조 (회사와 이용자의 의무)</h2>
 <p>회사는 법령과 이 약관에 따라 지속적이고 안정적으로 서비스를 제공하며, 이용자의 개인정보를 개인정보처리방침에 따라 보호합니다. 이용자는 타인의 정보 도용, 몰 운영 방해, 지식재산권 침해 행위를 하여서는 안 됩니다.</p>
@@ -6105,7 +6170,7 @@ TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta
 <p>회사는 천재지변 등 불가항력으로 인한 서비스 장애에 대해 책임을 지지 않습니다. 회사는 이용자의 불만 및 분쟁을 신속히 처리하며, 처리가 곤란한 경우 공정거래위원회 또는 시·도 소비자분쟁조정기구의 조정에 따를 수 있습니다. 회사와 이용자 간 소송은 민사소송법상의 관할법원에 제기합니다.</p>
 
 <h2>부칙</h2>
-<p>이 약관은 2026년 7월 15일부터 시행합니다.</p>
+<p>이 약관은 2026년 7월 29일부터 시행합니다. 다만 2026년 7월 29일 이전에 결제가 완료된 주문에 대해서는 종전 약관을 적용합니다.</p>
 </main></body></html>'''
 
 FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#fff;font:12px/1.9 'IBM Plex Sans KR',sans-serif;margin:0;padding:0;border-top:1px solid rgba(255,255,255,.09)">
@@ -8034,7 +8099,12 @@ def _feedback_apply(html):
     if _q2_src in html and '해외배송' not in html:
         html = html.replace(
             _q2_src,
-            _q2_src + '<tr><th>해외배송</th><td>현재 <b>해외배송은 제공하지 않습니다</b> '
+            '<tr><th>국내배송</th><td>3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고<br>'
+            '<b>NEW/DROPS 상품은 금액과 관계없이 배송비 3,000원 정액</b>이며 무료배송이 적용되지 않습니다.<br>'
+            '제주·도서산간 등 권역별 추가 배송비가 별도 부과될 수 있습니다.</td></tr>'
+            '<tr><th>적립</th><td>상품 금액의 <b>1% 적립</b> (배송비 제외 · 로그인 회원) · '
+            'NEW/DROPS 상품은 적립 제외</td></tr>'
+            '<tr><th>해외배송</th><td>현재 <b>해외배송은 제공하지 않습니다</b> '
             '(국내 배송지만 가능)</td></tr>', 1)
 
     # ── [Q7] mapdal-seoul 6F 'VIP 전용 주차장' 삭제 (층 카드 + 방문안내 문구) ──
@@ -8105,7 +8175,8 @@ def _checkout_apply(html):
     # ── [1] 배송지: DDP 안내문 제거 ──
     html = html.replace(
         '<div class="sub">해외 배송 선택 시 관세·세금이 선지불(DDP)로 합산되어 수령 시 추가 비용이 없습니다.</div>',
-        '<div class="sub">국내 전 지역 배송 · 30,000원 이상 무료배송 · 오후 2시 이전 결제 시 당일 출고.</div>', 1)
+        '<div class="sub">국내 전 지역 배송 · 30,000원 이상 무료배송 (NEW/DROPS 상품은 금액 무관 3,000원 정액) · '
+        '제주·도서산간 등 권역별 추가 배송비 별도 · 오후 2시 이전 결제 시 당일 출고.</div>', 1)
 
     # ── [2] 배송지: 국내/해외(DDP) 토글 버튼 제거 ──
     html = html.replace(
@@ -8927,6 +8998,29 @@ def _brand_apply(html):
         html = (html[:i] + _BRAND_JS_TAG + html[i:]) if i >= 0 else (html + _BRAND_JS_TAG)
     return html
 
+def _drops_ship_notice_apply(html):
+    """NEW/DROPS 상세 — 옵션 요약(구매 버튼 위)에 정액 배송비·적립 제외 고지 삽입 (멱등).
+
+    드롭 상품은 금액과 무관하게 배송비 3,000원 정액이고 적립 대상이 아니므로,
+    구매 결정 직전 화면에서 반드시 고지한다(전자상거래법 제13조 거래조건 표시).
+    """
+    if not isinstance(html, str) or 'id="ndOsum"' not in html:
+        return html                      # new-drops 상세가 아니면 통과
+    if 'mpDropShipNote' in html:
+        return html                      # 이미 적용됨
+    _src = ("return '<div class=\"nd-osum\" id=\"ndOsum\">")
+    _dst = ("return '<div class=\"nd-osum\" id=\"ndOsum\">"
+            "<div class=\"mpDropShipNote\" style=\"flex:0 0 100%;font-size:11.5px;line-height:1.65;"
+            "color:#D8D6CE;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);"
+            "border-radius:9px;padding:9px 12px;margin:0 0 4px;box-sizing:border-box\">"
+            "NEW/DROPS 상품은 주문 금액과 관계없이 <b style=\"color:#FFB000\">배송비 3,000원 정액</b>이며 "
+            "무료배송·구매 적립이 적용되지 않습니다.<br>"
+            "제주·도서산간 등 권역별 추가 배송비가 별도 부과될 수 있습니다."
+            "</div>")
+    if _src in html:
+        html = html.replace(_src, _dst, 1)
+    return html
+
 def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html)
     html = _inject_shop_products(html)
@@ -8934,6 +9028,7 @@ def _inject_auth(html, path='', uid=None):
     html = _kpop_apply(html)
     html = _feedback_apply(html)
     html = _checkout_apply(html)
+    html = _drops_ship_notice_apply(html)
     html = _order_complete_apply(html)
     html = _homeblocks_apply(html, path)
     html, patched = _patch_legacy_footer(html)
@@ -9106,7 +9201,8 @@ def api_m_points(request: Request):
     m = member_required(request); cid = m.get('customer_id') or ''
     cp = one('SELECT points_balance FROM customer_profiles WHERE id=?', (cid,)) or {}
     rs = rows('SELECT event_type,amount,balance_after,reason,expires_at,created_at FROM point_ledger WHERE customer_id=? ORDER BY created_at DESC LIMIT 200', (cid,))
-    names = {'SIGNUP_BONUS':'최초 가입 혜택','LEGACY_BALANCE':'기존 포인트 이관','ADMIN_ADJUST':'관리자 조정'}
+    names = {'SIGNUP_BONUS':'최초 가입 혜택','LEGACY_BALANCE':'기존 포인트 이관','ADMIN_ADJUST':'관리자 조정',
+             'PURCHASE_REWARD':'구매 적립 (1%)','PURCHASE_REVOKE':'구매 적립 회수 (취소·반품)'}
     return {'balance': num(cp.get('points_balance')), 'rows': [
         {'type': names.get(r['event_type'], r['event_type']), 'amount': num(r['amount']),
          'balance': num(r['balance_after']), 'reason': r.get('reason') or '',
@@ -10541,21 +10637,14 @@ DROPINPUT_SNIPPET = r"""<style id="mpTbodyCss">
 if(!/^\/new-drops(?:\.html)?$/.test(location.pathname))return;
 var CFG={
  text  :{ph:'이름을 입력해 주세요',              im:'text',  max:40 },
- tel   :{ph:'010-0000-0000 (해외 +8170...)',     im:'tel',   max:20 },
- birth :{ph:'YYYY.MM.DD',                        im:'numeric',max:12},
+ tel   :{ph:'010-0000-0000',                     im:'tel',   max:20 },
+ birth :{ph:'YYYY.MM.DD',                        im:'numeric',max:10},
  email :{ph:'E-mail Address',                    im:'email', max:60 },
  nation:{ph:'대한민국 or KOREA',                 im:'text',  max:30 }};
 var V={
  text  :function(v){return v.length>=1?'':'값을 입력해 주세요'},
  nation:function(v){return v.length>=1?'':'국적을 입력해 주세요'},
- tel   :function(v){var s=String(v).replace(/[\s()\-.]/g,'');
-         var intl=s.charAt(0)==='+';
-         var d=s.replace(/\D/g,'');
-         if(!d)return '연락처를 입력해 주세요';
-         if(/[^0-9+]/.test(s))return '숫자와 +, -, 공백만 입력해 주세요';
-         /* 해외(+ 또는 12자리 이상)는 E.164 기준 7~15자리 허용 — 국가마다 자릿수가 다르다.
-            국내(0으로 시작)는 기존대로 9~11자리. */
-         if(intl||d.length>11)return (d.length>=7&&d.length<=15)?'':'올바른 연락처를 입력해 주세요';
+ tel   :function(v){var d=v.replace(/\D/g,'');
          return (d.length>=9&&d.length<=11)?'':'올바른 연락처를 입력해 주세요'},
  email :function(v){return /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(v)?'':'올바른 이메일을 입력해 주세요'},
  birth :function(v){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
@@ -10566,20 +10655,12 @@ var V={
          return ''}};
 window.mpDropInputVals={};                       /* idx -> 검증 통과값 */
 function norm(t,v){v=v.trim();
- if(t==='tel'){var s=v.replace(/[\s()\-.]/g,'');
-  var intl=s.charAt(0)==='+',d=s.replace(/\D/g,'');
-  /* 해외 번호는 국가별 자릿수 규칙이 달라 임의 하이픈이 오히려 원본을 훼손한다.
-     + 로 시작하거나 12자리 이상이면 입력값을 그대로 보존한다. */
-  if(intl)return '+'+d;
-  if(d.length>11)return d;
-  if(d.charAt(0)!=='0')return d;            /* 국가번호 직접입력(예: 8170…) — 변형하지 않는다 */
+ if(t==='tel'){var d=v.replace(/\D/g,'');
   if(d.length===11)return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7);
   if(d.length===10)return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
   return d}
- if(t==='birth'){var m=v.match(/^(\d{4})[.\-\/\s]+(\d{1,2})[.\-\/\s]+(\d{1,2})$/);
-  if(m)return m[1]+'.'+('0'+m[2]).slice(-2)+'.'+('0'+m[3]).slice(-2);
-  var d8=v.replace(/\D/g,'');               /* 19891015 처럼 구분자 없이 입력한 경우 */
-  if(d8.length===8)return d8.slice(0,4)+'.'+d8.slice(4,6)+'.'+d8.slice(6)}
+ if(t==='birth'){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
+  if(m)return m[1]+'.'+('0'+m[2]).slice(-2)+'.'+('0'+m[3]).slice(-2)}
  return v}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -10659,21 +10740,12 @@ function bind(){
   function check(show){var v=norm(t,inp.value);
    var msg=(V[t]||V.text)(v);
    if(msg){delete window.mpDropInputVals[i];el.classList.remove('sel');
-    try{if(window.__ndSetOQA)window.__ndSetOQA(i,null)}catch(e){}
     if(show){err.textContent=msg;err.style.display='block';inp.style.borderColor='#E8332A'}
     return false}
    window.mpDropInputVals[i]=v;el.classList.add('sel');
-   /* 정적 unansweredQs()/dropAddCart() 와 동일 소스 공유 — 중복 검증·오알럿 방지 */
-   try{if(window.__ndSetOQA)window.__ndSetOQA(i,v)}catch(e){}
    err.style.display='none';inp.style.borderColor='#d8d5cc';
-   /* 화면 값 덮어쓰기는 blur(show=true) 때만 — 타이핑 도중 바꾸면 커서가 튀고
-      maxlength 에 걸려 뒷자리를 못 치게 된다(예: 1989.10.15 → 1989.10.01). */
-   if(show&&v!==inp.value)inp.value=v;
+   if(v!==inp.value)inp.value=v;
    return true}
-  /* 재렌더링(수량 변경 등)으로 입력창이 새로 그려진 경우 기존 값 복원 */
-  var prev=(window.mpDropInputVals||{})[i];
-  if(prev!=null&&!inp.value){inp.value=prev}
-  if(prev!=null)check(false);
   inp.addEventListener('input',function(){check(false)});
   inp.addEventListener('blur',function(){if(inp.value.trim())check(true)});
   el.__mpCheck=check;});}
@@ -10697,55 +10769,18 @@ function bind(){
      v=JSON.stringify(m)}
    }catch(e){}}
   return OS.call(this,k,v)};})();
-/* 선택형(동의) 버튼 — document 위임으로 OQA 기록을 보강한다.
-   정적 bindOpts()는 #ndOpts 노드에 리스너를 걸지만 renderDetail() 재실행으로
-   노드가 교체되면 리스너가 유실된다. 여기서 항상 기록해 검증 소스를 일치시킨다. */
-document.addEventListener('click',function(ev){
- var qb=ev.target.closest&&ev.target.closest('button.nd-oq-opt');
- if(!qb||qb.disabled)return;
- var qi=parseInt(qb.dataset.qi,10);
- if(isNaN(qi))return;
- var card=qb.closest('.nd-oq');
- if(card){[].forEach.call(card.querySelectorAll('.nd-oq-opt'),function(x){x.classList.remove('on')});
-  qb.classList.add('on');card.classList.add('sel');card.classList.remove('miss')}
- var j=parseInt(qb.dataset.j,10),val=qb.textContent||'';
- try{var o=DATA&&DATA.opts&&DATA.opts[qi];          /* 원본 값 우선 — esc() 왜곡 방지 */
-  if(o&&o.items&&o.items[j]&&o.items[j].t!=null)val=o.items[j].t}catch(e){}
- try{if(window.__ndSetOQA)window.__ndSetOQA(qi,val);}catch(e){}
- try{window.mpDropChoiceVals=window.mpDropChoiceVals||{};window.mpDropChoiceVals[qi]=val}catch(e){}
-},true);
 /* 구매/장바구니 클릭 시 미입력 차단 */
 function guard(ev){
  var bad=null;
  document.querySelectorAll('.mp-din').forEach(function(el){
-  var ok=el.__mpCheck?el.__mpCheck(true):true;   /* 전 항목 검사 — 첫 오류에서 멈추지 않는다 */
-  if(!ok&&!bad)bad=el});
- /* 정적 스크립트가 재평가되어 OQA가 초기화됐을 수 있으므로 검증 통과값을 다시 주입한다.
-    (setter 경유 — 항상 '현재' OQA를 가리킨다) */
- if(!bad)try{var vv=window.mpDropInputVals||{};
-  Object.keys(vv).forEach(function(k){
-   if(window.__ndSetOQA)window.__ndSetOQA(k,vv[k])});
-  var cv=window.mpDropChoiceVals||{};
-  Object.keys(cv).forEach(function(k){
-   var card=document.getElementById('ndq'+k);
-   if(card&&!card.querySelector('.nd-oq-opt.on'))return;  /* 화면에서 해제됐으면 반영 안 함 */
-   if(window.__ndSetOQA)window.__ndSetOQA(k,cv[k])})}catch(e){}
+  if(bad)return;
+  if(el.__mpCheck&&!el.__mpCheck(true))bad=el});
  /* 선택형(동의) 카드도 미선택이면 차단 — 정적 코드는 .sel 클래스로 선택 상태를 표시한다 */
  if(!bad)[].forEach.call(document.querySelectorAll('.nd-oq'),function(card){
   if(bad||card.classList.contains('mp-din'))return;
   if(!card.querySelector('.nd-oq-opt'))return;
   if(!card.classList.contains('sel')&&!card.querySelector('.nd-oq-opt.on'))bad=card});
  if(bad){ev.preventDefault();ev.stopImmediatePropagation();
-  /* 정적 알럿이 이 시점에 차단되므로 미완료 항목을 여기서 안내한다. */
-  try{var names=[];
-   [].forEach.call(document.querySelectorAll('#ndOpts > .nd-oq'),function(card){
-    var t=card.querySelector('.nd-oq-t');
-    var nm=t?String(t.textContent||'').replace(/필수\s*$/,'').trim():'';
-    if(card.classList.contains('mp-din')){
-     if(!card.classList.contains('sel')&&nm)names.push(nm)}
-    else if(card.querySelector('.nd-oq-opt')&&!card.querySelector('.nd-oq-opt.on')&&nm)names.push(nm)});
-   if(names.length)alert('필수 선택 항목을 완료해 주세요:\n\u00b7 '+names.slice(0,12).join('\n\u00b7 '));
-  }catch(e){}
   try{if(bad.scrollIntoView)bad.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}
   var f=bad.querySelector('.mp-din-i');if(f)f.focus();
   return false}}

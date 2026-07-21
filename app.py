@@ -30,6 +30,14 @@ INICIS_INIAPI  = os.getenv('INICIS_INIAPI', 'ItEQKi3rY7uvDS8l')
 SITE_ORIGIN    = os.getenv('SITE_ORIGIN', 'https://mapdal.kr').rstrip('/')
 ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', 'mapdal-admin-2026')
 FREE_SHIP_OVER, SHIP_FEE = 30000, 3000
+# ── NEW/DROPS 배송·적립 특칙 ─────────────────────────────────────────────
+#   드롭 상품(mpd:: 프리픽스)은 한정수량·개별출고 특성상 금액과 무관하게
+#   배송비 3,000원 정액이며 무료배송 기준을 적용하지 않는다. 적립도 없다.
+#   장바구니에 드롭 상품이 1개라도 있으면 주문 전체를 드롭 정책으로 본다.
+DROP_PREFIX = 'mpd::'
+DROP_SHIP_FEE = 3000
+POINT_RATE_BP = 100          # 일반 상품 구매 적립률 1% (basis point/10000)
+
 
 # ── DB 계층 (PG/SQLite 이중 지원) ───────────────────────────────
 POOL = None
@@ -251,7 +259,9 @@ def _ini_idc_host_ok(idc_name: str, url: str) -> bool:
 @app.get('/api/config')
 def config():
     return {'pg': 'inicis', 'mid': INICIS_MID,
-            'freeShipOver': FREE_SHIP_OVER, 'shipFee': SHIP_FEE}
+            'freeShipOver': FREE_SHIP_OVER, 'shipFee': SHIP_FEE,
+            'dropPrefix': DROP_PREFIX, 'dropShipFee': DROP_SHIP_FEE,
+            'pointRateBp': POINT_RATE_BP}
 
 def _product_id_candidates(pid: str):
     """장바구니가 보낸 상품 ID를 DB 저장 형태로 정규화한 후보 목록을 만든다.
@@ -324,7 +334,16 @@ async def create_order(req: Request):
                     c.exec('UPDATE products SET soldout=1 WHERE id=?', (db_id,))
             sub += row['price'] * q
             resolved.append({'id': db_id, 'n': row['name'], 'p': row['price'], 'q': q})
-        ship_fee = 0 if (ship == 'pickup' or sub >= FREE_SHIP_OVER) else SHIP_FEE
+        # ── 배송비 ──
+        #   드롭(mpd::) 상품 포함 주문: 금액 무관 3,000원 정액(무료배송 기준 미적용).
+        #   일반 주문: 30,000원 이상 무료, 미만 3,000원. 픽업은 항상 무료.
+        has_drop = any(str(r['id']).startswith(DROP_PREFIX) for r in resolved)
+        if ship == 'pickup':
+            ship_fee = 0
+        elif has_drop:
+            ship_fee = DROP_SHIP_FEE
+        else:
+            ship_fee = 0 if sub >= FREE_SHIP_OVER else SHIP_FEE
         amount = sub + ship_fee
         order_id = f'MD-{datetime.datetime.now():%Y%m%d}-{secrets.token_hex(3).upper()}'
         c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) VALUES(?,?,?,?,?,?,?,?,?,?)',
@@ -443,7 +462,39 @@ async def inicis_return(req: Request):
     with db() as c:                                  # 중복 승인 레이스 방지 가드
         c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
                "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
+    _award_purchase_points(oid)
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+def _award_purchase_points(oid: str):
+    """결제 완료 주문에 구매 적립 1% 지급 (드롭 상품·배송비 제외).
+
+    - 적립 기준액 = 일반(mpd:: 제외) 상품 결제금액 합계. 배송비는 제외한다.
+    - NEW/DROPS(mpd::) 라인은 적립 대상이 아니다.
+    - 원 단위 절사(내림). 0원이면 원장에 기록하지 않는다.
+    - event_key 로 멱등 보장 — 재진입/새로고침 시 중복 적립되지 않는다.
+    - 비회원(GUEST) 주문은 적립하지 않는다.
+    """
+    try:
+        with db() as c:
+            o = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+        if not o or o['status'] != 'PAID':
+            return
+        cid = o['customer_id'] or ''
+        mid = o['member_id'] or ''
+        if not (cid and mid):                       # 로그인 회원 주문만 적립
+            return
+        lines = json.loads(o['items'] or '[]')
+        base = sum(int(l.get('p', 0)) * int(l.get('q', 1))
+                   for l in lines if not str(l.get('id', '')).startswith(DROP_PREFIX))
+        pts = (base * POINT_RATE_BP) // 10000       # 1% · 원 단위 절사
+        if pts <= 0:
+            return
+        import admin_v2
+        admin_v2.ensure_ready()
+        admin_v2.point_apply(cid, mid, 'PURCHASE_REWARD', pts, 'purchase:%s' % oid,
+                             '구매 적립 1%%(대상금액 %s원)' % format(base, ','), order_id=oid)
+    except Exception:
+        pass                                        # 적립 실패가 결제 완료를 막지 않는다
 
 @app.api_route('/inicis/close', methods=['GET', 'POST'])
 async def inicis_close(req: Request):

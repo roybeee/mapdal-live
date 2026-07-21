@@ -790,8 +790,11 @@ def api_order_mark_paid(oid: str, request: Request):
     if r.get('status') not in ('WAITING_DEPOSIT', 'PENDING'):
         raise HTTPException(400, '입금대기 상태의 주문만 처리할 수 있습니다 (현재: %s)'
                                  % (r.get('status') or ''))
-    run("UPDATE orders SET status='PAID', paid_at=? WHERE order_id=? AND status<>'PAID'",
-        (now_iso(), oid))
+    try:
+        run("UPDATE orders SET status='PAID', paid_at=? WHERE order_id=? AND status<>'PAID'",
+            (now_iso(), oid))
+    except Exception:                                 # paid_at 컬럼 미생성 DB 대비
+        run("UPDATE orders SET status='PAID' WHERE order_id=? AND status<>'PAID'", (oid,))
     try:                                                  # 적립은 app 쪽 멱등 함수 재사용
         import app as _app
         _app._award_purchase_points(oid)

@@ -140,14 +140,20 @@ def seed():
     with db() as c:
         for stmt in ddl.strip().split(';'):
             if stmt.strip(): c.exec(stmt)
-        # 기존 운영 DB에도 회원 주문 직접 연결 컬럼을 멱등 추가한다.
-        # 인덱스는 반드시 컬럼 추가 후에 생성해야 구형 DB에서도 기동한다.
+
+    # ── 컬럼 마이그레이션은 반드시 별도 트랜잭션으로 분리한다 ──
+    #   아래 시드 블록은 상품이 이미 있으면 `return` 으로 빠져나가는데,
+    #   그 return 이 `with db()` 안에 있으면 트랜잭션이 커밋되지 않아
+    #   방금 추가한 컬럼이 롤백된다(운영에서 vbank_* 누락 → 승인 시 500).
+    with db() as c:
         for col in ('customer_id', 'member_id', 'contact_phone_norm',
                     'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at'):
             try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
             except Exception: pass
         try: c.exec('CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)')
         except Exception: pass
+
+    with db() as c:
         n = c.one('SELECT COUNT(*) AS n FROM products')['n']
         if n: return
         own = json.load(open(os.path.join(BASE, 'data', 'own_products.json')))
@@ -547,16 +553,28 @@ async def inicis_return(req: Request):
         vbank = res.get('vactBankName') or res.get('VACT_BankName') or ''
         vname = res.get('VACT_Name') or res.get('vactName') or ''
         vdate = (str(res.get('VACT_Date') or '') + str(res.get('VACT_Time') or '')).strip()
-        with db() as c:
-            c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
-                   "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
-                   "WHERE order_id=? AND status<>'PAID'",
-                   (tid, 'VBank', vnum, vbank, vname, vdate, oid))
+        try:
+            with db() as c:
+                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
+                       "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
+                       "WHERE order_id=? AND status<>'PAID'",
+                       (tid, 'VBank', vnum, vbank, vname, vdate, oid))
+        except Exception:
+            # 컬럼 마이그레이션이 아직 안 된 DB에서도 주문을 잃지 않는다.
+            # 계좌 상세는 못 남겨도 '입금대기' 상태는 반드시 기록되어야 한다.
+            with db() as c:
+                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
+                       "WHERE order_id=? AND status<>'PAID'", (tid, 'VBank', oid))
         return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
-    with db() as c:                                  # 중복 승인 레이스 방지 가드
-        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
-               "WHERE order_id=? AND status<>'PAID'", (tid, method, '', kst_iso(), oid))
+    try:
+        with db() as c:                              # 중복 승인 레이스 방지 가드
+            c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
+                   "WHERE order_id=? AND status<>'PAID'", (tid, method, '', kst_iso(), oid))
+    except Exception:                                 # paid_at 컬럼 미생성 DB 대비
+        with db() as c:
+            c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
+                   "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
     _award_purchase_points(oid)
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
@@ -641,16 +659,26 @@ async def inicis_mobile_return(req: Request):
         vbank = res.get('P_VACT_BANK_NAME') or res.get('P_FN_NM') or ''
         vname = res.get('P_VACT_NAME') or ''
         vdate = (str(res.get('P_VACT_DATE') or '') + str(res.get('P_VACT_TIME') or '')).strip()
-        with db() as c:
-            c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
-                   "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
-                   "WHERE order_id=? AND status<>'PAID'",
-                   (pay_tid, 'VBank', vnum, vbank, vname, vdate, oid))
+        try:
+            with db() as c:
+                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
+                       "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
+                       "WHERE order_id=? AND status<>'PAID'",
+                       (pay_tid, 'VBank', vnum, vbank, vname, vdate, oid))
+        except Exception:                             # 컬럼 미생성 DB 대비
+            with db() as c:
+                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
+                       "WHERE order_id=? AND status<>'PAID'", (pay_tid, 'VBank', oid))
         return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
-    with db() as c:                                  # 중복 승인 레이스 방지 가드
-        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
-               "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', kst_iso(), oid))
+    try:
+        with db() as c:                              # 중복 승인 레이스 방지 가드
+            c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
+                   "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', kst_iso(), oid))
+    except Exception:                                 # paid_at 컬럼 미생성 DB 대비
+        with db() as c:
+            c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
+                   "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', oid))
     _award_purchase_points(oid)
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
@@ -700,10 +728,15 @@ async def inicis_vbank_noti(req: Request):
                 do_award = False
                 if order and order['status'] != 'PAID':
                     if amt == int(order['amount']):        # 금액 위변조 검증
-                        c.exec("UPDATE orders SET status='PAID', payment_key=?, "
-                               "pay_method='VBank', paid_at=? "
-                               "WHERE order_id=? AND status<>'PAID'",
-                               (tid or (order.get('payment_key') or ''), kst_iso(), oid))
+                        try:
+                            c.exec("UPDATE orders SET status='PAID', payment_key=?, "
+                                   "pay_method='VBank', paid_at=? "
+                                   "WHERE order_id=? AND status<>'PAID'",
+                                   (tid or (order.get('payment_key') or ''), kst_iso(), oid))
+                        except Exception:             # paid_at 미생성 DB 대비
+                            c.exec("UPDATE orders SET status='PAID', payment_key=?, "
+                                   "pay_method='VBank' WHERE order_id=? AND status<>'PAID'",
+                                   (tid or (order.get('payment_key') or ''), oid))
                         do_award = True
             if do_award:
                 _award_purchase_points(oid)                # 멱등: 내부에서 중복 방지

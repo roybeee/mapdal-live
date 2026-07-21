@@ -10,7 +10,7 @@ import urllib.request, urllib.error, urllib.parse
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.getenv('DATABASE_URL', '').replace('postgres://', 'postgresql://', 1)
@@ -24,6 +24,12 @@ IS_PG = DATABASE_URL.startswith('postgresql')
 INICIS_MID     = os.getenv('INICIS_MID', 'INIpayTest')
 INICIS_SIGNKEY = os.getenv('INICIS_SIGNKEY', 'SU5JTElURV9UUklQTEVERVNfS0VZU1RS')
 INICIS_INIAPI  = os.getenv('INICIS_INIAPI', 'ItEQKi3rY7uvDS8l')
+# 모바일 결제 — PC(웹표준)와 별개 모듈이며 파라미터 규격이 완전히 다르다.
+#   INICIS_MOBILE_HASHKEY : 모바일 금액위변조 Hash Key
+#     (상점정보>계약정보>KEY정보>모바일 금액위변조 Hash Key)
+#   미설정 시 P_CHKFAKE(위변조 검증)를 생략하고 결제는 정상 진행된다.
+#   운영에서는 반드시 설정할 것 — 금액 위변조 공격 방어에 필요.
+INICIS_MOBILE_HASHKEY = os.getenv('INICIS_MOBILE_HASHKEY', '')
 # 결제 returnUrl/closeUrl 도메인 — 이니시스는 요청페이지와 도메인 일치를 검증(V023).
 #   Cloudflare/Render 프록시 뒤에서는 req.base_url이 실제 도메인과 달라질 수 있으므로
 #   SITE_ORIGIN 환경변수로 실도메인을 고정하는 것이 가장 안전. 미설정 시 헤더로 추론.
@@ -177,7 +183,10 @@ app = FastAPI(title='MAPDAL SEOUL API v2', lifespan=lifespan)
 @app.middleware('http')
 async def account_security_headers(req: Request, call_next):
     # 브라우저 교차 사이트 상태변경 요청을 차단한다. PG/OAuth 공급자 콜백은 예외다.
-    if req.method in ('POST','PUT','PATCH','DELETE') and req.url.path not in ('/inicis/return','/auth/apple/callback'):
+    # 이니시스 결제 콜백은 외부(PG 서버·결제창)에서 cross-site 로 들어오므로 CSRF 검사 제외.
+    _PG_CALLBACKS = ('/inicis/return', '/inicis/mobile-return', '/inicis/mobile-noti',
+                     '/auth/apple/callback')
+    if req.method in ('POST','PUT','PATCH','DELETE') and req.url.path not in _PG_CALLBACKS:
         origin=(req.headers.get('origin') or '').rstrip('/')
         fetch_site=(req.headers.get('sec-fetch-site') or '').lower()
         if (origin and origin != SITE_ORIGIN) or fetch_site=='cross-site':
@@ -255,6 +264,57 @@ def _ini_idc_host_ok(idc_name: str, url: str) -> bool:
     except Exception:
         return False
     return bool(idc_name) and host.startswith(idc_name) and host.endswith('inicis.com')
+
+def _is_mobile_ua(req: Request) -> bool:
+    """이니시스는 PC/모바일 모듈이 분리되어 있고, 모바일 기기에서 PC모듈(INIStdPay.js)을
+       호출하면 'Dev. Error — PC로 결제 진행을 부탁드립니다' 얼럿이 뜬다.
+       기기 구분 기준은 운영체제(윈도우 / 안드로이드·iOS)이며 태블릿도 모바일로 처리한다."""
+    ua = (req.headers.get('user-agent') or '').lower()
+    if not ua:
+        return False
+    # iPadOS 13+ 는 데스크톱 사파리로 위장하므로 터치 힌트를 함께 본다.
+    if 'ipad' in ua or 'iphone' in ua or 'ipod' in ua:
+        return True
+    if 'android' in ua:
+        return True
+    for k in ('mobile', 'windows phone', 'iemobile', 'opera mini', 'silk'):
+        if k in ua:
+            return True
+    return False
+
+def _ini_mobile_req_url_ok(url: str) -> bool:
+    """STEP2에서 받은 P_REQ_URL 이 이니시스 도메인인지 검증(보안필수).
+       임의 URL로 승인요청이 나가면 인증정보가 외부로 유출된다."""
+    try:
+        p = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    return p.scheme == 'https' and (p.hostname or '').endswith('inicis.com')
+
+def _ini_mobile_params(order_id: str, amount: int, order_name: str,
+                       buyer: dict, origin: str) -> dict:
+    """모바일 결제요청 파라미터 (https://mobile.inicis.com/smart/payment/ 로 POST).
+       PC와 달리 P_ 접두 필드를 쓰고 서명 대신 P_CHKFAKE(Hash) 로 위변조를 검증한다."""
+    p = {
+        'P_INI_PAYMENT': 'CARD',            # 지불수단: CARD/BANK/VBANK/HPP
+        'P_MID'   : INICIS_MID,
+        'P_OID'   : order_id,
+        'P_AMT'   : str(amount),
+        'P_GOODS' : order_name,
+        'P_UNAME' : (buyer.get('name') or '맵달 고객')[:30],
+        'P_MOBILE': (buyer.get('phone') or ''),
+        'P_EMAIL' : (buyer.get('email') or ''),
+        'P_NEXT_URL': origin + '/inicis/mobile-return',   # 인증/승인 결과 수신(https 필수)
+        'P_NOTI_URL': origin + '/inicis/mobile-noti',     # 백단 결과 통보(1trs·가상계좌)
+        'P_CHARSET' : 'utf8',
+        'P_NOTI'    : order_id,             # 그대로 되돌아오는 상점 전달값
+        'P_HPP_METHOD': '2',                # 휴대폰결제 상품유형 — 컨텐츠=1, 실물=2 (맵달=실물)
+    }
+    # 금액 위변조 방지 해시 (Hash Key 미설정 시 생략 — 결제는 정상 진행)
+    if INICIS_MOBILE_HASHKEY:
+        p['P_CHKFAKE'] = _ini_hash(
+            f"{INICIS_MID}{order_id}{amount}{INICIS_MOBILE_HASHKEY}")
+    return p
 
 @app.get('/api/config')
 def config():
@@ -392,8 +452,16 @@ async def create_order(req: Request):
         'acceptmethod': 'centerCd(Y):below1000:HPP(2)',
         'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/inicis/close',
     }
+    # ── 모바일 결제 파라미터 (PC와 별개 모듈) ──
+    #   이니시스는 PC/모바일 모듈이 분리되어 있어 모바일에서 INIStdPay.js 를 호출하면
+    #   'Dev. Error' 로 결제창이 뜨지 않는다. 두 벌을 모두 내려주고 클라이언트가
+    #   기기에 맞는 쪽을 선택한다(서버 UA 판별 결과도 함께 전달).
+    inicis_mobile = _ini_mobile_params(order_id, amount, order_name, buyer, origin)
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
-            'sub': sub, 'shipFee': ship_fee, 'inicis': inicis}
+            'sub': sub, 'shipFee': ship_fee, 'inicis': inicis,
+            'inicisMobile': inicis_mobile,
+            'mobilePayUrl': 'https://mobile.inicis.com/smart/payment/',
+            'isMobile': _is_mobile_ua(req)}
 
 @app.post('/inicis/return')
 async def inicis_return(req: Request):
@@ -464,6 +532,120 @@ async def inicis_return(req: Request):
                "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
     _award_purchase_points(oid)
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+@app.api_route('/inicis/mobile-return', methods=['GET', 'POST'])
+async def inicis_mobile_return(req: Request):
+    """모바일 STEP2 인증결과 수신 → P_REQ_URL 로 승인요청 → 성공 시 PAID.
+
+    이니시스 모바일 모듈은 카드사·인증사 상황에 따라 POST/GET 을 선택적으로 사용하므로
+    두 메서드를 모두 수용해야 한다(매뉴얼 명시). 인증결과로 받은 P_REQ_URL 에
+    P_MID·P_TID 를 POST 하면 승인이 이루어진다.
+    """
+    if req.method == 'POST':
+        form = dict(await req.form())
+    else:
+        form = dict(req.query_params)
+    # 일부 구간에서 두 방식이 섞여 올 수 있어 쿼리도 함께 병합한다.
+    for k, v in req.query_params.items():
+        form.setdefault(k, v)
+
+    status  = str(form.get('P_STATUS', ''))
+    oid     = form.get('P_OID', '') or form.get('P_NOTI', '')
+    req_url = form.get('P_REQ_URL', '')
+    tid     = form.get('P_TID', '')
+    rmesg   = form.get('P_RMESG1', '') or form.get('P_RMESG2', '')
+
+    def _fail(msg):
+        m = urllib.parse.quote(str(msg)[:80])
+        return RedirectResponse(f'/checkout?fail=1&msg={m}', status_code=303)
+
+    if status != '00':
+        return _fail(rmesg or '인증 실패')
+    if not (oid and tid and req_url):
+        return _fail('인증 응답 파라미터 누락')
+    if not _ini_mobile_req_url_ok(req_url):
+        return _fail('승인 URL 검증 실패')
+
+    with db() as c:
+        order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not order:
+        return _fail('주문을 찾을 수 없습니다')
+    if order['status'] == 'PAID':                    # 멱등: 이미 승인
+        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+    # ── 승인요청 (P_REQ_URL 에 P_MID + P_TID) ──
+    payload = urllib.parse.urlencode({
+        'P_MID': INICIS_MID, 'P_TID': tid,
+    }).encode('utf-8')
+    reqx = urllib.request.Request(req_url, data=payload,
+        headers={'Content-Type': 'application/x-www-form-urlencoded'})
+    try:
+        with urllib.request.urlopen(reqx, timeout=25) as r:
+            body = r.read().decode('utf-8', 'replace')
+    except Exception:
+        with db() as c:
+            c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        return _fail('승인 통신 오류')
+
+    # 승인 응답은 key=value&... 형태의 평문(NVP)으로 온다.
+    res = dict(urllib.parse.parse_qsl(body.strip(), keep_blank_values=True))
+    if str(res.get('P_STATUS', '')) != '00':
+        with db() as c:
+            c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        return _fail(res.get('P_RMESG1', '') or '승인 실패')
+
+    # 금액 위변조 검증: 승인금액 == 주문금액
+    try:
+        paid = int(str(res.get('P_AMT', '0')).replace(',', '') or 0)
+    except ValueError:
+        paid = 0
+    if paid != int(order['amount']):
+        with db() as c:
+            c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        return _fail('결제 금액 불일치')
+
+    pay_tid = res.get('P_TID', '') or tid
+    method  = res.get('P_TYPE', '')
+    with db() as c:                                  # 중복 승인 레이스 방지 가드
+        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
+               "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', oid))
+    _award_purchase_points(oid)
+    return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+@app.api_route('/inicis/mobile-noti', methods=['GET', 'POST'])
+async def inicis_mobile_noti(req: Request):
+    """모바일 백단 결과통보(P_NOTI_URL). 1trs 방식·가상계좌 입금통보가 여기로 온다.
+       화면 이동 없이 서버 간 통신이므로 평문 'OK' 를 반환해야 한다."""
+    if req.method == 'POST':
+        form = dict(await req.form())
+    else:
+        form = dict(req.query_params)
+    status = str(form.get('P_STATUS', ''))
+    oid    = form.get('P_OID', '') or form.get('P_NOTI', '')
+    tid    = form.get('P_TID', '')
+    if status == '00' and oid:
+        try:
+            with db() as c:
+                order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+                if order and order['status'] != 'PAID':
+                    try:
+                        paid = int(str(form.get('P_AMT', '0')).replace(',', '') or 0)
+                    except ValueError:
+                        paid = 0
+                    if paid == int(order['amount']):
+                        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=? "
+                               "WHERE order_id=? AND status<>'PAID'",
+                               (tid, form.get('P_TYPE', ''), oid))
+                        _paid = True
+                    else:
+                        _paid = False
+                else:
+                    _paid = False
+            if _paid:
+                _award_purchase_points(oid)
+        except Exception:
+            pass
+    return PlainTextResponse('OK')
 
 def _award_purchase_points(oid: str):
     """결제 완료 주문에 구매 적립 1% 지급 (드롭 상품·배송비 제외).

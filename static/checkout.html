@@ -437,7 +437,9 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <div class="sum-row"><span>상품 금액</span><span id="ckSub">₩0</span></div>
       <div class="sum-row"><span>배송비</span><span id="ckShip" class="free">무료</span></div>
       <div class="sum-row" id="ddpRow" style="display:none"><span>관세·세금 (DDP)</span><span>₩12,400</span></div>
+      <div id="ckShipNote" style="font-size:11px;color:var(--steel);line-height:1.6;padding:2px 0 8px"></div>
       <div class="sum-row total"><span class="tl">최종 결제 금액</span><span class="tv" id="grand">₩49,200</span></div>
+      <div class="sum-row" id="ckPtRow" style="display:none;font-size:12px;color:var(--steel)"><span>적립 예정</span><span id="ckPt">0P</span></div>
       <button class="btn-full" id="payBtn" style="background:var(--red);color:#fff;margin-top:16px">₩<span id="btnAmt">0</span> 결제하기</button>
       <p style="font-size:11px;color:var(--steel);margin-top:14px;line-height:1.6" id="payNote">토스페이먼츠 안전결제 · 카드/간편결제 지원<br><span style="color:var(--red)">현재 테스트 모드 — 실제 과금되지 않습니다 (라이브 키 전환 시 실결제)</span></p>
     </aside>
@@ -472,16 +474,25 @@ const CK='mapdal_cart';
 function load(){try{return JSON.parse(localStorage.getItem(CK)||'[]')}catch(e){return[]}}
 const fmt=n=>'₩'+n.toLocaleString('ko-KR');
 const items=load();
-let CFG={freeShipOver:30000,shipFee:3000,clientKey:''};
+let CFG={freeShipOver:30000,shipFee:3000,clientKey:'',dropPrefix:'mpd::',dropShipFee:3000,pointRateBp:100};
 let intl=false;
 function shipMethod(){const r=document.querySelector('input[name="ship"]:checked');return r?r.value:'standard';}
+// NEW/DROPS(mpd::) 상품이 담겨 있으면 금액과 무관하게 배송비 3,000원 정액.
+function hasDrop(){const p=CFG.dropPrefix||'mpd::';return items.some(i=>String(i.id||'').indexOf(p)===0);}
 function calc(){
   const sub=items.reduce((a,i)=>a+i.p*i.q,0);
-  const ship=(shipMethod()==='pickup'||sub>=CFG.freeShipOver||sub===0)?0:CFG.shipFee;
-  return {sub,ship,total:sub+ship};
+  const drop=hasDrop();
+  let ship;
+  if(shipMethod()==='pickup'||sub===0)ship=0;
+  else if(drop)ship=CFG.dropShipFee||3000;
+  else ship=sub>=CFG.freeShipOver?0:CFG.shipFee;
+  // 적립: 드롭 라인은 적립 제외. 일반 상품 결제금액의 1%(원 단위 절사).
+  const base=items.reduce((a,i)=>a+(String(i.id||'').indexOf(CFG.dropPrefix||'mpd::')===0?0:i.p*i.q),0);
+  const pts=Math.floor(base*(CFG.pointRateBp||100)/10000);
+  return {sub,ship,total:sub+ship,drop,pts};
 }
 function renderSum(){
-  const {sub,ship,total}=calc();
+  const {sub,ship,total,drop,pts}=calc();
   document.getElementById('ckItems').innerHTML=items.length
     ? items.map(i=>`${i.n.replace(/</g,'&lt;').slice(0,34)}${i.n.length>34?'…':''} × ${i.q}`).join('<br>')
     : '장바구니가 비어 있습니다 — <a href="/shop" style="text-decoration:underline">쇼핑하러 가기</a>';
@@ -489,6 +500,22 @@ function renderSum(){
   document.getElementById('ckShip').textContent=ship?fmt(ship):'무료';
   document.getElementById('ckShip').className=ship?'':'free';
   document.getElementById('grand').textContent=fmt(total);
+  // 배송비 안내 — 드롭 정액 / 일반 무료배송 기준 + 권역별 추가운임 고지
+  var _sn=document.getElementById('ckShipNote');
+  if(_sn){
+    var _base=drop
+      ? 'NEW/DROPS 상품은 금액과 관계없이 배송비 3,000원이 부과되며 무료배송이 적용되지 않습니다.'
+      : (sub>0&&sub<CFG.freeShipOver
+          ? '30,000원 이상 구매 시 배송비가 무료입니다 (현재 '+fmt(CFG.freeShipOver-sub)+' 남음).'
+          : '30,000원 이상 구매로 기본 배송비가 무료 적용되었습니다.');
+    _sn.innerHTML=(sub>0?_base+'<br>':'')+'제주·도서산간 등 권역별 추가 배송비가 별도 부과될 수 있습니다.';
+  }
+  // 적립 예정 — 드롭 상품은 적립 대상에서 제외
+  var _pr=document.getElementById('ckPtRow'),_pe=document.getElementById('ckPt');
+  if(_pr&&_pe){
+    if(pts>0){_pr.style.display='';_pe.textContent=pts.toLocaleString('ko-KR')+'P'+(drop?' (드롭 상품 제외)':'');}
+    else _pr.style.display='none';
+  }
   document.getElementById('btnAmt').textContent=total.toLocaleString('ko-KR');
   const btn=document.getElementById('payBtn');
   btn.disabled=!items.length||intl;

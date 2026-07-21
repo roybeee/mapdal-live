@@ -384,6 +384,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <div class="sum-row"><span>상품 금액</span><span id="sub">₩49,200</span></div>
       <div class="sum-row"><span>배송비</span><span id="ship" class="free">무료</span></div>
       <div class="sum-row total"><span class="tl">결제 예정 금액</span><span class="tv" id="tot">₩49,200</span></div>
+      <div id="cartShipNote" style="font-size:11px;color:var(--steel);line-height:1.6;padding:8px 0 0"></div>
       <a class="btn-full" style="background:var(--red);color:#fff;margin-top:16px;text-decoration:none;display:block;text-align:center" href="/checkout" id="orderBtn">주문하기</a>
       <a class="btn-full" style="background:#fff;color:var(--ink);border:1.5px solid var(--ink);margin-top:8px;text-decoration:none;display:block;text-align:center" href="/kfood">계속 쇼핑하기</a>
       <p style="font-size:11px;color:var(--steel);margin-top:14px;line-height:1.6">해외 배송 시 결제 단계에서 관세·세금이 선지불(DDP)로 자동 합산됩니다.</p>
@@ -434,11 +435,18 @@ function render(){
       <button class="rm" aria-label="삭제">✕</button></div>`).join('');
   }
   const sub=items.reduce((a,i)=>a+i.p*i.q,0);
-  const ship=sub>=30000||sub===0?0:3000;
+  // NEW/DROPS(mpd::) 상품이 담기면 금액과 무관하게 배송비 3,000원 정액(무료배송 미적용).
+  const _drop=items.some(i=>String(i.id||'').indexOf('mpd::')===0);
+  const ship=sub===0?0:(_drop?3000:(sub>=30000?0:3000));
   document.getElementById('sub').textContent=fmt(sub);
   document.getElementById('ship').textContent=ship?fmt(ship):'무료';
   document.getElementById('ship').className=ship?'':'free';
   document.getElementById('tot').textContent=fmt(sub+ship);
+  var _cn=document.getElementById('cartShipNote');
+  if(_cn)_cn.innerHTML=(sub>0?(_drop
+    ? 'NEW/DROPS 상품은 금액과 관계없이 배송비 3,000원이며 무료배송·적립이 적용되지 않습니다.<br>'
+    : '30,000원 이상 구매 시 배송비 무료 · 일반 상품 구매 시 1% 적립<br>'):'')
+    +'제주·도서산간 등 권역별 추가 배송비가 별도 부과될 수 있습니다.';
   const ob=document.getElementById('orderBtn');
   ob.style.opacity=items.length?'1':'.45';
   ob.style.pointerEvents=items.length?'auto':'none';

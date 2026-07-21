@@ -142,7 +142,8 @@ def seed():
             if stmt.strip(): c.exec(stmt)
         # 기존 운영 DB에도 회원 주문 직접 연결 컬럼을 멱등 추가한다.
         # 인덱스는 반드시 컬럼 추가 후에 생성해야 구형 DB에서도 기동한다.
-        for col in ('customer_id', 'member_id', 'contact_phone_norm'):
+        for col in ('customer_id', 'member_id', 'contact_phone_norm',
+                    'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at'):
             try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
             except Exception: pass
         try: c.exec('CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)')
@@ -195,7 +196,7 @@ async def account_security_headers(req: Request, call_next):
     # 브라우저 교차 사이트 상태변경 요청을 차단한다. PG/OAuth 공급자 콜백은 예외다.
     # 이니시스 결제 콜백은 외부(PG 서버·결제창)에서 cross-site 로 들어오므로 CSRF 검사 제외.
     _PG_CALLBACKS = ('/inicis/return', '/inicis/mobile-return', '/inicis/mobile-noti',
-                     '/auth/apple/callback')
+                     '/inicis/vbank-noti', '/auth/apple/callback')
     if req.method in ('POST','PUT','PATCH','DELETE') and req.url.path not in _PG_CALLBACKS:
         origin=(req.headers.get('origin') or '').rstrip('/')
         fetch_site=(req.headers.get('sec-fetch-site') or '').lower()
@@ -536,9 +537,26 @@ async def inicis_return(req: Request):
         return _fail('결제 금액 불일치')
 
     tid = res.get('tid', ''); method = res.get('payMethod', '')
+
+    # ── 가상계좌: 승인 = '계좌 발급'일 뿐 입금 완료가 아니다 ──
+    #   이니시스는 채번 시점에 resultCode 0000 을 준다. 이를 PAID 로 처리하면
+    #   입금하지 않은 주문이 결제완료로 잡혀 미입금 발송 사고가 난다.
+    #   실제 입금은 별도 노티(/inicis/vbank-noti)로 통보되며 그때 PAID 로 바꾼다.
+    if str(method).strip().lower() in ('vbank', 'vacct'):
+        vnum = res.get('VACT_Num') or res.get('vactNum') or ''
+        vbank = res.get('vactBankName') or res.get('VACT_BankName') or ''
+        vname = res.get('VACT_Name') or res.get('vactName') or ''
+        vdate = (str(res.get('VACT_Date') or '') + str(res.get('VACT_Time') or '')).strip()
+        with db() as c:
+            c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
+                   "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
+                   "WHERE order_id=? AND status<>'PAID'",
+                   (tid, 'VBank', vnum, vbank, vname, vdate, oid))
+        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
     with db() as c:                                  # 중복 승인 레이스 방지 가드
-        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
-               "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
+        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
+               "WHERE order_id=? AND status<>'PAID'", (tid, method, '', kst_iso(), oid))
     _award_purchase_points(oid)
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
@@ -615,11 +633,85 @@ async def inicis_mobile_return(req: Request):
 
     pay_tid = res.get('P_TID', '') or tid
     method  = res.get('P_TYPE', '')
+
+    # 가상계좌는 채번(계좌발급)일 뿐 입금 완료가 아니다 → 입금대기로 둔다.
+    # 실제 입금은 P_NOTI_URL(/inicis/mobile-noti) 로 통보되며 그때 PAID 로 바꾼다.
+    if str(method).strip().lower() in ('vbank', 'vacct'):
+        vnum = res.get('P_VACT_NUM') or res.get('VACT_Num') or ''
+        vbank = res.get('P_VACT_BANK_NAME') or res.get('P_FN_NM') or ''
+        vname = res.get('P_VACT_NAME') or ''
+        vdate = (str(res.get('P_VACT_DATE') or '') + str(res.get('P_VACT_TIME') or '')).strip()
+        with db() as c:
+            c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
+                   "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
+                   "WHERE order_id=? AND status<>'PAID'",
+                   (pay_tid, 'VBank', vnum, vbank, vname, vdate, oid))
+        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
     with db() as c:                                  # 중복 승인 레이스 방지 가드
-        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
-               "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', oid))
+        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
+               "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', kst_iso(), oid))
     _award_purchase_points(oid)
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
+@app.api_route('/inicis/vbank-noti', methods=['GET', 'POST'])
+async def inicis_vbank_noti(req: Request):
+    """PC 가상계좌 입금통보 수신.
+
+    이니시스는 고객이 채번된 계좌에 실제 입금했을 때만 이 URL 로 통보를 보낸다.
+    (채번 시점의 승인 응답은 '계좌 발급'일 뿐이므로 PAID 로 보면 안 된다.)
+
+    · 상점관리자 > 거래내역 > 가상계좌 > 입금통보방식선택 에서
+      'URL 수신사용' 으로 설정하고 이 주소를 등록해야 통보가 온다.
+    · 처리 성공 시 반드시 평문 "OK" 만 응답해야 한다.
+      다른 응답이면 이니시스가 최대 10회 재전송한다.
+    · 통보는 euc-kr 로 올 수 있어 인코딩을 관대하게 처리한다.
+    """
+    try:
+        if req.method == 'POST':
+            raw = await req.body()
+            txt = None
+            for enc in ('utf-8', 'euc-kr', 'cp949'):
+                try:
+                    txt = raw.decode(enc); break
+                except Exception:
+                    continue
+            form = dict(urllib.parse.parse_qsl(txt or '', keep_blank_values=True))
+        else:
+            form = dict(req.query_params)
+        for k, v in req.query_params.items():
+            form.setdefault(k, v)
+
+        # 필드명은 연동 API 에 따라 편차가 있어 후보를 모두 본다.
+        oid = (form.get('P_OID') or form.get('oid') or form.get('MOID')
+               or form.get('P_NOTI') or '')
+        tid = (form.get('P_TID') or form.get('tid') or '')
+        st  = str(form.get('P_STATUS') or form.get('resultCode') or '').strip()
+        amt_raw = (form.get('P_AMT') or form.get('price') or form.get('TotPrice') or '0')
+        try:
+            amt = int(str(amt_raw).replace(',', '').strip() or 0)
+        except ValueError:
+            amt = 0
+
+        # 입금 성공 코드만 처리. (00/0000 이외는 입금취소·오류 통보)
+        if oid and st in ('00', '0000'):
+            with db() as c:
+                order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+                do_award = False
+                if order and order['status'] != 'PAID':
+                    if amt == int(order['amount']):        # 금액 위변조 검증
+                        c.exec("UPDATE orders SET status='PAID', payment_key=?, "
+                               "pay_method='VBank', paid_at=? "
+                               "WHERE order_id=? AND status<>'PAID'",
+                               (tid or (order.get('payment_key') or ''), kst_iso(), oid))
+                        do_award = True
+            if do_award:
+                _award_purchase_points(oid)                # 멱등: 내부에서 중복 방지
+    except Exception:
+        # 예외가 나도 OK 를 돌려주지 않으면 10회 재전송된다.
+        # 통보 자체는 수신했으므로 OK 로 응답하고 로그로 남긴다.
+        pass
+    return PlainTextResponse('OK')
 
 @app.api_route('/inicis/mobile-noti', methods=['GET', 'POST'])
 async def inicis_mobile_noti(req: Request):
@@ -642,9 +734,9 @@ async def inicis_mobile_noti(req: Request):
                     except ValueError:
                         paid = 0
                     if paid == int(order['amount']):
-                        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=? "
+                        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, paid_at=? "
                                "WHERE order_id=? AND status<>'PAID'",
-                               (tid, form.get('P_TYPE', ''), oid))
+                               (tid, form.get('P_TYPE', ''), kst_iso(), oid))
                         _paid = True
                     else:
                         _paid = False
@@ -719,9 +811,15 @@ def _ini_net_cancel(net_cancel_url: str, auth_token: str):
 @app.get('/api/orders/{order_id}')
 def get_order(order_id: str):
     with db() as c:
-        row = c.one('SELECT order_id,created,status,amount,items,ship_method FROM orders WHERE order_id=?', (order_id,))
+        row = c.one('SELECT order_id,created,status,amount,items,ship_method,'
+                    'pay_method,vbank_num,vbank_name,vbank_holder,vbank_due '
+                    'FROM orders WHERE order_id=?', (order_id,))
     if not row: raise HTTPException(404, 'not found')
-    row['items'] = json.loads(row['items']); return row
+    row['items'] = json.loads(row['items'])
+    # 입금대기 건은 계좌 안내를 함께 내려준다(주문완료 화면·마이페이지에서 표시).
+    row['vbank'] = {'num': row.pop('vbank_num', '') or '', 'bank': row.pop('vbank_name', '') or '',
+                    'holder': row.pop('vbank_holder', '') or '', 'due': row.pop('vbank_due', '') or ''}
+    return row
 
 @app.get('/admin', response_class=HTMLResponse)
 def admin(token: str = Query('')):

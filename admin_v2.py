@@ -766,7 +766,39 @@ def api_order_detail(oid: str, request: Request):
             'items': items, 'ship_method': r.get('ship_method', ''), 'tracking': r.get('tracking') or '',
             'admin_memo': r.get('admin_memo') or '', 'receipt': r.get('receipt_url') or '',
             'method': r.get('method') or '',
+            'pay_method': r.get('pay_method') or '',
+            'paid_at': (r.get('paid_at') or '')[:19].replace('T', ' '),
+            'vbank': {'num': r.get('vbank_num') or '', 'bank': r.get('vbank_name') or '',
+                      'holder': r.get('vbank_holder') or '', 'due': r.get('vbank_due') or ''},
+            # 입금대기 건은 관리자가 통장 확인 후 수동으로 입금완료 처리할 수 있다.
+            'can_mark_paid': (r.get('status') == 'WAITING_DEPOSIT'),
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID')}
+
+@admin_router.post('/admin/api/orders/{oid}/mark-paid')
+def api_order_mark_paid(oid: str, request: Request):
+    """입금대기(가상계좌·무통장) 건을 관리자가 통장 확인 후 수동으로 결제완료 처리.
+
+    이니시스 입금통보가 유실됐거나, 계좌로 직접 입금받은 경우에 쓴다.
+    PAID 인 건은 다시 처리하지 않는다(중복 적립 방지).
+    """
+    a = get_actor(request); need(a, 2, '입금 확인')       # MANAGER 이상
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not r:
+        raise HTTPException(404, '주문을 찾을 수 없습니다')
+    if r.get('status') == 'PAID':
+        raise HTTPException(400, '이미 결제완료 상태입니다')
+    if r.get('status') not in ('WAITING_DEPOSIT', 'PENDING'):
+        raise HTTPException(400, '입금대기 상태의 주문만 처리할 수 있습니다 (현재: %s)'
+                                 % (r.get('status') or ''))
+    run("UPDATE orders SET status='PAID', paid_at=? WHERE order_id=? AND status<>'PAID'",
+        (now_iso(), oid))
+    try:                                                  # 적립은 app 쪽 멱등 함수 재사용
+        import app as _app
+        _app._award_purchase_points(oid)
+    except Exception:
+        pass
+    audit(a, '입금확인(수동)', oid, '%s → PAID' % (r.get('status') or ''))
+    return {'ok': True, 'order_id': oid, 'status': 'PAID'}
 
 @admin_router.get('/admin/api/orders/{oid}/receipt', response_class=HTMLResponse)
 def api_admin_order_receipt(oid: str, request: Request):
@@ -1858,7 +1890,7 @@ table{width:100%;border-collapse:collapse;background:#fff;font-size:12.5px}
 th{background:var(--black);color:#fff;font-size:11px;padding:8px 9px;text-align:left;white-space:nowrap}
 td{border-bottom:1px solid var(--line);padding:7px 9px;vertical-align:middle}tr:hover td{background:#faf9f5}
 .st{font-weight:700;font-family:'IBM Plex Mono';font-size:11px}
-.st.PAID{color:var(--ok)}.st.PENDING{color:var(--amber)}.st.FAILED{color:var(--bad)}.st.CANCELLED{color:#999}
+.st.PAID{color:var(--ok)}.st.PENDING{color:var(--amber)}.st.FAILED{color:var(--bad)}.st.CANCELLED{color:#999}.st.WAITING_DEPOSIT{color:#1565c0;font-weight:800}
 .st.SENT{color:var(--ok)}.st.DRY{color:#1a5fb4}.st.FAILED2{color:var(--bad)}
 .ff{font-size:11px;font-weight:700;padding:2px 7px;background:#eee}
 .ff.NEW{background:#fff2f1;color:var(--red)}.ff.PREPARING{background:#fff6e0;color:#9a6b00}
@@ -1914,7 +1946,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 <section id="t-dash"><div class="loading">불러오는 중…</div></section>
 <section id="t-orders" style="display:none">
   <div class="toolbar"><input id="oq" placeholder="주문번호 · 이름 · 전화" style="width:200px">
-  <select id="ost"><option value="">결제상태 전체</option><option>PAID</option><option>PENDING</option><option>FAILED</option><option>CANCELLED</option></select>
+  <select id="ost"><option value="">결제상태 전체</option><option>PAID</option><option value="WAITING_DEPOSIT">WAITING_DEPOSIT (입금대기)</option><option>PENDING</option><option>FAILED</option><option>CANCELLED</option></select>
   <select id="off"><option value="">처리상태 전체</option><option value="NEW">신규</option><option value="PREPARING">상품준비중</option><option value="SHIPPED">발송완료</option><option value="DONE">배송완료</option><option value="CANCELLED">취소</option></select>
   <input id="ofrom" type="date"><input id="oto" type="date">
   <button class="btn" onclick="loadOrders(1)">검색</button>
@@ -2105,7 +2137,12 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
  <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}</span>
  ${(o.buyer.selections&&o.buyer.selections.length)?`<b>응모 선택</b><span>${o.buyer.selections.map(s=>esc((s.event?'['+s.event+'] ':'')+(s.q||'')+' → '+(s.a||'')).replace(/\n/g,'')).join('<br>')}</span>`:''}
+ ${(o.vbank&&o.vbank.num)?`<b>입금 계좌</b><span class="mono">${esc(o.vbank.bank)} ${esc(o.vbank.num)}${o.vbank.holder?' · 예금주 '+esc(o.vbank.holder):''}${o.vbank.due?'<br>입금기한 '+esc(o.vbank.due):''}</span>`:''}
+ ${o.paid_at?`<b>입금완료</b><span class="mono">${esc(o.paid_at)}</span>`:''}
  ${o.receipt?`<b>영수증</b><span><a href="${esc(o.receipt)}" target="_blank">토스 영수증</a></span>`:''}</div>
+ ${o.status==='WAITING_DEPOSIT'?`<div class="hint" style="background:#e8f0fe;border-left:3px solid #1565c0;padding:9px 11px;margin-bottom:10px;color:#0d47a1">
+   <b>입금 대기 중</b> — 아직 입금되지 않았습니다. 통장 입금 확인 전에는 발송하지 마세요.
+   이니시스 입금통보가 오면 자동으로 결제완료로 바뀝니다.</div>`:''}
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
  ${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
  ${can(1)?`<div class="kv"><b>처리상태</b><span><select id="mff">${Object.entries(FF).map(([k,v])=>`<option value="${k}" ${o.fulfill===k?'selected':''}>${v}</option>`).join('')}</select></span>
@@ -2114,6 +2151,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>알림 발송</b><span style="display:flex;gap:6px"><select id="mtpl" style="flex:1">${TPLCACHE.map(t=>`<option value="${t.id}">${esc(t.name)} (${t.kind==='alimtalk'?'알림톡':'SMS'})</option>`).join('')}</select>
  <button class="btn sm" onclick="sendNotify('${esc(o.order_id)}')">발송</button></span></div>`:''}
  <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+ ${o.can_mark_paid&&can(2)?`<button class="btn" style="background:#1565c0;color:#fff" onclick="markPaid('${esc(o.order_id)}')">입금 확인 → 결제완료</button>`:''}
  ${can(2)&&o.status!=='CANCELLED'?`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund})">${o.can_refund?'결제취소(환불)':'주문취소 표시'}</button>`:''}
  ${can(1)?`<button class="btn" onclick="saveFulfill('${esc(o.order_id)}')">저장</button>`:''}
  <button class="btn ghost" onclick="closeM()">닫기</button></div>
@@ -2130,6 +2168,10 @@ async function saveFulfill(oid){try{const f=$('#mff').value;
 async function sendNotify(oid,auto){try{const tid=auto?(TPLCACHE.find(t=>t.name.includes('발송'))||TPLCACHE[0]).id:$('#mtpl').value;
  const r=await api('/admin/api/notify/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:oid,template:tid})});
  toast(r.dry?'기록 모드: 발송사 미설정 (로그 저장됨)':'발송 완료');}catch(e){alert(e.message)}}
+async function markPaid(oid){
+ if(!confirm('통장에 입금이 확인되었습니까?\n\n결제완료로 변경하면 구매 적립이 지급되고 발송 가능 상태가 됩니다.'))return;
+ try{await post('/admin/api/orders/'+encodeURIComponent(oid)+'/mark-paid',{});
+  toast('입금 확인 처리되었습니다');closeM();loadOrders(opage||1)}catch(e){toast(e.message)}}
 async function cancelOrder(oid,refund){if(!confirm(refund?'이니시스 결제취소(환불)를 실행합니다. 계속할까요?':'이 주문을 취소로 표시할까요?'))return;
  const reason=prompt('취소 사유','고객 요청')||'고객 요청';
  try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});

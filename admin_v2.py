@@ -10637,14 +10637,21 @@ DROPINPUT_SNIPPET = r"""<style id="mpTbodyCss">
 if(!/^\/new-drops(?:\.html)?$/.test(location.pathname))return;
 var CFG={
  text  :{ph:'이름을 입력해 주세요',              im:'text',  max:40 },
- tel   :{ph:'010-0000-0000',                     im:'tel',   max:20 },
- birth :{ph:'YYYY.MM.DD',                        im:'numeric',max:10},
+ tel   :{ph:'010-0000-0000 (해외 +8170...)',     im:'tel',   max:20 },
+ birth :{ph:'YYYY.MM.DD',                        im:'numeric',max:12},
  email :{ph:'E-mail Address',                    im:'email', max:60 },
  nation:{ph:'대한민국 or KOREA',                 im:'text',  max:30 }};
 var V={
  text  :function(v){return v.length>=1?'':'값을 입력해 주세요'},
  nation:function(v){return v.length>=1?'':'국적을 입력해 주세요'},
- tel   :function(v){var d=v.replace(/\D/g,'');
+ tel   :function(v){var s=String(v).replace(/[\s()\-.]/g,'');
+         var intl=s.charAt(0)==='+';
+         var d=s.replace(/\D/g,'');
+         if(!d)return '연락처를 입력해 주세요';
+         if(/[^0-9+]/.test(s))return '숫자와 +, -, 공백만 입력해 주세요';
+         /* 해외(+ 또는 12자리 이상)는 E.164 기준 7~15자리 허용 — 국가마다 자릿수가 다르다.
+            국내(0으로 시작)는 기존대로 9~11자리. */
+         if(intl||d.length>11)return (d.length>=7&&d.length<=15)?'':'올바른 연락처를 입력해 주세요';
          return (d.length>=9&&d.length<=11)?'':'올바른 연락처를 입력해 주세요'},
  email :function(v){return /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(v)?'':'올바른 이메일을 입력해 주세요'},
  birth :function(v){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
@@ -10655,12 +10662,20 @@ var V={
          return ''}};
 window.mpDropInputVals={};                       /* idx -> 검증 통과값 */
 function norm(t,v){v=v.trim();
- if(t==='tel'){var d=v.replace(/\D/g,'');
+ if(t==='tel'){var s=v.replace(/[\s()\-.]/g,'');
+  var intl=s.charAt(0)==='+',d=s.replace(/\D/g,'');
+  /* 해외 번호는 국가별 자릿수 규칙이 달라 임의 하이픈이 오히려 원본을 훼손한다.
+     + 로 시작하거나 12자리 이상이면 입력값을 그대로 보존한다. */
+  if(intl)return '+'+d;
+  if(d.length>11)return d;
+  if(d.charAt(0)!=='0')return d;            /* 국가번호 직접입력(예: 8170...) — 변형하지 않는다 */
   if(d.length===11)return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7);
   if(d.length===10)return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
   return d}
- if(t==='birth'){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
-  if(m)return m[1]+'.'+('0'+m[2]).slice(-2)+'.'+('0'+m[3]).slice(-2)}
+ if(t==='birth'){var m=v.match(/^(\d{4})[.\-\/\s]+(\d{1,2})[.\-\/\s]+(\d{1,2})$/);
+  if(m)return m[1]+'.'+('0'+m[2]).slice(-2)+'.'+('0'+m[3]).slice(-2);
+  var d8=v.replace(/\D/g,'');               /* 19891015 처럼 구분자 없이 입력한 경우 */
+  if(d8.length===8)return d8.slice(0,4)+'.'+d8.slice(4,6)+'.'+d8.slice(6)}
  return v}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -10740,12 +10755,21 @@ function bind(){
   function check(show){var v=norm(t,inp.value);
    var msg=(V[t]||V.text)(v);
    if(msg){delete window.mpDropInputVals[i];el.classList.remove('sel');
+    try{if(window.__ndSetOQA)window.__ndSetOQA(i,null)}catch(e){}
     if(show){err.textContent=msg;err.style.display='block';inp.style.borderColor='#E8332A'}
     return false}
    window.mpDropInputVals[i]=v;el.classList.add('sel');
+   /* 정적 unansweredQs()/dropAddCart() 와 동일 소스 공유 — 중복 검증·오알럿 방지 */
+   try{if(window.__ndSetOQA)window.__ndSetOQA(i,v)}catch(e){}
    err.style.display='none';inp.style.borderColor='#d8d5cc';
-   if(v!==inp.value)inp.value=v;
+   /* 화면 값 덮어쓰기는 blur(show=true) 때만 — 타이핑 도중 바꾸면 커서가 튀고
+      maxlength 에 걸려 뒷자리를 못 치게 된다(예: 1989.10.15 → 1989.10.01). */
+   if(show&&v!==inp.value)inp.value=v;
    return true}
+  /* 재렌더링(수량 변경 등)으로 입력창이 새로 그려진 경우 기존 값 복원 */
+  var prev=(window.mpDropInputVals||{})[i];
+  if(prev!=null&&!inp.value){inp.value=prev}
+  if(prev!=null)check(false);
   inp.addEventListener('input',function(){check(false)});
   inp.addEventListener('blur',function(){if(inp.value.trim())check(true)});
   el.__mpCheck=check;});}
@@ -10773,17 +10797,54 @@ function bind(){
 function guard(ev){
  var bad=null;
  document.querySelectorAll('.mp-din').forEach(function(el){
-  if(bad)return;
-  if(el.__mpCheck&&!el.__mpCheck(true))bad=el});
+  var ok=el.__mpCheck?el.__mpCheck(true):true;   /* 전 항목 검사 — 첫 오류에서 멈추지 않는다 */
+  if(!ok&&!bad)bad=el});
+ /* 정적 스크립트가 재평가되어 OQA가 초기화됐을 수 있으므로 검증 통과값을 다시 주입한다.
+    (setter 경유 — 항상 '현재' OQA를 가리킨다) */
+ if(!bad)try{var vv=window.mpDropInputVals||{};
+  Object.keys(vv).forEach(function(k){
+   if(window.__ndSetOQA)window.__ndSetOQA(k,vv[k])});
+  var cv=window.mpDropChoiceVals||{};
+  Object.keys(cv).forEach(function(k){
+   var card=document.getElementById('ndq'+k);
+   if(card&&!card.querySelector('.nd-oq-opt.on'))return;  /* 화면에서 해제됐으면 반영 안 함 */
+   if(window.__ndSetOQA)window.__ndSetOQA(k,cv[k])})}catch(e){}
  /* 선택형(동의) 카드도 미선택이면 차단 — 정적 코드는 .sel 클래스로 선택 상태를 표시한다 */
  if(!bad)[].forEach.call(document.querySelectorAll('.nd-oq'),function(card){
   if(bad||card.classList.contains('mp-din'))return;
   if(!card.querySelector('.nd-oq-opt'))return;
   if(!card.classList.contains('sel')&&!card.querySelector('.nd-oq-opt.on'))bad=card});
  if(bad){ev.preventDefault();ev.stopImmediatePropagation();
+  /* 정적 알럿이 이 시점에 차단되므로 미완료 항목을 여기서 안내한다. */
+  try{var names=[];
+   [].forEach.call(document.querySelectorAll('#ndOpts > .nd-oq'),function(card){
+    var t=card.querySelector('.nd-oq-t');
+    var nm=t?String(t.textContent||'').replace(/필수\s*$/,'').trim():'';
+    if(card.classList.contains('mp-din')){
+     if(!card.classList.contains('sel')&&nm)names.push(nm)}
+    else if(card.querySelector('.nd-oq-opt')&&!card.querySelector('.nd-oq-opt.on')&&nm)names.push(nm)});
+   if(names.length)alert('필수 선택 항목을 완료해 주세요:\n\u00b7 '+names.slice(0,12).join('\n\u00b7 '));
+  }catch(e){}
   try{if(bad.scrollIntoView)bad.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}
   var f=bad.querySelector('.mp-din-i');if(f)f.focus();
   return false}}
+/* 선택형(동의) 버튼 — document 위임으로 OQA 기록을 보강한다.
+   정적 bindOpts()는 #ndOpts 노드에 리스너를 걸지만 renderDetail() 재실행으로
+   노드가 교체되면 리스너가 유실된다. 여기서 항상 기록해 검증 소스를 일치시킨다. */
+document.addEventListener('click',function(ev){
+ var qb=ev.target.closest&&ev.target.closest('button.nd-oq-opt');
+ if(!qb||qb.disabled)return;
+ var qi=parseInt(qb.dataset.qi,10);
+ if(isNaN(qi))return;
+ var card=qb.closest('.nd-oq');
+ if(card){[].forEach.call(card.querySelectorAll('.nd-oq-opt'),function(x){x.classList.remove('on')});
+  qb.classList.add('on');card.classList.add('sel');card.classList.remove('miss')}
+ var j=parseInt(qb.dataset.j,10),val=qb.textContent||'';
+ try{var o=DATA&&DATA.opts&&DATA.opts[qi];          /* 원본 값 우선 — esc() 왜곡 방지 */
+  if(o&&o.items&&o.items[j]&&o.items[j].t!=null)val=o.items[j].t}catch(e){}
+ try{if(window.__ndSetOQA)window.__ndSetOQA(qi,val);}catch(e){}
+ try{window.mpDropChoiceVals=window.mpDropChoiceVals||{};window.mpDropChoiceVals[qi]=val}catch(e){}
+},true);
 document.addEventListener('click',function(ev){
  var b=ev.target.closest&&ev.target.closest('#ndAddCart,#ndBuyNow');
  if(b)guard(ev)},true);

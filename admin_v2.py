@@ -10541,14 +10541,21 @@ DROPINPUT_SNIPPET = r"""<style id="mpTbodyCss">
 if(!/^\/new-drops(?:\.html)?$/.test(location.pathname))return;
 var CFG={
  text  :{ph:'이름을 입력해 주세요',              im:'text',  max:40 },
- tel   :{ph:'010-0000-0000',                     im:'tel',   max:20 },
- birth :{ph:'YYYY.MM.DD',                        im:'numeric',max:10},
+ tel   :{ph:'010-0000-0000 (해외 +8170...)',     im:'tel',   max:20 },
+ birth :{ph:'YYYY.MM.DD',                        im:'numeric',max:12},
  email :{ph:'E-mail Address',                    im:'email', max:60 },
  nation:{ph:'대한민국 or KOREA',                 im:'text',  max:30 }};
 var V={
  text  :function(v){return v.length>=1?'':'값을 입력해 주세요'},
  nation:function(v){return v.length>=1?'':'국적을 입력해 주세요'},
- tel   :function(v){var d=v.replace(/\D/g,'');
+ tel   :function(v){var s=String(v).replace(/[\s()\-.]/g,'');
+         var intl=s.charAt(0)==='+';
+         var d=s.replace(/\D/g,'');
+         if(!d)return '연락처를 입력해 주세요';
+         if(/[^0-9+]/.test(s))return '숫자와 +, -, 공백만 입력해 주세요';
+         /* 해외(+ 또는 12자리 이상)는 E.164 기준 7~15자리 허용 — 국가마다 자릿수가 다르다.
+            국내(0으로 시작)는 기존대로 9~11자리. */
+         if(intl||d.length>11)return (d.length>=7&&d.length<=15)?'':'올바른 연락처를 입력해 주세요';
          return (d.length>=9&&d.length<=11)?'':'올바른 연락처를 입력해 주세요'},
  email :function(v){return /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(v)?'':'올바른 이메일을 입력해 주세요'},
  birth :function(v){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
@@ -10559,12 +10566,20 @@ var V={
          return ''}};
 window.mpDropInputVals={};                       /* idx -> 검증 통과값 */
 function norm(t,v){v=v.trim();
- if(t==='tel'){var d=v.replace(/\D/g,'');
+ if(t==='tel'){var s=v.replace(/[\s()\-.]/g,'');
+  var intl=s.charAt(0)==='+',d=s.replace(/\D/g,'');
+  /* 해외 번호는 국가별 자릿수 규칙이 달라 임의 하이픈이 오히려 원본을 훼손한다.
+     + 로 시작하거나 12자리 이상이면 입력값을 그대로 보존한다. */
+  if(intl)return '+'+d;
+  if(d.length>11)return d;
+  if(d.charAt(0)!=='0')return d;            /* 국가번호 직접입력(예: 8170…) — 변형하지 않는다 */
   if(d.length===11)return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7);
   if(d.length===10)return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
   return d}
- if(t==='birth'){var m=v.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
-  if(m)return m[1]+'.'+('0'+m[2]).slice(-2)+'.'+('0'+m[3]).slice(-2)}
+ if(t==='birth'){var m=v.match(/^(\d{4})[.\-\/\s]+(\d{1,2})[.\-\/\s]+(\d{1,2})$/);
+  if(m)return m[1]+'.'+('0'+m[2]).slice(-2)+'.'+('0'+m[3]).slice(-2);
+  var d8=v.replace(/\D/g,'');               /* 19891015 처럼 구분자 없이 입력한 경우 */
+  if(d8.length===8)return d8.slice(0,4)+'.'+d8.slice(4,6)+'.'+d8.slice(6)}
  return v}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -10651,7 +10666,9 @@ function bind(){
    /* 정적 unansweredQs()/dropAddCart() 와 동일 소스 공유 — 중복 검증·오알럿 방지 */
    try{if(window.__ndSetOQA)window.__ndSetOQA(i,v)}catch(e){}
    err.style.display='none';inp.style.borderColor='#d8d5cc';
-   if(v!==inp.value)inp.value=v;
+   /* 화면 값 덮어쓰기는 blur(show=true) 때만 — 타이핑 도중 바꾸면 커서가 튀고
+      maxlength 에 걸려 뒷자리를 못 치게 된다(예: 1989.10.15 → 1989.10.01). */
+   if(show&&v!==inp.value)inp.value=v;
    return true}
   /* 재렌더링(수량 변경 등)으로 입력창이 새로 그려진 경우 기존 값 복원 */
   var prev=(window.mpDropInputVals||{})[i];

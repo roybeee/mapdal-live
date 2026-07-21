@@ -5306,6 +5306,10 @@ def auth_logout(request: Request):
 
 _ACCOUNT_CSS = '''<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
 <style>:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2;--amber:#FFB000}
+/* 안드로이드 Chrome 폰트 자동확대 차단 */
+html{-webkit-text-size-adjust:100%;-moz-text-size-adjust:100%;text-size-adjust:100%}
+html,body{max-width:100%;overflow-x:clip}
+@media(max-width:560px){input,select,textarea{font-size:16px}}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans KR',sans-serif;background:var(--black);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
 .box{background:var(--paper);width:100%;max-width:420px;padding:36px 32px;border-top:6px solid var(--red)}
 h1{font-family:'Black Han Sans';font-size:24px}h1 span{color:var(--red)}
@@ -5323,6 +5327,10 @@ _MYPAGE_HTML = r'''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
 <style>
 :root{--red:#E8332A;--black:#141414;--paper:#F7F6F2;--amber:#FFB000;--line:#e3e1db}
+/* 안드로이드 Chrome 폰트 자동확대(Font Boosting) 차단 — 레이아웃 붕괴 방지 */
+html{-webkit-text-size-adjust:100%;-moz-text-size-adjust:100%;text-size-adjust:100%}
+html,body{max-width:100%;overflow-x:clip}
+img,video,canvas,svg{max-width:100%;height:auto}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'IBM Plex Sans KR',sans-serif;background:var(--paper);color:var(--black);font-size:14px}
 header{background:var(--black);color:#fff;padding:0 20px;height:54px;display:flex;align-items:center;justify-content:space-between}
@@ -5367,7 +5375,25 @@ label{display:block;font-size:11.5px;font-weight:700;color:#555;margin:12px 0 4p
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--black);color:#fff;padding:10px 20px;display:none;z-index:200;font-weight:700}
 .qa{border-bottom:1px solid var(--line);padding:12px 4px}
 .qa .q{font-weight:700}.qa .a{margin-top:8px;color:#444;background:#faf9f5;padding:10px;white-space:pre-wrap}
-.mob{display:none}@media(max-width:820px){aside{display:flex;flex-wrap:wrap;gap:4px 14px}aside .grp,aside hr{display:none}aside a{padding:6px 8px;background:#fff;border:1px solid var(--line)}}
+.mob{display:none}
+@media(max-width:820px){
+ aside{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+ aside .grp,aside hr{display:none}
+ aside h1{grid-column:1/-1;margin-bottom:2px}
+ aside a{padding:10px 6px;background:#fff;border:1px solid var(--line);
+  text-align:center;font-size:12px;line-height:1.3;white-space:normal;
+  display:flex;align-items:center;justify-content:center;min-width:0}
+}
+@media(max-width:560px){
+ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+ aside{grid-template-columns:repeat(2,minmax(0,1fr))}
+ aside a{font-size:11.5px;padding:10px 5px}
+ main{padding:16px 13px}
+ header{padding:0 13px}
+ input,select,textarea{font-size:16px}   /* iOS 포커스 확대 방지 */
+ .row2{grid-template-columns:1fr}
+ table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
 </style></head><body>
 <header><a class="logo" href="/">MAPDAL<span>SEOUL</span></a>
 <div class="r"><a href="/shop">SHOP</a><a href="/cart">장바구니</a><a href="#" onclick="logout()">로그아웃</a></div></header>
@@ -6221,6 +6247,15 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 })();</script>"""
 
 MOBNAV_SNIPPET = r"""<style id="mpMobNav">
+/* ── 텍스트 자동 확대 차단 ──
+   안드로이드 Chrome 은 텍스트가 많은 블록의 글꼴을 임의로 키운다(Font Boosting).
+   이 때문에 CSS 12px 가 실제로는 20px 이상으로 렌더되어 헤더·버튼·카드가
+   전부 컨테이너를 넘치고 우측이 잘린다. 전 페이지에서 강제로 끈다. */
+html{-webkit-text-size-adjust:100%;-moz-text-size-adjust:100%;text-size-adjust:100%}
+body{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+/* ── 가로 오버플로 방어 (전 폭 공통) ── */
+html,body{max-width:100%}
+img,video,canvas,svg,iframe{max-width:100%;height:auto}
 /* ── 모바일 상시 카테고리 바 ── */
 #mpCatBar{display:none;align-items:stretch;gap:2px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;background:var(--paper,#F7F6F2);border-top:1px solid var(--line,#E3E1DB);padding:0 8px}
 #mpCatBar::-webkit-scrollbar{display:none}
@@ -6229,6 +6264,8 @@ MOBNAV_SNIPPET = r"""<style id="mpMobNav">
 #mpCatBar a.on{color:var(--red,#E8332A);border-bottom-color:var(--red,#E8332A)}
 @media(max-width:1024px){
  html,body{overflow-x:clip}
+ /* 긴 상품명·주소·이메일이 컨테이너를 밀어내지 않도록 */
+ body,p,h1,h2,h3,td,th,li,label,span,div{word-break:break-word;overflow-wrap:anywhere}
  #mpCatBar{display:flex}
  .header-inner{padding:0 12px;height:62px}
  .logo{font-size:23px;white-space:nowrap}
@@ -6245,6 +6282,48 @@ MOBNAV_SNIPPET = r"""<style id="mpMobNav">
  .header-inner{padding:0 10px;height:58px}
  .tab-bar{top:58px!important}
  #mpCatBar a{font-size:12px;letter-spacing:.04em}
+}
+/* ── 체크아웃·장바구니·마이페이지 모바일 대응 ── */
+@media(max-width:640px){
+ /* iOS 는 16px 미만 입력창에 포커스하면 화면을 강제 확대한다 */
+ input,select,textarea{font-size:16px!important}
+ .chk-sec{padding:18px 16px;margin-bottom:12px}
+ .summary{padding:18px 16px}
+ .steps{margin-bottom:20px}
+ .steps div{padding:11px 4px;font-size:11.5px;line-height:1.35}
+ .steps div .sn{display:block;margin:0 0 2px}
+ .sum-row{font-size:12.5px;padding:10px 0;gap:10px}
+ .sum-row span:last-child,.sum-row b{white-space:nowrap}
+ .page-hero{padding:30px 16px}
+ .page-hero h1{font-size:26px}
+ section{padding:28px 16px}
+ .cart-layout{gap:18px}
+ /* 마이페이지 메뉴 버튼 — 고정폭 대신 균등 2열로 접는다 */
+ .acc-menu,.mypage-menu,.acc-tabs{display:grid!important;
+   grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}
+ .acc-menu a,.acc-menu button,.mypage-menu a,.mypage-menu button,.acc-tabs a,.acc-tabs button{
+   width:100%;min-width:0;text-align:center;font-size:12.5px;padding:11px 6px;
+   white-space:normal;line-height:1.3}
+ /* 표는 가로 스크롤로 처리 */
+ table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
+@media(max-width:400px){
+ .steps div{font-size:11px;padding:10px 2px}
+ .chk-sec,.summary{padding:16px 13px}
+ section{padding:24px 13px}
+ .page-hero{padding:26px 13px}
+ .page-hero h1{font-size:23px}
+}
+/* ── NEW/DROPS 상세: 구매 바·옵션 카드 ── */
+@media(max-width:640px){
+ .nd-osum{padding:12px 14px;gap:10px;flex-wrap:wrap}
+ /* min-width:210px 가 좁은 화면에서 컨테이너를 밀어낸다 */
+ .nd-buy,.nd-addcart{min-width:0!important;flex:1 1 100%;font-size:14px;padding:13px 10px}
+ .nd-oc{padding:14px 14px}
+ .nd-oq-t{font-size:13.5px;gap:6px;flex-wrap:wrap}
+ .nd-oq-opt{font-size:12.5px;padding:10px 11px;white-space:normal;line-height:1.35;text-align:left}
+ .mp-din-i{font-size:16px!important}   /* iOS 포커스 확대 방지 */
+ .mp-din-e{font-size:11.5px}
 }
 /* ── 모바일 상품 그리드 (SHOP) ── */
 @media(min-width:641px) and (max-width:1024px){

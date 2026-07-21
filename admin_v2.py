@@ -92,7 +92,7 @@ def store_image(data: bytes, content_type: str, prefix: str = 'products'):
         try:
             cli, c = _r2_client()
             key = '%s/%s/%s%s' % (prefix.strip('/'),
-                                  datetime.datetime.utcnow().strftime('%Y%m'),
+                                  kst_naive().strftime('%Y%m'),
                                   uid() + secrets.token_hex(4), ext)
             cli.put_object(Bucket=c['bucket'], Key=key, Body=data,
                            ContentType=ct, CacheControl='public, max-age=31536000, immutable')
@@ -158,8 +158,15 @@ def num(x):
         try: return int(float(x))
         except Exception: return 0
 
-def now_iso(): return datetime.datetime.utcnow().isoformat(timespec='seconds')
-def kst_now(): return datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+#  ── 시각 기준 ──────────────────────────────────────────────────────────
+#  운영 서버(Render 싱가포르)의 시스템 시계는 UTC 이므로 utcnow()/now() 를 그대로
+#  저장하면 관리자 화면·CSV·SMS 안내에 한국시간보다 9시간 이른 값이 찍힌다.
+#  저장·표시·비교를 모두 KST 로 통일한다. 저장값과 비교 기준이 같은 축이어야
+#  만료 판정(expires_at <= now_iso())이 어긋나지 않는다.
+KST = datetime.timezone(datetime.timedelta(hours=9))
+def kst_naive(): return datetime.datetime.now(KST).replace(tzinfo=None)
+def now_iso(): return kst_naive().isoformat(timespec='seconds')
+def kst_now(): return kst_naive()
 def kst_today(): return kst_now().date()
 def is_new_product(created_at, now=None):
     """등록 시각부터 달력 기준 2개월 동안만 NEW로 본다."""
@@ -169,7 +176,7 @@ def is_new_product(created_at, now=None):
         made = datetime.datetime.fromisoformat(str(created_at).strip().replace('Z', '+00:00'))
         if made.tzinfo is not None:
             made = made.astimezone(datetime.timezone.utc).replace(tzinfo=None)
-        now = now or datetime.datetime.utcnow()
+        now = now or kst_naive()
         month_index = made.month - 1 + 2
         year, month = made.year + month_index // 12, month_index % 12 + 1
         day = min(made.day, calendar.monthrange(year, month)[1])
@@ -571,7 +578,7 @@ def pw_verify(pw, stored):
 
 def make_session(admin_id, hours=12):
     sid = secrets.token_urlsafe(24)
-    exp = (datetime.datetime.utcnow() + datetime.timedelta(hours=hours)).isoformat(timespec='seconds')
+    exp = (kst_naive() + datetime.timedelta(hours=hours)).isoformat(timespec='seconds')
     try: run('DELETE FROM admin_sessions WHERE expires < ?', (now_iso(),))
     except Exception: pass
     run('INSERT INTO admin_sessions VALUES(?,?,?,?)',
@@ -799,7 +806,7 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
         if not tid: raise HTTPException(400, '거래번호(TID)가 없어 자동 환불 불가 — 이니시스 상점관리자에서 직접 취소하세요.')
         mid = inicis_mid(); iniapi = inicis_iniapi()
         if not (mid and iniapi): raise HTTPException(400, 'INICIS_MID / INICIS_INIAPI 미설정')
-        ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+        ts = kst_naive().strftime('%Y%m%d%H%M%S')
         try: client_ip = socket.gethostbyname(socket.gethostname())
         except Exception: client_ip = '127.0.0.1'
         # 결제수단은 주문에 저장된 실제 값(이니시스 STEP3 응답 payMethod)을 사용한다.
@@ -2920,7 +2927,7 @@ def api_page_save(request: Request, body: dict = Body(...)):
     cur, _, _ = _page_effective(path)
     if cur is not None:  # 저장 직전 버전을 이력으로 보관 (페이지당 최근 10개)
         run('INSERT INTO page_history VALUES(?,?,?,?,?)',
-            (uid(), path, cur, datetime.datetime.utcnow().isoformat(), a['name']))
+            (uid(), path, cur, kst_naive().isoformat(), a['name']))
         old = rows('SELECT id FROM page_history WHERE path=? ORDER BY saved DESC', (path,))[10:]
         for r in old: run('DELETE FROM page_history WHERE id=?', (r['id'],))
     run('DELETE FROM page_edits WHERE path=?', (path,))
@@ -4687,7 +4694,7 @@ def customer_ensure(member, grant_signup=True):
     if cid and one('SELECT id FROM customer_profiles WHERE id=?', (cid,)):
         return cid
     cid = uid()
-    cno = 'CUS-%s-%s' % (datetime.datetime.now().strftime('%Y'), cid[:8].upper())
+    cno = 'CUS-%s-%s' % (kst_naive().strftime('%Y'), cid[:8].upper())
     ts = member.get('created') or now_iso()
     run('INSERT INTO customer_profiles(id,customer_no,name,status,grade,points_balance,marketing_ok,created_at,updated_at,withdrawn_at) VALUES(?,?,?,?,?,0,0,?,?,?)',
         (cid, cno, member.get('name') or '', 'ACTIVE', 'WELCOME', ts, now_iso(), ''))
@@ -4725,7 +4732,7 @@ def guest_customer_ensure(name, phone):
     if not ex:
         ex=one("SELECT o.customer_id FROM orders o JOIN customer_profiles c ON c.id=o.customer_id WHERE o.contact_phone_norm=? AND c.status='GUEST' ORDER BY o.created DESC LIMIT 1",(p,))
     if ex: return ex['customer_id']
-    cid=uid(); cno='CUS-%s-%s' % (datetime.datetime.now().strftime('%Y'),cid[:8].upper())
+    cid=uid(); cno='CUS-%s-%s' % (kst_naive().strftime('%Y'),cid[:8].upper())
     run('INSERT INTO customer_profiles(id,customer_no,name,status,grade,points_balance,marketing_ok,created_at,updated_at,withdrawn_at) VALUES(?,?,?,?,?,0,0,?,?,?)',
         (cid,cno,(name or '')[:40],'GUEST','WELCOME',now_iso(),now_iso(),''))
     try: run('INSERT INTO customer_contacts VALUES(?,?,?,?,?,?,?,?,?)',(uid(),cid,'PHONE',p,p,0,1,now_iso(),''))
@@ -4818,7 +4825,7 @@ def _account_migrate():
 
 def member_session_make(mid, request=None):
     sid = secrets.token_urlsafe(24)
-    exp = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).isoformat(timespec='seconds')
+    exp = (kst_naive() + datetime.timedelta(days=30)).isoformat(timespec='seconds')
     try: run('DELETE FROM member_sessions WHERE expires < ?', (now_iso(),))
     except Exception: pass
     run('INSERT INTO member_sessions(id,member_id,created,expires,ip,user_agent,last_seen) VALUES(?,?,?,?,?,?,?)',
@@ -4869,7 +4876,7 @@ def member_upsert(provider, sub, email, name):
 
 def oauth_flow_start(request, state, provider):
     m=member_of(request); action='LINK' if request.query_params.get('link')=='1' and m else 'LOGIN'
-    exp=(datetime.datetime.utcnow()+datetime.timedelta(minutes=10)).isoformat(timespec='seconds')
+    exp=(kst_naive()+datetime.timedelta(minutes=10)).isoformat(timespec='seconds')
     try: run('DELETE FROM oauth_flows WHERE expires_at<? OR used=1',(now_iso(),))
     except Exception: pass
     run('INSERT INTO oauth_flows VALUES(?,?,?,?,?,?,0)',(state,m['id'] if action=='LINK' else '',provider,action,now_iso(),exp))
@@ -5952,7 +5959,7 @@ def api_member_password_reset_send(request: Request, body: dict=Body(...)):
     m=one("SELECT * FROM members WHERE provider='email' AND lower(email)=? AND phone=? AND phone_verified=1 AND status='ACTIVE'",(email,phone))
     if not m: raise HTTPException(400,'이메일과 인증된 휴대폰 정보를 확인해 주세요')
     rid=uid(); code=str(secrets.randbelow(900000)+100000); ch=hashlib.sha256((rid+':'+code).encode()).hexdigest()
-    exp=(datetime.datetime.utcnow()+datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
+    exp=(kst_naive()+datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
     run('UPDATE password_resets SET used=1 WHERE member_id=? AND used=0',(m['id'],))
     run('INSERT INTO password_resets VALUES(?,?,?,?,?,?,?,?)',(rid,m['id'],phone,ch,0,now_iso(),exp,0))
     ok,dry=system_sms(phone,'[맵달SEOUL] 비밀번호 재설정 인증번호는 [%s] 입니다. 5분 내에 입력해 주세요.' % code,'비밀번호재설정')
@@ -9422,7 +9429,7 @@ def api_m_claim_send(request: Request, body: dict = Body(...)):
         raise HTTPException(400, '주문번호와 주문 당시 연락처를 확인해 주세요')
     ip = (request.client.host if request.client else '') or '-'; key='oc:'+m['id']+':'+ip; guard(key); fail_hit(key)
     code = str(secrets.randbelow(900000) + 100000); cid = uid()
-    exp = (datetime.datetime.utcnow() + datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
+    exp = (kst_naive() + datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
     ch = hashlib.sha256((cid + ':' + code).encode()).hexdigest()
     run('INSERT INTO order_claims VALUES(?,?,?,?,?,?,?,?,?,?)',
         (cid, oid, m.get('customer_id') or '', m['id'], phone, ch, 0, now_iso(), exp, 0))
@@ -9569,7 +9576,7 @@ def api_m_phone_send(request: Request, body: dict = Body(...)):
     ip = (request.client.host if request.client else '') or '-'
     key = 'pv:' + m['id'] + ':' + ip; guard(key); fail_hit(key)
     code = str(secrets.randbelow(900000) + 100000)
-    exp = (datetime.datetime.utcnow() + datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
+    exp = (kst_naive() + datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
     vid = uid(); ch = hashlib.sha256((vid + ':' + code).encode()).hexdigest()
     run('UPDATE phone_verifications SET used=1 WHERE member_id=? AND used=0', (m['id'],))
     run('INSERT INTO phone_verifications(id,member_id,phone,code,created,expires,used,code_hash,attempts) VALUES(?,?,?,?,?,?,0,?,0)',

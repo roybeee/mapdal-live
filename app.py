@@ -34,6 +34,16 @@ INICIS_MOBILE_HASHKEY = os.getenv('INICIS_MOBILE_HASHKEY', '')
 #   Cloudflare/Render 프록시 뒤에서는 req.base_url이 실제 도메인과 달라질 수 있으므로
 #   SITE_ORIGIN 환경변수로 실도메인을 고정하는 것이 가장 안전. 미설정 시 헤더로 추론.
 SITE_ORIGIN    = os.getenv('SITE_ORIGIN', 'https://mapdal.kr').rstrip('/')
+
+# ── 시각 기준 ──────────────────────────────────────────────────────────
+#  운영 서버(Render 싱가포르)의 시스템 시계는 UTC 다. now() 를 그대로 저장하면
+#  주문 일시가 한국시간보다 9시간 이르게 찍힌다. 저장용 시각은 KST 로 통일한다.
+#  ※ 이니시스 서명용 timestamp(epoch ms)는 절대시각이므로 변환하지 않는다.
+KST = datetime.timezone(datetime.timedelta(hours=9))
+def kst_naive():
+    return datetime.datetime.now(KST).replace(tzinfo=None)
+def kst_iso():
+    return kst_naive().isoformat(timespec='seconds')
 ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', 'mapdal-admin-2026')
 FREE_SHIP_OVER, SHIP_FEE = 30000, 3000
 # ── NEW/DROPS 배송·적립 특칙 ─────────────────────────────────────────────
@@ -405,9 +415,9 @@ async def create_order(req: Request):
         else:
             ship_fee = 0 if sub >= FREE_SHIP_OVER else SHIP_FEE
         amount = sub + ship_fee
-        order_id = f'MD-{datetime.datetime.now():%Y%m%d}-{secrets.token_hex(3).upper()}'
+        order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
         c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) VALUES(?,?,?,?,?,?,?,?,?,?)',
-               (order_id, datetime.datetime.now().isoformat(timespec='seconds'), 'PENDING',
+               (order_id, kst_iso(), 'PENDING',
                 amount, json.dumps(buyer, ensure_ascii=False),
                 json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
                 phone_norm or None))
@@ -415,8 +425,7 @@ async def create_order(req: Request):
             try:
                 c.exec('INSERT INTO account_order_links(order_id,customer_id,member_id,link_source,linked_at,verified_at) VALUES(?,?,?,?,?,?)',
                        (order_id, customer_id, member_id, 'CHECKOUT_SESSION' if member_id else 'GUEST_CHECKOUT',
-                        datetime.datetime.now().isoformat(timespec='seconds'),
-                        datetime.datetime.now().isoformat(timespec='seconds')))
+                        kst_iso(), kst_iso()))
             except Exception:
                 pass
     # 새 상품마스터 재고 화면도 결제 직후 동일 수량을 보도록 호환 투영을 동기화한다.

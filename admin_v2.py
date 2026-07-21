@@ -6414,6 +6414,9 @@ body{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* ── 가로 오버플로 방어 (전 폭 공통) ── */
 html,body{max-width:100%}
 img,video,canvas,svg,iframe{max-width:100%;height:auto}
+/* 가상계좌 입금 안내 박스 (주문완료 화면) */
+.mp-vb{display:inline-block;background:#f7f6f2;border:1px solid #e3e1db;border-radius:10px;padding:14px 18px;text-align:left;line-height:1.9;font-size:14px;color:#141414}
+.mp-vb b{font-size:15.5px;letter-spacing:.01em}
 /* Grid/Flex 자식의 min-width:auto 는 긴 텍스트가 트랙을 밀어내는 원인이 된다.
    폰트에 따라 줄바꿈 위치가 달라져 특정 기기에서만 잘림이 나타나므로 전역에서 끈다. */
 @media(max-width:1024px){
@@ -8723,13 +8726,40 @@ def _order_complete_apply(html):
         "      const r=await fetch('/api/orders/'+encodeURIComponent(oid));\n"
         "      const d=await r.json();\n"
         "      if(!r.ok)throw new Error(d.detail||'주문 조회 실패');\n"
+        "      // 가상계좌는 계좌 발급만 된 상태(WAITING_DEPOSIT). 실패가 아니라 '입금 대기'다.\n"
+        "      if(d.status==='WAITING_DEPOSIT'){\n"
+        "        var vb=d.vbank||{};\n"
+        "        var _due=String(vb.due||'');\n"
+        "        var _dueTxt=_due.length>=12?(_due.slice(0,4)+'.'+_due.slice(4,6)+'.'+_due.slice(6,8)+' '+_due.slice(8,10)+':'+_due.slice(10,12)):_due;\n"
+        "        title.textContent='입금을 기다리고 있습니다';\n"
+        "        var _box='';\n"
+        "        if(vb.num){\n"
+        "          _box='<br><br><span class=\\\"mp-vb\\\">'\n"
+        "            +'<b>'+(vb.bank||'')+' '+vb.num+'</b>'\n"
+        "            +(vb.holder?('<br>예금주 '+vb.holder):'')\n"
+        "            +(_dueTxt?('<br>입금기한 '+_dueTxt):'')+'</span>';\n"
+        "        }\n"
+        "        desc.innerHTML='아래 계좌로 <b>₩'+(+d.amount).toLocaleString('ko-KR')+'</b> 입금해 주세요.<br>'\n"
+        "          +'입금이 확인되면 자동으로 결제가 완료되고 순차 출고됩니다.'+_box;\n"
+        "        desc.setAttribute('data-mp-pay','1');\n"
+        "        ono.textContent='ORDER NO. '+oid;\n"
+        "        try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
+        "        return;\n"
+        "      }\n"
         "      if(d.status!=='PAID')throw new Error('결제가 완료되지 않았습니다');\n"
         "      title.textContent='주문이 완료되었습니다';\n"
         "      desc.innerHTML='결제 금액 <b>₩'+(+d.amount).toLocaleString('ko-KR')+'</b> · 결제가 정상 승인되었습니다.';\n"
+        "      desc.setAttribute('data-mp-pay','1');\n"
         "      ono.textContent='ORDER NO. '+oid;\n"
         "      try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
         "    }catch(e){")
     html = html.replace(_toss_body, _new_body, 1)
+    # 실패 분기(catch)의 안내문도 출고 문구에 덮이지 않도록 표식을 남긴다.
+    html = html.replace(
+        "desc.innerHTML=(e.message||'')+'<br>결제가 완료되지 않았다면 다시 시도해 주세요.",
+        "desc.setAttribute('data-mp-pay','1');"
+        "desc.innerHTML=(e.message||'')+'<br>결제가 완료되지 않았다면 다시 시도해 주세요.")
+
     # 구버전 정적본은 drop_sel 정리 라인이 없어 위 치환이 빗나간다. 이 경우 헤더만
     # 교체되어 pk/amt 미정의 → ReferenceError 로 스크립트 전체가 죽는다(라이브 장애).
     # 변형본도 동일하게 교체되도록 보조 치환을 둔다.
@@ -8786,6 +8816,9 @@ def _order_complete_copy(html):
         "    var el=document.getElementById('ocDesc')||document.querySelector('.done-hero p');\n"
         "    if(!el)return;\n"
         "    function paint(items){\n"
+        "      // 결제 상태 안내(가상계좌 입금 · 승인 완료 · 실패)가 이미 그려졌으면 덮지 않는다.\n"
+        "      // setDesc 진입 시점엔 아직 표식이 없으므로 반드시 paint 내부에서 검사해야 한다.\n"
+        "      if(el.getAttribute('data-mp-pay')==='1')return;\n"
         "      var food=false,album=false,other=false;\n"
         "      (items||[]).forEach(function(it){\n"
         "        var s=String(it.id||it.u||'');\n"

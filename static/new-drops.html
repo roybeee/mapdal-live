@@ -531,15 +531,35 @@ function infoRows(c){var h='<div class="row"><b>판매기간</b><span>'+esc(peri
  return h}
 /* ── 옵션 카드: 메이크스타형 수량 구매 (mpDropOptUI) ── */
 var OQ={},OQA={};
+/* mpDropOptUI 연동 — 객체 참조를 넘기면 renderDetail 재실행 시 옛 객체를 가리키게 되므로
+   항상 '현재' OQA/OQ 에 접근하는 함수를 노출한다. */
+window.__ndSetOQA=function(i,v){if(v==null||v==='')delete OQA[i];else OQA[i]=v};
+window.__ndGetOQA=function(i){return OQA[i]};
+window.__ndSetOQ=function(pid,q){OQ[pid]=q};
 var OICON={album:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></svg>',
  card:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 12h6M9 15.5h6"/></svg>',
  ticket:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M13 6v12" stroke-dasharray="2 2.4"/></svg>',
  gift:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="1.5"/><path d="M12 9v11M4 13.5h16M12 9c-4.2 0-5.2-4.6-2.4-4.6C11.4 4.4 12 9 12 9zm0 0c4.2 0 5.2-4.6 2.4-4.6C12.6 4.4 12 9 12 9z"/></svg>',
  etc:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="2.4"/></svg>'};
+/* 자유입력 옵션 판별 — mpDropOptUI(detect)와 규칙을 일치시킨다.
+   관리자가 input 을 지정했거나, 옵션명이 응모자 인적사항이면 입력형으로 본다. */
+var ND_AUTO=[/연락처|휴대폰|phone|tel/i,/생년월일|생일|birth/i,/이메일|e-?mail/i,
+             /국적|nation/i,/응모자\s*이름|이름\s*\(name|성함/i];
+function isInputOpt(o){
+ if(!o)return false;
+ if(o.input)return true;
+ var n=String(o.name||'');
+ for(var i=0;i<ND_AUTO.length;i++)if(ND_AUTO[i].test(n))return true;
+ return false}
 function fmtw(n){return '₩'+Number(n||0).toLocaleString('ko-KR')}
 function hasShopOpts(c){return (c.opts||[]).some(function(o){return o.pid&&o.price>0})}
 function allSold(c){return (c.opts||[]).filter(function(o){return o.pid&&o.price>0}).every(function(o){return o.soldout})}
 function optCard(o,i,live){
+ if(!(o.pid&&o.price>0)&&isInputOpt(o)){ /* 자유입력 옵션 — mpDropOptUI가 입력창으로 교체한다 */
+  return '<div class="nd-oc nd-oq'+(OQA[i]!=null?' sel':'')+'" id="ndq'+i+'" data-inputopt="1">'
+   +'<div class="nd-oq-t">'+esc(o.name)+(live?'<span class="nd-req">필수</span>':'')+'</div>'
+   +'<div class="nd-oq-c" style="display:block"></div></div>';
+ }
  if(!(o.pid&&o.price>0)&&o.items&&o.items.length){ /* 가격 없는 옵션 = 고객 선택 질문 */
   var ch=o.items.map(function(it,j){var on=OQA[i]===it.t;
    return '<button type="button" class="nd-oq-opt'+(on?' on':'')+'" data-qi="'+i+'" data-j="'+j+'"'+(live?'':' disabled')+'>'+esc(it.t)+'</button>'}).join('');
@@ -586,7 +606,9 @@ function bindSummary(c){
  if(b)b.onclick=function(){if(dropAddCart(c))location.href='/checkout'}}
 function unansweredQs(c){var m=[];
  (c.opts||[]).forEach(function(o,i){
-  if(!(o.pid&&o.price>0)&&o.items&&o.items.length&&OQA[i]==null)m.push({i:i,name:o.name})});
+  if(o.pid&&o.price>0)return;                       /* 판매 옵션은 대상 아님 */
+  if(!isInputOpt(o)&&!(o.items&&o.items.length))return;  /* 표시 전용 */
+  if(OQA[i]==null||OQA[i]==='')m.push({i:i,name:o.name})});
  return m}
 function dropAddCart(c){
  var miss=unansweredQs(c);
@@ -604,7 +626,9 @@ function dropAddCart(c){
  try{localStorage.setItem(CK,JSON.stringify(items))}catch(e){}
  try{ /* 응모 선택값 — 구매한 옵션 상품에 귀속, 결제 시 주문에 자동 부착 */
   var sel=[];(c.opts||[]).forEach(function(o,i){
-   if(!(o.pid&&o.price>0)&&o.items&&o.items.length&&OQA[i]!=null)sel.push({q:o.name,a:OQA[i]})});
+   if(o.pid&&o.price>0)return;
+   if(!isInputOpt(o)&&!(o.items&&o.items.length))return;
+   if(OQA[i]!=null&&OQA[i]!=='')sel.push({q:o.name,a:OQA[i]})});
   if(sel.length){
    var sm=JSON.parse(localStorage.getItem('mapdal_drop_sel')||'{}');
    (c.opts||[]).forEach(function(o){if(o.pid&&(OQ[o.pid]||0)>0)sm[o.pid]={event:c.title,sel:sel}});

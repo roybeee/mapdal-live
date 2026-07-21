@@ -6271,7 +6271,9 @@ img,video,canvas,svg,iframe{max-width:100%;height:auto}
  .logo{font-size:23px;white-space:nowrap}
  .util{gap:10px;min-width:0}
  .util a{white-space:nowrap;font-size:12px}
- .util a.cart{padding:5px 10px;font-size:11px}
+ .util a.cart{padding:5px 10px;font-size:11px;flex:0 0 auto}
+ /* 회원명이 길어도 CART 버튼을 밀어내지 않도록 말줄임 처리 */
+ .util a#mpAuth{overflow:hidden;text-overflow:ellipsis;max-width:38vw;min-width:0}
  .tab-bar{top:62px!important}
 }
 @media(max-width:400px){
@@ -6333,6 +6335,24 @@ img,video,canvas,svg,iframe{max-width:100%;height:auto}
  section{padding:24px 13px}
  .page-hero{padding:26px 13px}
  .page-hero h1{font-size:23px}
+}
+/* ── 360px 이하(갤럭시 S 기본 폭 등) ──
+   CART 버튼이 헤더 밖으로 밀려 우측이 잘리는 문제. 로고·간격·글자를 더 줄이고
+   util 이 남는 공간을 모두 쓰도록 해 버튼이 항상 화면 안에 들어오게 한다. */
+@media(max-width:360px){
+ .header-inner{padding:0 8px;gap:6px}
+ .logo{font-size:17px;margin-right:0!important;flex:0 0 auto}
+ .util{gap:6px;margin-left:auto;flex:0 1 auto;min-width:0}
+ .util a{font-size:10.5px}
+ .util a.cart{padding:4px 7px;font-size:10px;flex:0 0 auto}
+ #mpCatBar{padding:0 6px}
+ #mpCatBar a{font-size:11.5px;padding:10px 7px 8px;letter-spacing:.02em}
+ .steps div{font-size:10.5px;padding:9px 2px}
+ .chk-sec,.summary{padding:14px 11px}
+ section{padding:20px 11px}
+ .page-hero{padding:22px 11px}
+ .page-hero h1{font-size:21px}
+ #domAddr .f-row .btn-full{padding:12px 8px;font-size:12px}
 }
 /* ── NEW/DROPS 상세: 구매 바·옵션 카드 ── */
 @media(max-width:640px){

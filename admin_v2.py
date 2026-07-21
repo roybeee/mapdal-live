@@ -6298,6 +6298,19 @@ img,video,canvas,svg,iframe{max-width:100%;height:auto}
  .page-hero h1{font-size:26px}
  section{padding:28px 16px}
  .cart-layout{gap:18px}
+ /* ── 배송지 입력 폼 ──
+    .f-row 는 기본 2열이고, 우편번호 행은 인라인 style 로 grid-template-columns:180px 1fr
+    이 박혀 있다. 인라인은 미디어쿼리로 덮이지 않으므로 !important 로 무력화한다.
+    390px 화면에서 180px + 검색버튼 + gap 이 가용폭(332px)을 넘어 화면 밖으로 밀려난다. */
+ .f-row{grid-template-columns:1fr!important;gap:0!important}
+ .f-input{font-size:16px;padding:13px 14px;margin-bottom:10px;min-width:0}
+ /* 우편번호 행만 예외 — 입력창과 검색 버튼을 한 줄에 유지하되 비율로 나눈다 */
+ #domAddr .f-row{grid-template-columns:minmax(0,1fr) auto!important;gap:8px!important;
+   align-items:start}
+ #domAddr .f-row .btn-full{margin-bottom:10px!important;white-space:nowrap;
+   padding:13px 14px;font-size:13.5px;width:auto}
+ #zip{margin-bottom:10px}
+ #postLayer{max-width:100%;overflow:hidden}
  /* 마이페이지 메뉴 버튼 — 고정폭 대신 균등 2열로 접는다 */
  .acc-menu,.mypage-menu,.acc-tabs{display:grid!important;
    grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}
@@ -6306,10 +6319,17 @@ img,video,canvas,svg,iframe{max-width:100%;height:auto}
    white-space:normal;line-height:1.3}
  /* 표는 가로 스크롤로 처리 */
  table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+ /* 푸터 — 인라인 padding:26px 48px 이 좌우 96px 를 먹는다 */
+ #mpFooter > div{padding:22px 16px 30px!important}
+ #mpFooter{word-break:break-word;overflow-wrap:anywhere}
 }
 @media(max-width:400px){
  .steps div{font-size:11px;padding:10px 2px}
  .chk-sec,.summary{padding:16px 13px}
+ .chk-sec .sub{font-size:11.5px;line-height:1.6;word-break:break-word}
+ .chk-sec h3{font-size:15px}
+ .f-input{font-size:16px;padding:12px 12px}
+ #domAddr .f-row .btn-full{padding:12px 10px;font-size:12.5px}
  section{padding:24px 13px}
  .page-hero{padding:26px 13px}
  .page-hero h1{font-size:23px}

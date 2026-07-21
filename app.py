@@ -179,11 +179,41 @@ def seed():
 from contextlib import asynccontextmanager
 import threading
 
+_VB_COLS_OK = None      # 가상계좌 컬럼 존재 여부 (최초 1회 판정 후 캐시)
+
+def _has_vbank_cols() -> bool:
+    """마이그레이션 이전 DB 에는 vbank_* 컬럼이 없다.
+       매 조회마다 예외를 내면 PG 트랜잭션이 오염되므로 한 번만 판정해 캐시한다."""
+    global _VB_COLS_OK
+    if _VB_COLS_OK is None:
+        try:
+            with db() as c:
+                c.exec('SELECT vbank_num FROM orders WHERE 1=0')
+            _VB_COLS_OK = True
+        except Exception:
+            _VB_COLS_OK = False
+    return _VB_COLS_OK
+
+def _migrate_columns():
+    """컬럼 추가만 따로 수행한다. seed() 가 시드 데이터 문제로 실패해도
+       마이그레이션은 반드시 완료되어야 한다(누락 시 주문 조회·승인이 500)."""
+    try:
+        with db() as c:
+            for col in ('customer_id', 'member_id', 'contact_phone_norm',
+                        'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at'):
+                try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
+                except Exception: pass
+        print('[db] 컬럼 마이그레이션 완료', flush=True)
+    except Exception as e:
+        print(f'[db] 컬럼 마이그레이션 실패: {e}', flush=True)
+
 def _init_db():
-    global DB_READY
+    global DB_READY, _VB_COLS_OK
     try:
         if IS_PG:
             _connect_pg_with_retry()
+        _migrate_columns()          # seed 보다 먼저, 독립적으로
+        _VB_COLS_OK = None          # 판정 캐시 초기화 → 다음 조회 때 재판정
         seed()
         DB_READY = True
         print('[db] 준비 완료', flush=True)
@@ -843,15 +873,21 @@ def _ini_net_cancel(net_cancel_url: str, auth_token: str):
 
 @app.get('/api/orders/{order_id}')
 def get_order(order_id: str):
+    """주문 조회. 가상계좌 컬럼이 없는 구형 DB 에서도 500 이 나지 않도록 분기한다."""
+    base = 'order_id,created,status,amount,items,ship_method'
+    cols = (base + ',pay_method,vbank_num,vbank_name,vbank_holder,vbank_due'
+            ) if _has_vbank_cols() else base
     with db() as c:
-        row = c.one('SELECT order_id,created,status,amount,items,ship_method,'
-                    'pay_method,vbank_num,vbank_name,vbank_holder,vbank_due '
-                    'FROM orders WHERE order_id=?', (order_id,))
+        row = c.one('SELECT %s FROM orders WHERE order_id=?' % cols, (order_id,))
     if not row: raise HTTPException(404, 'not found')
-    row['items'] = json.loads(row['items'])
+    try:
+        row['items'] = json.loads(row['items'] or '[]')
+    except Exception:
+        row['items'] = []
     # 입금대기 건은 계좌 안내를 함께 내려준다(주문완료 화면·마이페이지에서 표시).
     row['vbank'] = {'num': row.pop('vbank_num', '') or '', 'bank': row.pop('vbank_name', '') or '',
                     'holder': row.pop('vbank_holder', '') or '', 'due': row.pop('vbank_due', '') or ''}
+    row.setdefault('pay_method', '')
     return row
 
 @app.get('/admin', response_class=HTMLResponse)

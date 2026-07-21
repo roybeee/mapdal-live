@@ -6256,6 +6256,12 @@ body{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* ── 가로 오버플로 방어 (전 폭 공통) ── */
 html,body{max-width:100%}
 img,video,canvas,svg,iframe{max-width:100%;height:auto}
+/* Grid/Flex 자식의 min-width:auto 는 긴 텍스트가 트랙을 밀어내는 원인이 된다.
+   폰트에 따라 줄바꿈 위치가 달라져 특정 기기에서만 잘림이 나타나므로 전역에서 끈다. */
+@media(max-width:1024px){
+ .cart-layout > *,.chk-sec > *,.summary > *,.steps > *,
+ .f-row > *,.nd-osum > *,.util > *,.header-inner > *{min-width:0}
+}
 /* ── 모바일 상시 카테고리 바 ── */
 #mpCatBar{display:none;align-items:stretch;gap:2px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;background:var(--paper,#F7F6F2);border-top:1px solid var(--line,#E3E1DB);padding:0 8px}
 #mpCatBar::-webkit-scrollbar{display:none}
@@ -6287,6 +6293,18 @@ img,video,canvas,svg,iframe{max-width:100%;height:auto}
 }
 /* ── 체크아웃·장바구니·마이페이지 모바일 대응 ── */
 @media(max-width:640px){
+ /* ── Grid/Flex 자식의 min-width:auto 차단 ──
+    CSS Grid·Flex 자식의 기본 min-width 는 auto 이고, 이 값은 "내용보다 작아지지 않는다"를
+    뜻한다. 안내문·상품명처럼 긴 텍스트가 줄바꿈 지점을 못 찾으면 자식이 트랙을 밀어내
+    카드 전체가 화면 밖으로 나간다(우측 테두리가 사라지는 증상).
+    폰트에 따라 줄바꿈 위치가 달라져 특정 기기에서만 재현되므로 구조적으로 차단한다. */
+ .cart-layout,.cart-layout > *,
+ .chk-sec,.chk-sec > *,
+ .summary,.summary > *,
+ .steps,.steps > *{min-width:0}
+ /* 카드 자체가 절대 뷰포트를 넘지 않도록 이중 방어 */
+ .chk-sec,.summary,.steps{max-width:100%;overflow-wrap:anywhere}
+ .chk-sec .sub{word-break:break-word;overflow-wrap:anywhere}
  /* iOS 는 16px 미만 입력창에 포커스하면 화면을 강제 확대한다 */
  input,select,textarea{font-size:16px!important}
  .chk-sec{padding:18px 16px;margin-bottom:12px}

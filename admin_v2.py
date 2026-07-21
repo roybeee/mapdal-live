@@ -794,6 +794,101 @@ def api_fulfill(oid: str, request: Request, body: dict = Body(...)):
     audit(a, '주문처리변경', oid, '%s / 송장 %s' % (f, body.get('tracking') or '-'))
     return {'ok': True}
 
+#  ── 과거 데이터 시각 보정 (UTC → KST) ────────────────────────────────
+#  운영 서버 시계가 UTC 라 KST 전환 이전 레코드는 9시간 이르게 저장돼 있다.
+#  코드는 고쳤지만 기존 행은 그대로이므로 한 번만 일괄 보정한다.
+#  · 이력성 데이터만 대상. 세션/OTP/비밀번호재설정 등 단기 만료 데이터는 제외
+#    (만료값에 +9h 하면 이미 끝난 인증이 되살아나 보안 구멍이 된다).
+#  · cutoff 이후 레코드는 이미 KST 저장분이므로 건드리지 않는다(이중 보정 방지).
+#  · 기본은 드라이런. apply=true 를 명시해야 실제로 쓴다.
+_KST_FIX_TARGETS = [
+    ('orders',                  ['created']),
+    ('account_order_links',     ['linked_at', 'verified_at']),
+    ('customer_profiles',       ['created_at', 'updated_at', 'withdrawn_at']),
+    ('customer_contacts',       ['created_at', 'verified_at']),
+    ('members',                 ['created', 'last_login_at', 'updated_at', 'withdrawn_at']),
+    ('auth_identities',         ['created_at', 'last_login_at']),
+    ('point_ledger',            ['created_at', 'expires_at']),
+    ('audit_log',               ['created']),
+    ('notify_log',              ['created']),
+    ('consent_history',         ['created_at']),
+    ('member_addresses',        ['created']),
+    ('member_inquiries',        ['created']),
+    ('member_likes',            ['created']),
+    ('member_pqna',             ['created']),
+    ('member_requests',         ['created']),
+    ('member_restock',          ['created']),
+    ('account_security_events', ['created_at']),
+    ('inventory_movements',     ['created_at']),
+]
+
+@admin_router.post('/admin/api/maint/kst-fix')
+def api_kst_fix(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 3, '시각 보정')      # OWNER 전용
+    cutoff = str(body.get('cutoff') or '').strip()
+    apply_ = bool(body.get('apply'))
+    if not cutoff:
+        raise HTTPException(400, 'cutoff(KST 배포 시각)를 지정하세요 — 예: 2026-07-21T16:00:00')
+    # 이미 실행했는지 표식 확인 (이중 보정은 12시간 어긋남을 만든다)
+    mark = one("SELECT value FROM site_settings WHERE key='KST_TIME_FIX_DONE'")
+    if mark and apply_:
+        raise HTTPException(400, '이미 보정이 완료되었습니다 (%s). 재실행은 데이터를 '
+                                 '망가뜨립니다.' % (mark.get('value') or ''))
+    shift = datetime.timedelta(hours=9)
+    report, total_rows, total_cells = [], 0, 0
+    for table, cols in _KST_FIX_TARGETS:
+        try:
+            rs = rows('SELECT * FROM %s' % table)
+        except Exception:
+            continue                                     # 해당 환경에 없는 테이블
+        if not rs:
+            continue
+        pk = 'id' if 'id' in rs[0] else list(rs[0].keys())[0]
+        cr = cc = 0
+        for r in rs:
+            sets, vals = [], []
+            for col in cols:
+                if col not in r:
+                    continue
+                raw = r.get(col)
+                if not raw:
+                    continue
+                s = str(raw).strip()
+                if not s:
+                    continue
+                try:
+                    dt = datetime.datetime.fromisoformat(s.replace('Z', '+00:00').split('+')[0])
+                except Exception:
+                    continue
+                if dt.isoformat(timespec='seconds') >= cutoff:
+                    continue                             # 이미 KST 로 저장된 값
+                sets.append('%s=?' % col)
+                vals.append((dt + shift).isoformat(
+                    timespec='microseconds' if '.' in s else 'seconds'))
+                cc += 1
+            if sets:
+                cr += 1
+                if apply_:
+                    run('UPDATE %s SET %s WHERE %s=?' % (table, ', '.join(sets), pk),
+                        tuple(vals + [r[pk]]))
+        if cr:
+            report.append({'table': table, 'rows': cr, 'cells': cc})
+            total_rows += cr; total_cells += cc
+    if apply_:
+        try:
+            run("INSERT INTO site_settings(key,value,updated,by_admin) VALUES('KST_TIME_FIX_DONE',?,?,?)",
+                (cutoff, now_iso(), a.get('name') if isinstance(a, dict) else 'ADMIN'))
+        except Exception:
+            try:
+                run("UPDATE site_settings SET value=?, updated=?, by_admin=? WHERE key='KST_TIME_FIX_DONE'",
+                    (cutoff, now_iso(), a.get('name') if isinstance(a, dict) else 'ADMIN'))
+            except Exception:
+                pass
+        audit(a, '시각보정(UTC→KST)', cutoff, '행 %d / 셀 %d' % (total_rows, total_cells))
+    return {'ok': True, 'applied': apply_, 'cutoff': cutoff,
+            'total_rows': total_rows, 'total_cells': total_cells, 'detail': report,
+            'already_done': bool(mark)}
+
 @admin_router.post('/admin/api/orders/{oid}/cancel')
 def api_cancel(oid: str, request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 2, '결제취소(환불)')

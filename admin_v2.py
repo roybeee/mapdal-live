@@ -1482,7 +1482,7 @@ def api_orders_csv(request: Request):
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
-    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '우편번호', '주소', '품목', '총수량', '배송방식', '송장번호', '관리자메모', '영수증URL']
+    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '우편번호', '주소', '품목', '총수량', '배송방식', '송장번호', '관리자메모', '영수증URL', '응모정보']
     lines = [','.join(head)]
     for r in rs:
         b = jload(r.get('buyer'), {}); its = jload(r.get('items'), [])
@@ -1493,10 +1493,93 @@ def api_orders_csv(request: Request):
             ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
              + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')), names,
             sum(num(it.get('q') or 1) for it in its), r.get('ship_method', ''), r.get('tracking') or '',
-            r.get('admin_memo') or '', r.get('receipt_url') or '']))
+            r.get('admin_memo') or '', r.get('receipt_url') or '',
+            _sel_text(b.get('selections'))]))
     audit(a, 'CSV다운로드', 'orders', '%d건' % len(rs))
     return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
                     headers={'Content-Disposition': 'attachment; filename="mapdal_orders_%s.csv"' % kst_today().strftime('%Y%m%d')})
+
+# ── 응모옵션(NEW/DROPS) 명단 CSV — 당첨자 발표용 라인 단위 내보내기 ──────
+def _sel_text(sels, evt=None):
+    """buyer.selections([{event,q,a}]) → 'q: a / …' 문자열.
+    evt 지정 시 해당 이벤트(또는 이벤트 미기재) 항목만, evt=None 이면 전체를 [이벤트] 접두로."""
+    out = []
+    for s in (sels or []):
+        if not isinstance(s, dict): continue
+        se = re.sub(r'\s+', ' ', str(s.get('event') or '')).strip()
+        if evt and se and se != evt: continue
+        q = re.sub(r'\s+', ' ', str(s.get('q') or '')).strip()
+        v = re.sub(r'\s+', ' ', str(s.get('a') or '')).strip()
+        if not (q or v): continue
+        core = ('%s: %s' % (q, v)) if q else v
+        out.append((('[%s] ' % se) + core) if (evt is None and se) else core)
+    return ' / '.join(out)
+
+def _drop_opt_index():
+    """드롭 레코드의 옵션→상품 연결로 {product_id: (이벤트 제목, 옵션명)} 역인덱스 구성.
+    mpd:: 자동 생성 상품뿐 아니라 수동 연결된 기존 상품도 응모옵션으로 식별한다."""
+    idx = {}
+    try:
+        for d in _drops_all():
+            if not isinstance(d, dict): continue
+            t = re.sub(r'\s+', ' ', str(d.get('title') or '')).strip()
+            for o in _drop_opts_norm(d.get('options')):
+                pid = o.get('product_id') or ''
+                if pid and pid not in idx:
+                    idx[pid] = (t, o.get('name') or '')
+    except Exception:
+        pass
+    return idx
+
+def _split_drop_name(name):
+    """'이벤트 — 옵션' 상품명 분해 (드롭 인덱스에서 빠진 과거 mpd:: 라인 폴백)."""
+    parts = str(name or '').split(' — ', 1)
+    return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else ('', str(name or '').strip())
+
+@admin_router.get('/admin/api/orders-options.csv')
+def api_orders_options_csv(request: Request):
+    """주문 1건 × 응모옵션 1종 = 1행 CSV (당첨자 명단 제작용).
+    기본은 NEW/DROPS 응모옵션 라인만, scope=all 이면 일반 상품 라인까지 전체 품목.
+    필터: from·to·status(기존 CSV와 동일) + event(이벤트 제목 부분일치)."""
+    a = get_actor(request); need(a, 1, '응모옵션 CSV 다운로드')
+    p = request.query_params
+    where, args = [], []
+    if p.get('from'): where.append('created >= ?'); args.append(p['from'])
+    if p.get('to'): where.append('created <= ?'); args.append(p['to'] + '~')
+    if p.get('status'): where.append('status = ?'); args.append(p['status'])
+    w = (' WHERE ' + ' AND '.join(where)) if where else ''
+    rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
+    scope_all = (p.get('scope') == 'all')
+    evt_q = re.sub(r'\s+', ' ', str(p.get('event') or '')).strip()
+    idx = _drop_opt_index()
+    head = ['주문번호', '주문일시', '결제상태', '처리상태', '이벤트', '응모옵션', '수량',
+            '옵션단가', '라인금액', '주문자', '연락처', '우편번호', '주소', '응모 입력정보', '상품ID']
+    lines = [','.join(head)]
+    n = 0
+    for r in rs:
+        b = jload(r.get('buyer'), {}); sels = b.get('selections') or []
+        addr = ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
+                + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else ''))
+        for it in jload(r.get('items'), []):
+            if not isinstance(it, dict): continue
+            pid = str(it.get('id') or '')
+            nm = it.get('n') or it.get('name') or pid
+            is_drop = (pid in idx) or pid.startswith('mpd::')
+            if not scope_all and not is_drop: continue
+            evt, opt = idx.get(pid) or (_split_drop_name(nm) if is_drop else ('', str(nm)))
+            if evt_q and evt_q not in (evt or str(nm)): continue
+            qty = num(it.get('q') or 1); unit = num(it.get('p') or it.get('price') or 0)
+            st = _sel_text(sels, evt or '') if is_drop else ''
+            if is_drop and not st and sels: st = _sel_text(sels)   # 제목 변경 등 불일치 폴백
+            lines.append(','.join(esc_csv(v) for v in [
+                r.get('order_id'), (r.get('created') or '')[:19].replace('T', ' '),
+                r.get('status'), r.get('fulfill') or 'NEW', evt, opt, qty, unit, unit * qty,
+                b.get('name', ''), b.get('phone', ''), b.get('zip', ''), addr, st, pid]))
+            n += 1
+    audit(a, 'CSV다운로드', 'orders-options', '%d행' % n)
+    return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="mapdal_entry_options_%s.csv"'
+                             % kst_today().strftime('%Y%m%d')})
 
 # ═══════════════════════════ ① 고객(회원) CRM ═══════════════════════════
 def grade_of(spend, cnt):
@@ -1953,7 +2036,8 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <select id="off"><option value="">처리상태 전체</option><option value="NEW">신규</option><option value="PREPARING">상품준비중</option><option value="SHIPPED">발송완료</option><option value="DONE">배송완료</option><option value="CANCELLED">취소</option></select>
   <input id="ofrom" type="date"><input id="oto" type="date">
   <button class="btn" onclick="loadOrders(1)">검색</button>
-  <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button></div>
+  <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button>
+  <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
 <section id="t-products" style="display:none">
   <div class="product-tabs"><button class="product-tab on" id="pt-catalog" onclick="productMode('catalog')">상품</button>
@@ -2096,7 +2180,7 @@ TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
 if(!can(2)){['pnew','mergeBtn'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
-if(!can(1)){['csvbtn','tpladd','ccsv','catalogCsv','inventoryCsv'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
+if(!can(1)){['csvbtn','optcsvbtn','tpladd','ccsv','catalogCsv','inventoryCsv'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
 
 async function loadDash(){try{const d=await api('/admin/api/summary');
  const mx=Math.max(1,...d.series.map(s=>s.v));
@@ -2130,6 +2214,7 @@ async function loadOrders(p){opage=p;const q=new URLSearchParams({page:p});
  ${pager(p,d,'loadOrders')}`;}catch(e){$('#olist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 const pager=(p,d,fn)=>`<div class="pager"><button class="btn sm ghost" ${p<=1?'disabled':''} onclick="${fn}(${p-1})">이전</button><span>${p} / ${Math.max(1,Math.ceil(d.total/d.size))} · 총 ${d.total}</span><button class="btn sm ghost" ${p*d.size>=d.total?'disabled':''} onclick="${fn}(${p+1})">다음</button></div>`;
 function csv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders.csv?'+q}
+function optcsv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders-options.csv?'+q}
 
 let TPLCACHE=[];
 async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeURIComponent(oid));

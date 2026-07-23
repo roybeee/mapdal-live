@@ -1515,6 +1515,44 @@ def _sel_text(sels, evt=None):
         out.append((('[%s] ' % se) + core) if (evt is None and se) else core)
     return ' / '.join(out)
 
+# ── 응모 입력값 → 고정 컬럼 분류 (질문명 기반, 대소문자 무시) ────────────
+#   드롭 편집기의 자유입력 필드명('응모자 이름/연락처/생년월일/이메일/국적')과
+#   동의형 카드('미성년자 법정대리인 동의')를 CSV 전용 컬럼으로 편성한다.
+#   법정대리인을 최우선 매칭해 '법정대리인 성명' 류가 응모자 이름으로 새지 않게 한다.
+_ENTRY_COLS = [
+    ('guardian', re.compile(r'법정\s*대리인|보호자|guardian', re.I)),
+    ('phone',    re.compile(r'연락처|휴대폰|전화|phone|tel|mobile', re.I)),
+    ('birth',    re.compile(r'생년월일|생일|birth', re.I)),
+    ('email',    re.compile(r'이\s*메일|메일\s*주소|e-?mail', re.I)),
+    ('nation',   re.compile(r'국적|nation', re.I)),
+    ('name',     re.compile(r'이름|성함|성명|name', re.I)),
+]
+_ENTRY_EMPTY = {k: '' for k, _ in _ENTRY_COLS}
+
+def _entry_split(sels, evt=None):
+    """buyer.selections([{event,q,a}]) → (고정 컬럼 dict, 미분류 잔여 텍스트).
+    evt 지정 시 해당 이벤트(또는 이벤트 미기재) 항목만 — _sel_text 와 동일 규칙.
+    이벤트 제목 변경 등으로 매칭이 전무하면 전체를 폴백으로 사용한다."""
+    pool, rest = [], []
+    for s in (sels or []):
+        if not isinstance(s, dict): continue
+        se = re.sub(r'\s+', ' ', str(s.get('event') or '')).strip()
+        if evt and se and se != evt: continue
+        q = re.sub(r'\s+', ' ', str(s.get('q') or '')).strip()
+        v = re.sub(r'\s+', ' ', str(s.get('a') or '')).strip()
+        if not (q or v): continue
+        pool.append((q, v))
+    if evt and not pool and sels:
+        return _entry_split(sels, None)
+    fields = {k: [] for k, _ in _ENTRY_COLS}
+    for q, v in pool:
+        col = next((k for k, rx in _ENTRY_COLS if rx.search(q)), '')
+        if col and v:
+            if v not in fields[col]: fields[col].append(v)
+        elif q or v:
+            rest.append(('%s: %s' % (q, v)) if (q and v) else (q or v))
+    return {k: ' / '.join(vv) for k, vv in fields.items()}, ' / '.join(rest)
+
 def _drop_opt_index():
     """드롭 레코드의 옵션→상품 연결로 {product_id: (이벤트 제목, 옵션명)} 역인덱스 구성.
     mpd:: 자동 생성 상품뿐 아니라 수동 연결된 기존 상품도 응모옵션으로 식별한다."""
@@ -1552,8 +1590,11 @@ def api_orders_options_csv(request: Request):
     scope_all = (p.get('scope') == 'all')
     evt_q = re.sub(r'\s+', ' ', str(p.get('event') or '')).strip()
     idx = _drop_opt_index()
-    head = ['주문번호', '주문일시', '결제상태', '처리상태', '이벤트', '응모옵션', '수량',
-            '옵션단가', '라인금액', '주문자', '연락처', '우편번호', '주소', '응모 입력정보', '상품ID']
+    head = ['주문번호', '주문일시', '결제상태', '처리상태', '이벤트', '구매상품(응모옵션)', '수량',
+            '옵션단가', '라인금액',
+            '응모자 이름', '응모자 전화번호', '응모자 생년월일', '이메일', '국적',
+            '미성년자 법정대리인 동의',
+            '주문자', '연락처', '우편번호', '주소', '기타 입력정보', '상품ID']
     lines = [','.join(head)]
     n = 0
     for r in rs:
@@ -1569,12 +1610,12 @@ def api_orders_options_csv(request: Request):
             evt, opt = idx.get(pid) or (_split_drop_name(nm) if is_drop else ('', str(nm)))
             if evt_q and evt_q not in (evt or str(nm)): continue
             qty = num(it.get('q') or 1); unit = num(it.get('p') or it.get('price') or 0)
-            st = _sel_text(sels, evt or '') if is_drop else ''
-            if is_drop and not st and sels: st = _sel_text(sels)   # 제목 변경 등 불일치 폴백
+            ef, rest = _entry_split(sels, evt or '') if is_drop else (dict(_ENTRY_EMPTY), '')
             lines.append(','.join(esc_csv(v) for v in [
                 r.get('order_id'), (r.get('created') or '')[:19].replace('T', ' '),
                 r.get('status'), r.get('fulfill') or 'NEW', evt, opt, qty, unit, unit * qty,
-                b.get('name', ''), b.get('phone', ''), b.get('zip', ''), addr, st, pid]))
+                ef['name'], ef['phone'], ef['birth'], ef['email'], ef['nation'], ef['guardian'],
+                b.get('name', ''), b.get('phone', ''), b.get('zip', ''), addr, rest, pid]))
             n += 1
     audit(a, 'CSV다운로드', 'orders-options', '%d행' % n)
     return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
@@ -11088,21 +11129,37 @@ def artist_hub_page(slug: str):
 
 # ── 앨범상세 아티스트 칩 — 제목 아래 '아티스트관' 태그 링크 주입 ─────────
 DROPSEL_SNIPPET = r"""<script id="mpDropSel">(function(){
-/* NEW/DROPS 응모 선택값(mapdal_drop_sel) → 주문 buyer.selections 부착 (체크아웃 전용) */
+/* NEW/DROPS 응모 선택값(mapdal_drop_sel) → 주문 buyer.selections 부착 (체크아웃 전용)
+   ★ 결제 실행부(_checkout_apply)가 팝업 차단 회피를 위해 주문 생성을 '동기 XHR'로
+   전환하면서 기존 fetch 래핑만으로는 부착이 전량 누락됐다(응모 CSV 입력정보 공란의 원인).
+   fetch·XMLHttpRequest 양쪽을 래핑해 전송 방식과 무관하게 항상 부착한다. */
 if(!/^\/checkout(?:\.html)?$/.test(location.pathname))return;
+function mpAtt(body){
+ try{
+  var b=JSON.parse(body);
+  if(b&&b.buyer&&b.buyer.selections&&b.buyer.selections.length)return body; /* 이미 부착됨 — 멱등 */
+  var map=JSON.parse(localStorage.getItem('mapdal_drop_sel')||'{}'),out=[],seen={};
+  (b.items||[]).forEach(function(it){var m=map[String(it.id||'')];
+   if(!m||!m.sel||!m.sel.length)return;
+   var k=m.event||'';if(seen[k])return;seen[k]=1;
+   m.sel.forEach(function(s){if(s&&s.q)out.push({event:m.event||'',q:String(s.q).slice(0,120),a:String(s.a||'').slice(0,200)})})});
+  if(out.length){b.buyer=b.buyer||{};b.buyer.selections=out.slice(0,40);return JSON.stringify(b)}
+ }catch(e){}
+ return body}
 var OF=window.fetch;
 window.fetch=function(u,o){
  try{
   if(o&&String(o.method||'').toUpperCase()==='POST'&&String(u).indexOf('/api/orders')>=0&&typeof o.body==='string'){
-   var b=JSON.parse(o.body),map=JSON.parse(localStorage.getItem('mapdal_drop_sel')||'{}'),out=[],seen={};
-   (b.items||[]).forEach(function(it){var m=map[String(it.id||'')];
-    if(!m||!m.sel||!m.sel.length)return;
-    var k=m.event||'';if(seen[k])return;seen[k]=1;
-    m.sel.forEach(function(s){if(s&&s.q)out.push({event:m.event||'',q:String(s.q).slice(0,120),a:String(s.a||'').slice(0,200)})})});
-   if(out.length){b.buyer=b.buyer||{};b.buyer.selections=out.slice(0,40);o.body=JSON.stringify(b)}
-  }
+   o.body=mpAtt(o.body)}
  }catch(e){}
  return OF.apply(this,arguments)};
+var XO=XMLHttpRequest.prototype.open,XS=XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.open=function(m,u){
+ try{this.__mpOrd=(String(m||'').toUpperCase()==='POST'&&String(u).indexOf('/api/orders')>=0)}catch(e){}
+ return XO.apply(this,arguments)};
+XMLHttpRequest.prototype.send=function(body){
+ try{if(this.__mpOrd&&typeof body==='string')body=mpAtt(body)}catch(e){}
+ return XS.call(this,body)};
 })();</script>"""
 
 DROPINPUT_SNIPPET = r"""<style id="mpTbodyCss">

@@ -289,6 +289,8 @@ def ensure_ready():
            role TEXT, action TEXT, target TEXT, detail TEXT)""",
         """CREATE TABLE IF NOT EXISTS admin_sessions(id TEXT PRIMARY KEY, admin_id TEXT,
            created TEXT, expires TEXT)""",
+        """CREATE TABLE IF NOT EXISTS entry_backfill(id TEXT PRIMARY KEY, created TEXT, ip TEXT,
+           phone_digits TEXT, member_id TEXT, matched TEXT, payload TEXT)""",
         """CREATE TABLE IF NOT EXISTS page_edits(path TEXT PRIMARY KEY, html TEXT,
            updated TEXT, by_admin TEXT)""",
         """CREATE TABLE IF NOT EXISTS page_history(id TEXT PRIMARY KEY, path TEXT, html TEXT,
@@ -1620,6 +1622,308 @@ def api_orders_options_csv(request: Request):
     audit(a, 'CSV다운로드', 'orders-options', '%d행' % n)
     return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
                     headers={'Content-Disposition': 'attachment; filename="mapdal_entry_options_%s.csv"'
+                             % kst_today().strftime('%Y%m%d')})
+
+# ═══════════ 응모 입력정보 회수 — 재입력 링크(서명 토큰) + 브라우저 잔존값 자동 백필 ═══════════
+#   배경: 결제 실행부의 동기 XHR 전환으로 buyer.selections 부착이 누락되던 기간의 주문은
+#   응모 입력값이 서버에 없다. 결제완료 페이지가 mapdal_drop_sel 을 지우므로 PAID 건은
+#   ① 서명 링크 재입력(확실), 미완료·이탈 건은 ② 재방문 자동 백필로 회수한다.
+def _entry_secret():
+    """재입력 링크 서명용 시크릿 — site_settings 에 1회 생성 후 고정."""
+    r = one("SELECT value FROM site_settings WHERE key='entry_recover_secret'")
+    if r and (r.get('value') or '').strip():
+        return r['value'].strip()
+    s = secrets.token_hex(16)
+    try:
+        run("INSERT INTO site_settings(key,value,updated,by_admin) VALUES('entry_recover_secret',?,?,?)",
+            (s, now_iso(), 'system'))
+    except Exception:
+        r = one("SELECT value FROM site_settings WHERE key='entry_recover_secret'")
+        if r and (r.get('value') or '').strip(): return r['value'].strip()
+    return s
+
+def _entry_token(oid):
+    return hmac.new(_entry_secret().encode(), ('er1:' + str(oid)).encode(), hashlib.sha256).hexdigest()[:20]
+
+def _entry_token_ok(oid, tok):
+    try:
+        return bool(oid) and bool(tok) and hmac.compare_digest(_entry_token(oid), str(tok))
+    except Exception:
+        return False
+
+def _order_drop_lines(r, idx):
+    """주문 → (이벤트 제목, [(응모옵션명, 수량)…]) — 드롭 라인만."""
+    out, evt = [], ''
+    for it in jload(r.get('items'), []):
+        if not isinstance(it, dict): continue
+        pid = str(it.get('id') or '')
+        nm = it.get('n') or it.get('name') or pid
+        if not ((pid in idx) or pid.startswith('mpd::')): continue
+        e, o = idx.get(pid) or _split_drop_name(nm)
+        if e and not evt: evt = e
+        out.append((o, num(it.get('q') or 1)))
+    return evt, out
+
+def _entry_phone_norm(v):
+    s = re.sub(r'[\s()\-.]', '', str(v or ''))
+    intl = s.startswith('+'); d = re.sub(r'\D', '', s)
+    if intl: return '+' + d
+    if len(d) > 11 or (d and d[0] != '0'): return d
+    if len(d) == 11: return d[:3] + '-' + d[3:7] + '-' + d[7:]
+    if len(d) == 10: return d[:3] + '-' + d[3:6] + '-' + d[6:]
+    return d
+
+def _hx(s):
+    return (str(s if s is not None else '').replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;'))
+
+_ENTRY_PAGE_CSS = """<style>
+:root{--red:#E8332A;--ink:#141414;--paper:#F7F6F2;--line:#E3E0D8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'IBM Plex Sans KR',-apple-system,sans-serif;background:var(--paper);color:var(--ink);min-height:100vh}
+.top{background:var(--ink);color:#fff;padding:14px 20px;font-family:'Black Han Sans',sans-serif;font-size:18px;letter-spacing:.5px}
+.top span{color:var(--red)}
+.wrap{max-width:560px;margin:0 auto;padding:26px 18px 60px}
+.card{background:#fff;border:1px solid var(--line);padding:24px 22px;margin-top:14px}
+h1{font-size:19px;line-height:1.45;margin-bottom:6px}
+.ev{font-size:13px;color:#555;line-height:1.6}
+.opt{font-size:13px;background:var(--paper);border:1px solid var(--line);padding:10px 12px;margin-top:12px;line-height:1.7}
+label{display:block;font-size:12.5px;font-weight:700;margin:16px 0 6px}
+label em{color:var(--red);font-style:normal;margin-left:3px}
+input[type=text]{width:100%;padding:12px;border:1px solid #d8d5cc;background:#fff;font-family:inherit;font-size:14px;outline:none}
+input[type=text]:focus{border-color:var(--ink)}
+.rad{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.rad label{display:flex;align-items:flex-start;gap:8px;font-weight:400;font-size:13px;margin:0;border:1px solid #d8d5cc;padding:11px 12px;cursor:pointer;line-height:1.5}
+.rad input{margin-top:2px;accent-color:var(--red)}
+.err{display:none;color:var(--red);font-size:11.5px;margin-top:5px}
+.btn{width:100%;margin-top:22px;padding:15px;background:var(--red);color:#fff;border:0;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer}
+.btn:disabled{opacity:.5}
+.note{font-size:11px;color:#888;line-height:1.7;margin-top:14px}
+.done{text-align:center;padding:44px 20px}
+.done b{display:block;font-size:19px;margin-bottom:8px}
+.done p{font-size:13px;color:#555;line-height:1.7}
+</style>"""
+
+def _entry_recover_html(oid, tok, evt, opt_lines, ef, status):
+    opts = ''.join('<div>%s × %d</div>' % (_hx(o), q) for o, q in opt_lines) or '<div>응모 상품</div>'
+    g = ef.get('guardian') or ''
+    g_minor = ' checked' if '미성년' in g else ''
+    g_adult = ' checked' if (g and '미성년' not in g) else ''
+    fields = ''
+    for k, label, ph in (('name', '응모자 이름', '이름을 입력해 주세요'),
+                         ('phone', '응모자 전화번호', '010-0000-0000 (해외 +8170…)'),
+                         ('birth', '응모자 생년월일', 'YYYY.MM.DD'),
+                         ('email', '이메일', 'E-mail Address'),
+                         ('nation', '국적', '대한민국 or KOREA')):
+        fields += ('<label>%s<em>*</em></label>'
+                   '<input type="text" id="f_%s" maxlength="60" placeholder="%s" value="%s">'
+                   '<div class="err" id="e_%s"></div>' % (label, k, _hx(ph), _hx(ef.get(k) or ''), k))
+    paid_note = '' if status == 'PAID' else ('<div class="opt" style="border-color:var(--red);color:var(--red)">'
+                                             '현재 결제 상태: %s — 결제 완료 후 응모가 확정됩니다.</div>' % _hx(status or ''))
+    return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<meta name="robots" content="noindex,nofollow"><title>응모 정보 입력 — MAPDAL SEOUL</title>'
+            '<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;700&display=swap" rel="stylesheet">'
+            + _ENTRY_PAGE_CSS +
+            '</head><body><div class="top">MAPDAL<span>SEOUL</span> — 응모 정보 입력</div>'
+            '<div class="wrap"><div class="card" id="formCard">'
+            '<h1>응모 정보를 입력해 주세요</h1>'
+            '<div class="ev">%s<br>주문번호 %s</div>'
+            '<div class="opt">%s</div>%s'
+            '%s'
+            '<label>미성년자 법정대리인 동의<em>*</em></label>'
+            '<div class="rad">'
+            '<label><input type="radio" name="g" value="성년 본인 응모입니다"%s> 성년 본인 응모입니다</label>'
+            '<label><input type="radio" name="g" value="미성년자 응모 — 법정대리인 동의를 받았습니다"%s> '
+            '미성년자 응모이며, 법정대리인(보호자)의 동의를 받았습니다</label></div>'
+            '<div class="err" id="e_g"></div>'
+            '<button class="btn" id="sbtn">응모 정보 제출</button>'
+            '<div class="note">입력하신 정보는 응모 확인·당첨자 선정 및 안내 목적에 한해 이용되며, '
+            '이벤트 종료 후 관련 법령에 따라 파기됩니다. 기재 오류에 대한 책임은 응모자 본인에게 있습니다.</div>'
+            '</div></div>'
+            '<script>(function(){var O=%s,T=%s;'
+            'function v(id){return document.getElementById(id).value.trim()}'
+            'function err(id,m){var e=document.getElementById("e_"+id);e.textContent=m;e.style.display=m?"block":"none";return !m}'
+            'document.getElementById("sbtn").addEventListener("click",function(){'
+            'var ok=true;'
+            'ok=err("name",v("f_name")?"":"이름을 입력해 주세요")&&ok;'
+            'var pd=v("f_phone").replace(/\\D/g,"");'
+            'ok=err("phone",(pd.length>=7&&pd.length<=15)?"":"올바른 연락처를 입력해 주세요")&&ok;'
+            'var bm=v("f_birth").match(/^(\\d{4})[.\\-\\/\\s]*(\\d{1,2})[.\\-\\/\\s]*(\\d{1,2})$/);'
+            'ok=err("birth",bm?"":"YYYY.MM.DD 형식으로 입력해 주세요")&&ok;'
+            'ok=err("email",/^[^\\s@]+@[^\\s@]+\\.[A-Za-z]{2,}$/.test(v("f_email"))?"":"올바른 이메일을 입력해 주세요")&&ok;'
+            'ok=err("nation",v("f_nation")?"":"국적을 입력해 주세요")&&ok;'
+            'var g=document.querySelector("input[name=g]:checked");'
+            'ok=err("g",g?"":"해당 항목을 선택해 주세요")&&ok;'
+            'if(!ok)return;'
+            'var b=document.getElementById("sbtn");b.disabled=true;b.textContent="제출 중…";'
+            'fetch("/api/entry-recover",{method:"POST",headers:{"Content-Type":"application/json"},'
+            'body:JSON.stringify({o:O,t:T,name:v("f_name"),phone:v("f_phone"),birth:v("f_birth"),'
+            'email:v("f_email"),nation:v("f_nation"),guardian:g.value})})'
+            '.then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||"제출 실패");return d})})'
+            '.then(function(){document.getElementById("formCard").innerHTML='
+            '\'<div class="done"><b>제출이 완료되었습니다</b><p>응모 정보가 정상 접수되었습니다.<br>'
+            '당첨자 발표는 이벤트 안내에 따라 진행됩니다.</p></div>\';})'
+            '.catch(function(e){alert(e.message||"제출에 실패했습니다. 다시 시도해 주세요.");'
+            'b.disabled=false;b.textContent="응모 정보 제출";});});})();</script>'
+            '</body></html>'
+            % (_hx(evt or 'MAPDAL SEOUL 응모 이벤트'), _hx(oid), opts, paid_note, fields,
+               g_adult, g_minor, json.dumps(oid), json.dumps(tok)))
+
+@admin_router.get('/entry-recover')
+def entry_recover_page(request: Request):
+    try: ensure_ready()
+    except Exception: pass
+    p = request.query_params
+    oid = (p.get('o') or '').strip()[:40]; tok = (p.get('t') or '').strip()[:40]
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,)) if _entry_token_ok(oid, tok) else None
+    if not r:
+        return HTMLResponse('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                            '<body style="font-family:sans-serif;background:#F7F6F2;text-align:center;padding:80px 24px">'
+                            '<h2 style="margin-bottom:10px">링크가 올바르지 않습니다</h2>'
+                            '<p style="color:#666;font-size:14px;line-height:1.7">문자로 받으신 링크 전체를 그대로 열어 주세요.<br>'
+                            '문제가 계속되면 맵달SEOUL 고객센터로 문의 바랍니다.</p></body>', status_code=403)
+    idx = _drop_opt_index()
+    evt, ln = _order_drop_lines(r, idx)
+    b = jload(r.get('buyer'), {})
+    ef, _rest = _entry_split(b.get('selections') or [], evt or '')
+    return HTMLResponse(_entry_recover_html(r['order_id'], tok, evt, ln, ef, (r.get('status') or '').upper()),
+                        headers={'Cache-Control': 'no-store'})
+
+@admin_router.post('/api/entry-recover')
+def api_entry_recover(request: Request, body: dict = Body(...)):
+    try: ensure_ready()
+    except Exception: pass
+    oid = str(body.get('o') or '').strip()[:40]; tok = str(body.get('t') or '').strip()[:40]
+    if not _entry_token_ok(oid, tok):
+        raise HTTPException(403, '링크가 올바르지 않습니다')
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not r: raise HTTPException(404, '주문을 찾을 수 없습니다')
+    def gv(k, mx): return re.sub(r'\s+', ' ', str(body.get(k) or '')).strip()[:mx]
+    name, phone, birth = gv('name', 40), gv('phone', 30), gv('birth', 14)
+    email, nation, guardian = gv('email', 60), gv('nation', 30), gv('guardian', 80)
+    if not name: raise HTTPException(400, '이름을 입력해 주세요')
+    pd = digits(phone)
+    if not (7 <= len(pd) <= 15): raise HTTPException(400, '올바른 연락처를 입력해 주세요')
+    bm = re.match(r'^(\d{4})[.\-/\s]*(\d{1,2})[.\-/\s]*(\d{1,2})$', birth)
+    if not bm: raise HTTPException(400, '생년월일은 YYYY.MM.DD 형식으로 입력해 주세요')
+    try:
+        bd = datetime.date(int(bm.group(1)), int(bm.group(2)), int(bm.group(3)))
+        if bd.year < 1900 or bd > kst_today(): raise ValueError()
+    except ValueError:
+        raise HTTPException(400, '생년월일을 확인해 주세요')
+    if not re.match(r'^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$', email):
+        raise HTTPException(400, '올바른 이메일을 입력해 주세요')
+    if not nation: raise HTTPException(400, '국적을 입력해 주세요')
+    if not guardian: raise HTTPException(400, '법정대리인 동의 항목을 선택해 주세요')
+    evt, _ln = _order_drop_lines(r, _drop_opt_index())
+    sels = [{'event': evt, 'q': q, 'a': a} for q, a in (
+        ('응모자 이름', name), ('응모자 전화번호', _entry_phone_norm(phone)),
+        ('응모자 생년월일', '%04d.%02d.%02d' % (bd.year, bd.month, bd.day)),
+        ('이메일', email), ('국적', nation), ('미성년자 법정대리인 동의', guardian))]
+    b = jload(r.get('buyer'), {})
+    b['selections'] = sels
+    run('UPDATE orders SET buyer=? WHERE order_id=?', (json.dumps(b, ensure_ascii=False), oid))
+    audit({'name': '응모자', 'role': '-'}, '응모입력 재등록', oid, '%s / %s' % (name[:20], pd[-4:]))
+    return {'ok': True}
+
+@admin_router.get('/admin/api/entry-recover-links.csv')
+def api_entry_recover_links(request: Request):
+    """드롭 주문별 재입력 링크 명단 — SMS 발송용. status=all 로 전체, 기본 PAID+입금대기."""
+    a = get_actor(request); need(a, 1, '재입력 링크 다운로드')
+    p = request.query_params
+    st = (p.get('status') or 'PAID,WAITING_DEPOSIT').strip()
+    st_set = None if st.lower() == 'all' else {x.strip().upper() for x in st.split(',') if x.strip()}
+    evt_q = re.sub(r'\s+', ' ', str(p.get('event') or '')).strip()
+    idx = _drop_opt_index()
+    origin = (_genv('SITE_ORIGIN') or _from_app('SITE_ORIGIN', 'https://mapdal.kr')).rstrip('/')
+    head = ['주문번호', '주문일시', '결제상태', '이벤트', '응모옵션(수량)', '주문자', '연락처',
+            '응모입력상태', '재입력 링크']
+    lines = [','.join(head)]; n = 0
+    for r in rows('SELECT * FROM orders ORDER BY created DESC LIMIT 20000'):
+        if st_set is not None and (r.get('status') or '').upper() not in st_set: continue
+        evt, ln = _order_drop_lines(r, idx)
+        if not ln: continue
+        if evt_q and evt_q not in (evt or ''): continue
+        b = jload(r.get('buyer'), {})
+        link = '%s/entry-recover?o=%s&t=%s' % (origin, urllib.parse.quote(str(r['order_id']), safe=''),
+                                               _entry_token(r['order_id']))
+        lines.append(','.join(esc_csv(v) for v in [
+            r.get('order_id'), (r.get('created') or '')[:19].replace('T', ' '), r.get('status'), evt,
+            ' / '.join('%s×%d' % (o, q) for o, q in ln), b.get('name', ''), b.get('phone', ''),
+            ('입력완료' if b.get('selections') else '미입력'), link]))
+        n += 1
+    audit(a, 'CSV다운로드', 'entry-recover-links', '%d행' % n)
+    return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="mapdal_entry_recover_links_%s.csv"'
+                             % kst_today().strftime('%Y%m%d')})
+
+@admin_router.post('/api/drops/backfill')
+def api_drops_backfill(request: Request, body: dict = Body(...)):
+    """브라우저 잔존 mapdal_drop_sel 자동 회수 — 미완료·이탈 주문의 빈 selections 만 채운다.
+    매칭: (회원 세션 일치) 또는 (응모자 연락처 == 주문자 연락처). 기존 값은 절대 덮어쓰지 않는다."""
+    try: ensure_ready()
+    except Exception: pass
+    mp = body.get('map') if isinstance(body, dict) else None
+    if not isinstance(mp, dict) or not mp: return {'ok': True, 'matched': 0}
+    pids, out, seen = [], [], {}
+    for pid, e in list(mp.items())[:20]:
+        if not isinstance(e, dict): continue
+        sel = e.get('sel')
+        if not isinstance(sel, list) or not sel: continue
+        pids.append(str(pid)[:80])
+        k = re.sub(r'\s+', ' ', str(e.get('event') or '')).strip()[:200]
+        if k in seen: continue
+        seen[k] = 1
+        for s in sel[:40]:
+            if isinstance(s, dict) and s.get('q'):
+                out.append({'event': k, 'q': str(s.get('q'))[:120], 'a': str(s.get('a') or '')[:200]})
+    out = out[:40]
+    if not (pids and out): return {'ok': True, 'matched': 0}
+    ef, _rest = _entry_split(out, None)
+    apd = digits(ef.get('phone'))
+    mem = None
+    try: mem = member_of(request)
+    except Exception: pass
+    ip = ((request.client.host if request.client else '') or '-')[:80]
+    matched = []
+    since = (kst_naive() - datetime.timedelta(days=90)).isoformat(timespec='seconds')
+    pset = set(pids)
+    for r in rows('SELECT * FROM orders WHERE created >= ? ORDER BY created DESC LIMIT 4000', (since,)):
+        if len(matched) >= 10: break
+        b = jload(r.get('buyer'), {})
+        if b.get('selections'): continue
+        its = {str(it.get('id') or '') for it in jload(r.get('items'), []) if isinstance(it, dict)}
+        if not (its & pset): continue
+        ok = bool(mem and r.get('member_id') and r.get('member_id') == mem.get('id'))
+        if not ok and len(apd) >= 7 and apd in (digits(b.get('phone')), str(r.get('contact_phone_norm') or '')):
+            ok = True
+        if not ok: continue
+        b['selections'] = out
+        run('UPDATE orders SET buyer=? WHERE order_id=?', (json.dumps(b, ensure_ascii=False), r['order_id']))
+        matched.append(str(r['order_id']))
+    try:
+        run('INSERT INTO entry_backfill(id,created,ip,phone_digits,member_id,matched,payload) VALUES(?,?,?,?,?,?,?)',
+            (uid(), now_iso(), ip, apd[:20], str((mem or {}).get('id') or ''), ','.join(matched)[:300],
+             json.dumps({'pids': pids, 'sel': out}, ensure_ascii=False)[:8000]))
+    except Exception: pass
+    return {'ok': True, 'matched': len(matched)}
+
+@admin_router.get('/admin/api/entry-backfill-log.csv')
+def api_entry_backfill_log(request: Request):
+    """자동 회수 수신 이력 — 미매칭 건 수동 대조용 (응모자 필드 파싱 포함)."""
+    a = get_actor(request); need(a, 1, '회수 이력 다운로드')
+    head = ['수신일시', 'IP', '회원ID', '매칭 주문번호', '응모자 이름', '응모자 전화번호',
+            '응모자 생년월일', '이메일', '국적', '미성년자 법정대리인 동의', '기타 입력정보']
+    lines = [','.join(head)]
+    for r in rows('SELECT * FROM entry_backfill ORDER BY created DESC LIMIT 2000'):
+        pl = jload(r.get('payload'), {})
+        ef, rest = _entry_split(pl.get('sel') or [], None)
+        lines.append(','.join(esc_csv(v) for v in [
+            r.get('created'), r.get('ip'), r.get('member_id'), r.get('matched') or '(미매칭)',
+            ef['name'], ef['phone'], ef['birth'], ef['email'], ef['nation'], ef['guardian'], rest]))
+    return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="mapdal_entry_backfill_log_%s.csv"'
                              % kst_today().strftime('%Y%m%d')})
 
 # ═══════════════════════════ ① 고객(회원) CRM ═══════════════════════════
@@ -9567,6 +9871,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
     if 'mpDropInput' not in html: add += DROPINPUT_SNIPPET
+    if 'mpDropRecover' not in html: add += ENTRYRECOVER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
@@ -11128,6 +11433,28 @@ def artist_hub_page(slug: str):
                         headers={'Cache-Control': 'no-cache'})
 
 # ── 앨범상세 아티스트 칩 — 제목 아래 '아티스트관' 태그 링크 주입 ─────────
+ENTRYRECOVER_SNIPPET = r"""<script id="mpDropRecover">(function(){
+/* 브라우저에 남은 응모 입력값(mapdal_drop_sel) 자동 회수 — 전 공개 페이지, 페이로드당 1회.
+   결제 미완료·이탈 주문의 빈 selections 를 서버(/api/drops/backfill)가 안전 매칭으로 채운다. */
+if(/^\/(admin|entry-recover)/.test(location.pathname))return;
+function mpRun(){
+ try{
+  var raw=localStorage.getItem('mapdal_drop_sel')||'';if(!raw)return;
+  var mp=JSON.parse(raw),has=false;
+  Object.keys(mp).forEach(function(k){var e=mp[k];if(e&&e.sel&&e.sel.length)has=true});
+  if(!has)return;
+  var h=0;for(var i=0;i<raw.length;i++){h=((h<<5)-h+raw.charCodeAt(i))|0}
+  h=String(h);
+  if(localStorage.getItem('mapdal_drop_sel_sent')===h)return;
+  fetch('/api/drops/backfill',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({map:mp})})
+   .then(function(r){if(r&&r.ok)try{localStorage.setItem('mapdal_drop_sel_sent',h)}catch(e){}})
+   .catch(function(){});
+ }catch(e){}}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(mpRun,1500)});
+else setTimeout(mpRun,1500);
+})();</script>"""
+
 DROPSEL_SNIPPET = r"""<script id="mpDropSel">(function(){
 /* NEW/DROPS 응모 선택값(mapdal_drop_sel) → 주문 buyer.selections 부착 (체크아웃 전용)
    ★ 결제 실행부(_checkout_apply)가 팝업 차단 회피를 위해 주문 생성을 '동기 XHR'로

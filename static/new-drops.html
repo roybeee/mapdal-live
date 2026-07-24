@@ -275,17 +275,21 @@ nav.main>div:hover .mega{display:grid}
 .nd-rel-track .nd-card{scroll-snap-align:start}
 
 /* ---------- 당첨자 발표 ---------- */
-.nd-win{max-width:1180px;margin:0 auto;padding:44px 48px 96px}
-.nd-win-head{text-align:center;margin-bottom:34px}
-.nd-win-head .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;color:var(--red);margin-bottom:12px}
-.nd-win-head h1{font-family:var(--disp);font-weight:400;font-size:clamp(24px,3.2vw,40px);line-height:1.25;margin-bottom:12px}
-.nd-win-head .meta{font-family:var(--mono);font-size:12px;color:var(--steel);letter-spacing:.06em}
-.nd-win-banner{max-width:760px;margin:0 auto 30px;border:1px solid var(--line);background:#fff;overflow:hidden}
-.nd-win-banner img{width:100%}
-.nd-wnotice{max-width:760px;margin:0 auto 26px;border:1px solid var(--line);background:#fff;padding:18px 20px}
-.nd-wnotice p{font-size:13px;line-height:1.9;color:#3A3A38;display:flex;gap:8px}
-.nd-wnotice p::before{content:'·';color:var(--red);font-weight:800}
-.nd-wcheck{max-width:760px;margin:0 auto 40px;border:1px solid var(--line);border-top:3px solid var(--red);background:#fff;padding:22px}
+.nd-win{max-width:960px;margin:0 auto;padding:52px 48px 96px}
+.nd-win-head{margin-bottom:8px}
+.nd-win-head h1{font-weight:800;font-size:clamp(24px,3.4vw,40px);line-height:1.34;letter-spacing:-.01em;word-break:keep-all;margin-bottom:14px}
+.nd-win-head .meta{font-size:14px;color:#8E8D87}
+.nd-win-banner{margin:22px 0 0;border:1px solid var(--line);background:#fff;overflow:hidden}
+.nd-win-banner img{width:100%;display:block}
+.nd-wnotice{margin:26px 0 24px}
+.nd-wnotice p{font-size:14px;line-height:1.95;color:#3A3A38;display:flex;gap:8px}
+.nd-wnotice p::before{content:'·';flex:none}
+.nd-wgo{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;
+  border:1px solid #D9D7D0;border-radius:14px;background:#fff;padding:19px 20px;
+  font-size:15.5px;font-weight:700;color:var(--ink);transition:border-color .15s,background .15s}
+.nd-wgo:hover{border-color:var(--ink);background:var(--paper)}
+.nd-wgo .arr{font-weight:400;transform:translateY(-1px)}
+.nd-wcheck{margin:22px 0 0;border:1px solid var(--line);border-top:3px solid var(--red);background:#fff;padding:22px}
 .nd-wcheck h5{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--red);margin-bottom:14px}
 .nd-wcheck .frm{display:flex;gap:8px}
 .nd-wcheck input{flex:1;font-family:var(--mono);font-size:13px;padding:13px 14px;border:1px solid var(--line);border-radius:2px;background:var(--paper)}
@@ -297,22 +301,29 @@ nav.main>div:hover .mega{display:grid}
 .nd-wres{margin-top:14px;padding:15px 16px;border-radius:2px;font-size:13.5px;line-height:1.7;display:none}
 .nd-wres.win{display:block;background:var(--red);color:#fff;font-weight:700}
 .nd-wres.miss{display:block;background:var(--paper);border:1px solid var(--line);color:var(--steel)}
-.nd-wgroup{border:1px solid var(--line);background:#fff;margin-bottom:26px}
-.nd-wghead{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.nd-wtype{font-family:var(--mono);font-size:10px;letter-spacing:.12em;background:var(--ink);color:var(--amber);padding:5px 9px;border-radius:2px}
-.nd-wghead h3{font-size:16px;font-weight:800}
-.nd-wghead .cnt{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--steel);letter-spacing:.06em}
-.nd-wlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
-.nd-wrow{display:flex;align-items:center;gap:10px;padding:11px 20px;border-bottom:1px solid #F1EFE9;border-right:1px solid #F1EFE9;font-size:13px;min-width:0}
-.nd-wrow .idx{font-family:var(--mono);font-size:10.5px;color:#B9B7AF;width:36px;flex:none}
-.nd-wrow .no{font-family:var(--mono);font-weight:500;letter-spacing:.02em;overflow-wrap:anywhere}
-.nd-wrow .nm{color:var(--steel);flex:none}
-.nd-badge{margin-left:auto;font-size:10px;font-weight:800;color:#fff;padding:3px 9px;border-radius:10px;letter-spacing:.04em;flex:none}
-.nd-wrow.hit{background:#FFF3D6;outline:2px solid var(--amber);outline-offset:-2px}
+.nd-wchips{display:flex;flex-wrap:wrap;gap:10px;margin:32px 0 4px}
+.nd-wchip{border:0;cursor:pointer;font:inherit;font-size:14px;font-weight:600;color:var(--ink);
+  background:#F1EFE9;border-radius:999px;padding:13px 22px;transition:background .15s,color .15s}
+.nd-wchip:hover{background:#E7E4DC}
+.nd-wchip.on{background:var(--ink);color:#fff}
+.nd-wsec{margin-top:36px}
+.nd-wsec>h3{font-size:19px;font-weight:800;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.nd-wsec .cnt{font-family:var(--mono);font-size:12px;color:var(--steel);font-weight:400;letter-spacing:.06em}
+.nd-wtype{font-family:var(--mono);font-size:10px;letter-spacing:.12em;background:var(--ink);color:var(--amber);padding:5px 9px;border-radius:2px;font-weight:400}
+.nd-wtb{width:100%;border-collapse:collapse;background:#fff;border:1px solid #EFEDE8}
+.nd-wtb th{background:#F7F6F3;font-size:12.5px;font-weight:700;color:#5F5E58;padding:14px 10px;text-align:center;border-bottom:1px solid #EFEDE8}
+.nd-wtb td{padding:15px 10px;text-align:center;font-size:13.5px;border-bottom:1px solid #F1EFE9;overflow-wrap:anywhere}
+.nd-wtb tr:last-child td{border-bottom:0}
+.nd-wtb .c-i{width:64px;font-family:var(--mono);font-size:11px;color:#B9B7AF}
+.nd-wtb .c-no{font-family:var(--mono);letter-spacing:.02em}
+.nd-wtb .c-ph{font-family:var(--mono);letter-spacing:.04em}
+.nd-badge{display:inline-block;font-size:10px;font-weight:800;color:#fff;padding:3px 9px;border-radius:10px;letter-spacing:.04em}
+.nd-wtb tr.hit td{background:#FFF3D6}
+.nd-wtb tr.hit .c-no{color:var(--red);font-weight:700}
 .nd-reserved{max-width:640px;margin:24px auto 0;border:1px solid var(--line);border-top:3px solid var(--amber);background:#fff;padding:44px 28px;text-align:center}
 .nd-reserved .clock{font-family:var(--mono);font-size:26px;letter-spacing:.08em;color:var(--ink);margin:16px 0 8px}
 .nd-reserved p{font-size:13.5px;color:var(--steel);line-height:1.8}
-.nd-backrow{text-align:center;margin-top:36px}
+.nd-backrow{text-align:center;margin-top:40px}
 .nd-backrow a{font-family:var(--mono);font-size:12px;letter-spacing:.1em;border-bottom:2px solid var(--ink);padding-bottom:3px}
 .nd-backrow a:hover{color:var(--red);border-color:var(--red)}
 
@@ -350,6 +361,13 @@ footer li a:hover{color:#fff}
   .nd-win{padding:32px 18px 72px}
   .nd-wcheck .frm{flex-direction:column}
   .nd-wcheck button{padding:13px 22px}
+  .nd-win-head h1{font-size:22px}
+  .nd-wgo{font-size:14px;padding:16px 14px;border-radius:12px}
+  .nd-wchip{font-size:13px;padding:11px 16px}
+  .nd-wsec>h3{font-size:16.5px}
+  .nd-wtb th{font-size:11px;padding:11px 4px}
+  .nd-wtb td{font-size:12px;padding:12px 4px}
+  .nd-wtb .c-i{width:38px}
   .foot-inner{grid-template-columns:1fr;padding:48px 22px 32px}
   .foot-base{padding:18px 22px;flex-direction:column;gap:8px}
 }
@@ -740,22 +758,21 @@ var BPAL=['#E8332A','#4B3AE8','#00A879','#B8860B','#C2185B','#141414'];
 function bcol(t){var h=0;for(var i=0;i<t.length;i++)h=(h*31+t.charCodeAt(i))>>>0;return BPAL[h%BPAL.length]}
 function normNo(s){return String(s||'').replace(/\s+/g,'').toUpperCase()}
 var DET=null;
-function winRow(w,gi,i){
- return '<div class="nd-wrow" id="w-'+gi+'-'+i+'"><span class="idx">'+w.i+'</span>'
-  +'<span class="no">'+esc(w.no)+'</span>'
-  +(w.name?'<span class="nm">'+esc(w.name)+'</span>':'')
-  +(w.badge?'<span class="nd-badge" style="background:'+bcol(w.badge)+'">'+esc(w.badge)+'</span>':'')
-  +'</div>'}
+function winTr(w,gi,i,cols){
+ var h='<tr id="w-'+gi+'-'+i+'"><td class="c-i">'+w.i+'</td><td class="c-no">'+esc(w.no)+'</td>';
+ if(cols.name)h+='<td>'+(w.name?esc(w.name):'-')+'</td>';
+ if(cols.phone)h+='<td class="c-ph">'+(w.phone?esc(w.phone):'-')+'</td>';
+ if(cols.badge)h+='<td>'+(w.badge?'<span class="nd-badge" style="background:'+bcol(w.badge)+'">'+esc(w.badge)+'</span>':'-')+'</td>';
+ return h+'</tr>'}
 function renderWinners(c){
  document.title='당첨자 발표 — '+c.title+' | 맵달SEOUL';
  var head='<div class="nd-win"><div class="nd-win-head">'
-  +'<div class="eyebrow">🎉 WINNER ANNOUNCEMENT</div>'
-  +'<h1>'+esc(c.title)+'</h1>'
-  +'<div class="meta">'+(c.announce_at?'발표 '+esc(fdate(c.announce_at,true))+' (KST) · ':'')+esc(c.artist||'MAPDAL SEOUL')+'</div>'
+  +'<h1>'+esc(c.title)+' 당첨자 발표</h1>'
+  +'<div class="meta">'+(c.announce_at?esc(fdate(c.announce_at,true))+' (KST)':'')+(c.artist?(c.announce_at?' · ':'')+esc(c.artist):'')+'</div>'
   +'</div>';
- if(c.image)head+='<div class="nd-win-banner"><img src="'+esc(c.image)+'" alt=""></div>';
 
  if(c.announce!=='ANNOUNCED'){ /* 발표 예정 (RESERVED) */
+  if(c.image)head+='<div class="nd-win-banner"><img src="'+esc(c.image)+'" alt=""></div>';
   head+='<div class="nd-reserved"><div class="eyebrow mono" style="font-size:11px;letter-spacing:.2em;color:var(--red)">COMING SOON</div>'
    +'<div class="clock" id="ndTick"></div>'
    +'<p>당첨자 발표를 준비하고 있습니다.<br>'+(c.announce_at?esc(fdate(c.announce_at,true))+' (KST) 이후 이 페이지에서 확인하실 수 있습니다.':'발표 일시는 추후 안내됩니다.')+'</p></div>'
@@ -764,11 +781,13 @@ function renderWinners(c){
   var tk=$('#ndTick');if(tk&&c.announce_at)tick(tk,c.announce_at,'곧 발표됩니다 — 새로고침해 주세요');
   return}
 
- var defNotice=['Ctrl+F(모바일은 브라우저 메뉴의 “페이지에서 찾기”)로 주문번호를 검색해 확인할 수 있습니다.',
-  '당첨자에게는 주문 시 입력하신 연락처(문자·이메일)로 개별 안내를 드립니다.',
-  '당첨자 목록의 표시 순서는 이벤트 참여 순서와 무관합니다.'];
+ var defNotice=['Ctrl+F(모바일은 브라우저 메뉴의 “페이지에서 찾기”)를 눌러 주문번호를 직접 검색하여 확인하실 수 있습니다.',
+  '당첨자분에게는 주문 시 입력하신 연락처(문자·이메일)로 개별 안내가 발송될 예정입니다.',
+  '개인정보 보호를 위해 성함은 일부 마스킹, 연락처는 뒤 4자리만 표시되며, 목록 순서는 참여 순서와 무관합니다.'];
  var lines=defNotice.concat((c.announce_notice||'').split('\n').filter(function(x){return x.trim()}));
  head+='<div class="nd-wnotice">'+lines.map(function(x){return '<p>'+esc(x)+'</p>'}).join('')+'</div>';
+
+ head+='<a class="nd-wgo" href="/new-drops?id='+c.id+'">이벤트 페이지 보러가기 <span class="arr">→</span></a>';
 
  head+='<div class="nd-wcheck"><h5>내 당첨 확인</h5>'
   +'<div class="frm"><input id="ndWq" placeholder="주문번호를 입력하세요 (예: MPD2607170001)" autocomplete="off">'
@@ -776,29 +795,43 @@ function renderWinners(c){
   +'<div class="memb" id="ndMemb">회원이신가요? <a href="#" id="ndAuto">내 주문으로 자동 확인</a> — 최근 3개월 주문을 한 번에 대조합니다.</div>'
   +'<div class="nd-wres" id="ndWres"></div></div>';
 
- head+=(c.winner_groups||[]).map(function(g,gi){
-  return '<div class="nd-wgroup"><div class="nd-wghead">'
-   +(g.type?'<span class="nd-wtype">'+esc(g.type)+'</span>':'')
-   +'<h3>'+esc(g.title||'당첨자')+'</h3><span class="cnt">'+g.count+'명</span></div>'
-   +'<div class="nd-wlist">'+g.winners.map(function(w,i){return winRow(w,gi,i)}).join('')+'</div></div>'}).join('');
+ var G=c.winner_groups||[];
+ if(G.length>1)head+='<div class="nd-wchips"><button type="button" class="nd-wchip on" data-g="-1">모든 당첨자</button>'
+  +G.map(function(g,gi){return '<button type="button" class="nd-wchip" data-g="'+gi+'">'+esc(g.title||g.type||('그룹 '+(gi+1)))+'</button>'}).join('')+'</div>';
+
+ head+=G.map(function(g,gi){
+  var cols={name:g.winners.some(function(w){return w.name}),
+            phone:g.winners.some(function(w){return w.phone}),
+            badge:g.winners.some(function(w){return w.badge})};
+  var th='<tr><th class="c-i">No.</th><th>주문번호</th>'+(cols.name?'<th>성함</th>':'')
+   +(cols.phone?'<th>연락처</th>':'')+(cols.badge?'<th>구분</th>':'')+'</tr>';
+  return '<div class="nd-wsec" id="wg-'+gi+'">'
+   +'<h3>'+esc(g.title||'당첨자')+(g.type?'<span class="nd-wtype">'+esc(g.type)+'</span>':'')+'<span class="cnt">'+g.count+'명</span></h3>'
+   +'<table class="nd-wtb"><thead>'+th+'</thead><tbody>'
+   +g.winners.map(function(w,i){return winTr(w,gi,i,cols)}).join('')+'</tbody></table></div>'}).join('');
  head+='<div class="nd-backrow"><a href="/new-drops?id='+c.id+'">이벤트 상세 보기</a></div></div>';
  $('#ndWinBox').innerHTML=head;
 
+ /* 그룹 칩 필터 */
+ function pickG(v){Array.prototype.forEach.call(document.querySelectorAll('.nd-wchip'),function(b){b.classList.toggle('on',b.getAttribute('data-g')===String(v))});
+  G.forEach(function(_,gi){var s=$('#wg-'+gi);if(s)s.style.display=(v===-1||v===gi)?'':'none'})}
+ Array.prototype.forEach.call(document.querySelectorAll('.nd-wchip'),function(b){b.onclick=function(){pickG(parseInt(b.getAttribute('data-g'),10))}});
+
  /* 검색·자동 확인 */
- function clearHits(){Array.prototype.forEach.call(document.querySelectorAll('.nd-wrow.hit'),function(e){e.classList.remove('hit')})}
+ function clearHits(){Array.prototype.forEach.call(document.querySelectorAll('.nd-wtb tr.hit'),function(e){e.classList.remove('hit')})}
  function findNo(no){no=normNo(no);if(!no)return null;
-  for(var gi=0;gi<c.winner_groups.length;gi++){var g=c.winner_groups[gi];
+  for(var gi=0;gi<G.length;gi++){var g=G[gi];
    for(var i=0;i<g.winners.length;i++)if(normNo(g.winners[i].no)===no)return{g:g,gi:gi,i:i,w:g.winners[i]}}
   return null}
  function showRes(html,win){var el=$('#ndWres');el.className='nd-wres '+(win?'win':'miss');el.innerHTML=html}
- function doSearch(){clearHits();var q=$('#ndWq').value;if(!normNo(q)){showRes('주문번호를 입력해 주세요.',false);return}
+ function doSearch(){clearHits();pickG(-1);var q=$('#ndWq').value;if(!normNo(q)){showRes('주문번호를 입력해 주세요.',false);return}
   var hit=findNo(q);
   if(hit){var row=$('#w-'+hit.gi+'-'+hit.i);if(row){row.classList.add('hit');row.scrollIntoView({block:'center',behavior:'smooth'})}
    showRes('🎉 축하합니다! <b>'+esc(hit.g.title||hit.g.type||'당첨자')+'</b>에 당첨되셨습니다.'+(hit.w.badge?' <b>['+esc(hit.w.badge)+']</b>':'')+'<br>당첨 안내는 주문 시 연락처로 개별 발송됩니다.',true)}
   else showRes('입력하신 주문번호는 당첨자 명단에 없습니다.<br>주문번호 전체를 정확히 입력했는지 확인해 주세요.',false)}
  $('#ndWbtn').onclick=doSearch;
  $('#ndWq').addEventListener('keydown',function(e){if(e.key==='Enter')doSearch()});
- $('#ndAuto').onclick=function(e){e.preventDefault();clearHits();
+ $('#ndAuto').onclick=function(e){e.preventDefault();clearHits();pickG(-1);
   var el=$('#ndMemb');el.textContent='내 주문을 확인하는 중…';
   fetch('/api/member/orders?range=3m',{cache:'no-store'})
   .then(function(r){if(!r.ok)throw 0;return r.json()})

@@ -775,8 +775,12 @@ function renderWinners(c){
   +'<div class="meta">'+(c.announce_at?esc(fdate(c.announce_at,true))+' (KST)':'')+(c.artist?(c.announce_at?' · ':'')+esc(c.artist):'')+'</div>'
   +'</div>';
 
- if(c.announce!=='ANNOUNCED'){ /* 발표 예정 (RESERVED) */
+ if(c.announce!=='ANNOUNCED'){ /* 발표 예정 (RESERVED) — 사전 공지문·공지 줄도 함께 표시 */
   if(c.image)head+='<div class="nd-win-banner"><img src="'+esc(c.image)+'" alt=""></div>';
+  if(c.announce_body&&String(c.announce_body).trim())
+   head+='<div class="nd-wbody">'+c.announce_body+'</div>';
+  var pre=(c.announce_notice||'').split('\n').filter(function(x){return x.trim()});
+  if(pre.length)head+='<div class="nd-wnotice">'+pre.map(function(x){return '<p>'+esc(x)+'</p>'}).join('')+'</div>';
   head+='<div class="nd-reserved"><div class="eyebrow mono" style="font-size:11px;letter-spacing:.2em;color:var(--red)">COMING SOON</div>'
    +'<div class="clock" id="ndTick"></div>'
    +'<p>당첨자 발표를 준비하고 있습니다.<br>'+(c.announce_at?esc(fdate(c.announce_at,true))+' (KST) 이후 이 페이지에서 확인하실 수 있습니다.':'발표 일시는 추후 안내됩니다.')+'</p></div>'

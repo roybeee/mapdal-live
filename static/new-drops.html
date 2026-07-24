@@ -281,6 +281,9 @@ nav.main>div:hover .mega{display:grid}
 .nd-win-head .meta{font-size:14px;color:#8E8D87}
 .nd-win-banner{margin:22px 0 0;border:1px solid var(--line);background:#fff;overflow:hidden}
 .nd-win-banner img{width:100%;display:block}
+.nd-wbody{margin:26px 0 2px;border:1px solid var(--line);background:#fff;padding:26px 28px;
+  font-size:14.5px;line-height:1.95;color:#26251F;white-space:pre-line;word-break:keep-all;overflow-wrap:anywhere}
+.nd-wbody img{max-width:100%;display:block;margin:14px auto;border:1px solid #F1EFE9}
 .nd-wnotice{margin:26px 0 24px}
 .nd-wnotice p{font-size:14px;line-height:1.95;color:#3A3A38;display:flex;gap:8px}
 .nd-wnotice p::before{content:'·';flex:none}
@@ -362,6 +365,7 @@ footer li a:hover{color:#fff}
   .nd-wcheck .frm{flex-direction:column}
   .nd-wcheck button{padding:13px 22px}
   .nd-win-head h1{font-size:22px}
+  .nd-wbody{padding:20px 16px;font-size:13.5px;line-height:1.9}
   .nd-wgo{font-size:14px;padding:16px 14px;border-radius:12px}
   .nd-wchip{font-size:13px;padding:11px 16px}
   .nd-wsec>h3{font-size:16.5px}
@@ -780,6 +784,9 @@ function renderWinners(c){
   $('#ndWinBox').innerHTML=head;
   var tk=$('#ndTick');if(tk&&c.announce_at)tick(tk,c.announce_at,'곧 발표됩니다 — 새로고침해 주세요');
   return}
+
+ if(c.announce_body&&String(c.announce_body).trim())
+  head+='<div class="nd-wbody">'+c.announce_body+'</div>';
 
  var defNotice=['Ctrl+F(모바일은 브라우저 메뉴의 “페이지에서 찾기”)를 눌러 주문번호를 직접 검색하여 확인하실 수 있습니다.',
   '당첨자분에게는 주문 시 입력하신 연락처(문자·이메일)로 개별 안내가 발송될 예정입니다.',

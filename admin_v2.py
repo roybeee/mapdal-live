@@ -2464,7 +2464,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div id="tkbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-drops" style="display:none">
   <div class="panel"><h3>NEW/DROPS 이벤트 <span class="tag">메이크스타형 이벤트 허브 · 저장 즉시 반영</span></h3>
-  <div class="hint" style="margin-bottom:10px">판매 시작·종료·발표 시각만 입력하면 <b>판매예정 → 판매중 → 판매종료 → 당첨자발표</b> 상태가 시각 기준으로 자동 전환됩니다. 당첨자 명단은 한 줄에 한 명 — <b>주문번호</b> 또는 <b>주문번호,이름</b> 또는 <b>주문번호,이름,뱃지</b> 형식이며 이름은 사이트에서 자동 마스킹(홍*동)되어 표시됩니다.</div>
+  <div class="hint" style="margin-bottom:10px">판매 시작·종료·발표 시각만 입력하면 <b>판매예정 → 판매중 → 판매종료 → 당첨자발표</b> 상태가 시각 기준으로 자동 전환됩니다. 당첨자 명단은 한 줄에 한 명 — <b>주문번호,이름,휴대폰,뱃지</b> 순서(뒤쪽 항목은 생략 가능)이며, 사이트에는 주문번호는 그대로, 이름은 자동 마스킹(홍*동), 휴대폰은 <b>뒤 4자리만</b> 표시됩니다. 각 그룹의 <b>📄 엑셀 업로드</b> 버튼으로 파일(.xlsx)을 올리면 명단이 자동 입력됩니다.</div>
   <div class="toolbar" style="margin-bottom:12px"><button class="btn" onclick="dropEdit(0)">+ 새 이벤트</button><a class="btn ghost" href="/new-drops" target="_blank" style="text-decoration:none">사이트에서 확인</a></div>
   <div id="dropList" class="loading">불러오는 중…</div></div></section>
 <section id="t-seo" style="display:none">
@@ -3246,11 +3246,59 @@ function drSchedRow(s){s=s||{};return `<div class="drsched" style="display:grid;
  <input placeholder="시간" class="ds-t" value="${esc(s.time||'')}"><input placeholder="비고 (예: 1부 종료 후)" class="ds-x" value="${esc(s.desc||'')}">
  <button class="btn sm ghost" type="button" onclick="this.parentNode.remove()">✕</button></div>`}
 function drWinRow(g){g=g||{};return `<div class="drwin" style="border:1px solid #e4e1da;border-radius:6px;padding:10px;margin-bottom:8px;background:#faf9f5">
- <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:6px">
+ <div style="display:grid;grid-template-columns:1fr 1fr auto auto;gap:6px;margin-bottom:6px">
   <input placeholder="그룹명 (예: 팬사인회 응모권)" class="dw-t" value="${esc(g.title||'')}">
   <input placeholder="유형 (예: 팬사인회)" class="dw-y" value="${esc(g.type||'')}">
+  <button class="btn sm ghost" type="button" title="엑셀(.xlsx) 명단 파일로 자동 입력" onclick="this.closest('.drwin').querySelector('.dw-x').click()">📄 엑셀 업로드</button>
   <button class="btn sm ghost" type="button" onclick="this.closest('.drwin').remove()">✕ 그룹 삭제</button></div>
- <textarea class="dw-l" rows="5" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7" placeholder="한 줄에 한 명 — 주문번호  ·  주문번호,이름  ·  주문번호,이름,뱃지&#10;예) MPD2607170001,홍길동,영통+포카">${esc(g.list||'')}</textarea></div>`}
+ <input type="file" class="dw-x" accept=".xlsx,.xls,.csv" style="display:none" onchange="drWinXlsx(this)">
+ <textarea class="dw-l" rows="5" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7" placeholder="한 줄에 한 명 — 주문번호,이름,휴대폰,뱃지 (뒤쪽 항목 생략 가능)&#10;예) MPD2607170001,홍길동,010-1234-5678,영통+포카&#10;사이트 표시: 주문번호 그대로 · 이름 홍*동 · 휴대폰 뒤 4자리">${esc(g.list||'')}</textarea>
+ <div class="hint" style="margin-top:4px">엑셀 1행이 제목 행(주문번호·이름·휴대폰번호·뱃지)이면 자동 인식, 제목이 없으면 A·B·C·D열 순서로 읽습니다. [응모 CSV] 파일(응모자 이름·전화번호 열 자동 매칭)도 그대로 업로드할 수 있습니다.</div></div>`}
+function loadXLSX(){return window.XLSX?Promise.resolve():new Promise(function(res,rej){
+ var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+ s.onload=res;s.onerror=function(){rej(new Error('엑셀 라이브러리 로드 실패 — 네트워크를 확인하세요'))};document.head.appendChild(s)})}
+function drWinPhone(v){var s=String(v==null?'':v).trim();var d=s.replace(/\D/g,'');
+ if(!d)return '';
+ if(d.length===10&&d.slice(0,2)==='10')d='0'+d;
+ if(d.length===11)return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7);
+ if(d.length===10)return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
+ return s.replace(/,/g,' ')}
+function drWinLines(rows){
+ rows=(rows||[]).map(function(r){return (r||[]).map(function(c){return String(c==null?'':c).trim()})});
+ var H={no:0,name:1,phone:2,badge:3},start=0,hd=rows.length?rows[0]:[];
+ var find=function(rx,pref,excl){var best=-1;
+  for(var i=0;i<hd.length;i++){var h=hd[i];if(!h||!rx.test(h)||(excl&&excl.test(h)))continue;
+   if(pref&&pref.test(h))return i;if(best<0)best=i}
+  return best};
+ var noI=find(/주문\s*번호|식별\s*번호|order/i);
+ if(noI>=0){start=1;
+  H={no:noI,
+   name:find(/이름|성함|성명|name/i,/응모자/,/법정|보호자|guardian|주문자|상품|이벤트|옵션|파일/i),
+   phone:find(/휴대폰|연락처|전화|phone|mobile|tel/i,/응모자|휴대폰/,/법정|보호자|guardian/i),
+   badge:find(/뱃지|badge|비고|구분|혜택|특전/i)}}
+ var out=[];
+ for(var r=start;r<rows.length;r++){var row=rows[r];
+  var no=(H.no>=0?row[H.no]:'')||'';if(!no)continue;
+  var cells=[no.replace(/,/g,' '),
+   H.name>=0?(row[H.name]||'').replace(/,/g,' '):'',
+   H.phone>=0?drWinPhone(row[H.phone]):'',
+   H.badge>=0?(row[H.badge]||'').replace(/,/g,' '):''];
+  while(cells.length&&!cells[cells.length-1])cells.pop();
+  out.push(cells.join(','))}
+ return out}
+async function drWinXlsx(inp){var f=inp.files&&inp.files[0];inp.value='';if(!f)return;
+ var ta=inp.closest('.drwin').querySelector('.dw-l');
+ try{toast('엑셀 읽는 중…');await loadXLSX();
+  var wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+  var rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:false,defval:''});
+  var lines=drWinLines(rows);
+  if(!lines.length){toast('명단을 찾지 못했습니다 — 첫 열(주문번호)을 확인하세요');return}
+  var cur=ta.value.trim();
+  if(!cur)ta.value=lines.join('\n');
+  else if(confirm('기존 명단이 있습니다.\n[확인] 엑셀 내용으로 교체  ·  [취소] 기존 명단 아래에 추가'))ta.value=lines.join('\n');
+  else ta.value=cur+'\n'+lines.join('\n');
+  toast('엑셀 '+lines.length+'명 반영 — [저장]을 눌러야 사이트에 게시됩니다')
+ }catch(e){toast('엑셀 처리 실패: '+(e.message||e))}}
 const DROPT_KINDS=[['album','앨범'],['card','포토카드'],['ticket','응모권'],['gift','특전'],['etc','기타']];
 function drOptItem(it){it=it||{};
  return `<div style="display:flex;gap:6px;margin-bottom:5px">
@@ -7487,7 +7535,7 @@ def api_homeblocks_reset(request: Request):
 #   상태는 저장하지 않고 KST 현재시각으로 매 요청 계산 → 시각이 지나면 자동 전환
 #     판매예정(UPCOMING) → 판매중(ON_SALE) → 판매종료(ENDED)
 #     종료 후: 발표시각 도달 + 명단 존재 → 발표완료(ANNOUNCED) · 그 전엔 발표예약(RESERVED)
-#   공개 API는 당첨자 이름을 마스킹해 응답 — 원본 명단은 관리자 API에서만 노출
+#   공개 API는 당첨자 이름·휴대폰을 마스킹해 응답(홍*동 · ***-****-1234) — 원본 명단은 관리자 API에서만 노출
 #   페이지: /new-drops (static/new-drops.html · 목록/상세/당첨자발표 3뷰)
 # ═══════════════════════════════════════════════════════════════════════════
 DROP_CATS = [
@@ -7536,6 +7584,19 @@ def _drop_mask(s):
     if len(s) <= 2: return s[0] + '*'
     return s[0] + '*' * min(len(s) - 2, 6) + s[-1]
 
+_DROP_PHONE_RX = re.compile(r'^\+?[0-9][0-9\-\s().]{5,}$')
+
+def _drop_phone_last4(s):
+    """휴대폰 마스킹: 뒤 4자리만 노출 — 010-1234-5678 → ***-****-5678."""
+    d = re.sub(r'\D', '', str(s or ''))
+    return ('***-****-' + d[-4:]) if len(d) >= 4 else ''
+
+def _drop_win_tok(tok):
+    """명단 3번째 이후 토큰 분류 — 숫자 7자리 이상 전화형이면 phone, 아니면 badge.
+    구버전 '주문번호,이름,뱃지' 데이터와 신버전 '…,휴대폰,뱃지'를 모두 수용한다."""
+    t = str(tok or '').strip()
+    return 'phone' if (_DROP_PHONE_RX.match(t) and len(re.sub(r'\D', '', t)) >= 7) else 'badge'
+
 def _drop_state(d, now):
     """(status, announce) — status: UPCOMING|ON_SALE|ENDED · announce: NONE|RESERVED|ANNOUNCED"""
     st, en, an = _drop_dt(d.get('sales_start')), _drop_dt(d.get('sales_end')), _drop_dt(d.get('announce_at'))
@@ -7568,6 +7629,8 @@ def _drop_card(d, now):
             'status': status, 'announce': announce, 'dday': dday}
 
 def _drop_winner_groups(d, masked=True):
+    """당첨 그룹 파싱 — 한 줄: 주문번호[,이름[,휴대폰][,뱃지]] (3번째부터는 전화형/뱃지 자동 분류).
+    masked=True(공개 API)면 이름은 홍*동, 휴대폰은 뒤 4자리(***-****-1234)만 남긴다."""
     out = []
     for g in (d.get('winners') or []):
         if not isinstance(g, dict): continue
@@ -7575,9 +7638,16 @@ def _drop_winner_groups(d, masked=True):
         lines = [x.strip() for x in str(g.get('list') or '').replace('\r', '').split('\n') if x.strip()][:3000]
         for i, ln in enumerate(lines):
             p = [x.strip() for x in ln.split(',')]
+            name = p[1][:30] if len(p) > 1 else ''
+            phone = badge = ''
+            for tok in p[2:6]:
+                if not tok: continue
+                if not phone and _drop_win_tok(tok) == 'phone': phone = tok[:24]
+                elif not badge: badge = tok[:20]
             ws.append({'i': i + 1, 'no': p[0][:40],
-                       'name': ((_drop_mask(p[1]) if masked else p[1][:30]) if len(p) > 1 else ''),
-                       'badge': (p[2][:20] if len(p) > 2 else '')})
+                       'name': (_drop_mask(name) if masked else name),
+                       'phone': (_drop_phone_last4(phone) if masked else phone),
+                       'badge': badge})
         out.append({'title': str(g.get('title') or '')[:80], 'type': str(g.get('type') or '')[:30],
                     'count': len(ws), 'winners': ws})
     return out

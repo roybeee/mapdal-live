@@ -269,7 +269,8 @@ def ensure_ready():
     if _state['ready']: return
     oc = _cols('orders')
     if oc:
-        for col, typ in (('fulfill', "TEXT DEFAULT 'NEW'"), ('tracking', 'TEXT'), ('admin_memo', 'TEXT')):
+        for col, typ in (('fulfill', "TEXT DEFAULT 'NEW'"), ('tracking', 'TEXT'), ('admin_memo', 'TEXT'),
+                         ('pay_log', 'TEXT')):
             if col not in oc:
                 try: run("ALTER TABLE orders ADD COLUMN %s %s" % (col, typ))
                 except Exception: pass
@@ -754,12 +755,53 @@ def api_orders(request: Request):
                     'ship': r.get('ship_method', ''), 'tracking': r.get('tracking') or ''})
     return {'total': total, 'page': page, 'size': size, 'rows': out}
 
+_PAY_LOG_LABELS = {
+    'CREATED': '주문 생성', 'PAY_OPEN_PC': '결제창 호출(PC)', 'PAY_OPEN_M': '결제창 이동(모바일)',
+    'WINDOW_CLOSE': '결제창 닫음', 'PAGE_EXIT': '페이지 이탈', 'AUTH_FAIL': '카드 인증 실패',
+    'AUTH_BAD': '인증 응답 이상', 'APPROVE_ERR': '승인 통신 오류', 'APPROVE_FAIL': '승인 거절',
+    'AMOUNT_MISMATCH': '금액 불일치', 'VBANK_ISSUED': '가상계좌 발급', 'PAID': '결제 완료',
+}
+
+def _pay_log_view(r):
+    """orders 행 → (이력 목록[최신순, 한글 라벨], 미결제 사유 1줄).
+
+    사유 우선순위: 인증·승인 단계의 확정 실패 > 창닫힘/이탈 시그널 > 결제창 진입만 >
+    주문 생성만. PENDING·FAILED 에만 사유를 채우고, 이력이 아예 없는 과거 주문은
+    '기록 없음'으로 구분해 추정임을 명시한다."""
+    raw = jload(r.get('pay_log'), [])
+    log = [{'t': str(e.get('t') or '')[:19].replace('T', ' '),
+            'c': str(e.get('c') or ''), 'm': str(e.get('m') or ''),
+            'label': _PAY_LOG_LABELS.get(str(e.get('c') or ''), str(e.get('c') or ''))}
+           for e in raw if isinstance(e, dict)][-40:]
+    log.reverse()                                    # 최신이 위로
+    status = str(r.get('status') or '')
+    if status not in ('PENDING', 'FAILED'):
+        return log, ''
+    def _find(*codes):
+        return next((e for e in log if e['c'] in codes), None)
+    hard = _find('AMOUNT_MISMATCH', 'APPROVE_FAIL', 'APPROVE_ERR', 'AUTH_FAIL', 'AUTH_BAD')
+    if hard:
+        base = {'AMOUNT_MISMATCH': '결제 금액 불일치 — 자동 망취소됨',
+                'APPROVE_FAIL': '카드사 승인 거절', 'APPROVE_ERR': '승인 통신 오류 — 자동 망취소됨',
+                'AUTH_FAIL': '결제창 인증 실패(구매자 취소 포함)', 'AUTH_BAD': '인증 응답 검증 실패'}[hard['c']]
+        return log, base + ((' · ' + hard['m']) if hard['m'] else '')
+    soft = _find('WINDOW_CLOSE', 'PAGE_EXIT')
+    if soft:
+        return log, ('구매자가 결제창을 닫았습니다 (결제 미시도·중단)' if soft['c'] == 'WINDOW_CLOSE'
+                     else '결제 완료 전 페이지를 이탈했습니다')
+    if _find('PAY_OPEN_PC', 'PAY_OPEN_M'):
+        return log, '결제창 진입 후 완료하지 않았습니다 (인증 시도 없음 — 이탈 추정)'
+    if _find('CREATED'):
+        return log, '주문 생성 후 결제창이 열리지 않았습니다 (모듈 로딩 실패·즉시 이탈 추정)'
+    return log, '기록 없음 — 결제이력 기능 배포 이전 주문 (결제창 이탈 추정)'
+
 @admin_router.get('/admin/api/orders/{oid}')
 def api_order_detail(oid: str, request: Request):
     a = get_actor(request); need(a, 0)
     r = one('SELECT * FROM orders WHERE order_id = ?', (oid,))
     if not r: raise HTTPException(404, 'not found')
     b = jload(r.get('buyer'), {})
+    plog, preason = _pay_log_view(r)
     items = [{'id': it.get('id', ''), 'name': it.get('n') or it.get('name') or it.get('id', ''),
               'qty': num(it.get('q') or 1), 'price': num(it.get('p') or it.get('price') or 0)}
              for it in jload(r.get('items'), [])]
@@ -774,6 +816,7 @@ def api_order_detail(oid: str, request: Request):
             'method': r.get('method') or '',
             'pay_method': r.get('pay_method') or '',
             'paid_at': (r.get('paid_at') or '')[:19].replace('T', ' '),
+            'pay_log': plog, 'pending_reason': preason,
             'vbank': {'num': r.get('vbank_num') or '', 'bank': r.get('vbank_name') or '',
                       'holder': r.get('vbank_holder') or '', 'due': r.get('vbank_due') or ''},
             # 입금대기 건은 관리자가 통장 확인 후 수동으로 입금완료 처리할 수 있다.
@@ -2619,6 +2662,11 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  ${o.status==='WAITING_DEPOSIT'?`<div class="hint" style="background:#e8f0fe;border-left:3px solid #1565c0;padding:9px 11px;margin-bottom:10px;color:#0d47a1">
    <b>입금 대기 중</b> — 아직 입금되지 않았습니다. 통장 입금 확인 전에는 발송하지 마세요.
    이니시스 입금통보가 오면 자동으로 결제완료로 바뀝니다.</div>`:''}
+ ${o.pending_reason?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;margin-bottom:10px;color:#6b4e00">
+   <b>${o.status==='FAILED'?'결제 실패 사유':'미결제(PENDING) 사유'}</b> — ${esc(o.pending_reason)}</div>`:''}
+ ${(o.pay_log&&o.pay_log.length)?`<details style="margin-bottom:12px" ${o.status==='PENDING'||o.status==='FAILED'?'open':''}><summary style="cursor:pointer;font-weight:800;font-size:12.5px">결제 진행 이력 · ${o.pay_log.length}건</summary>
+   <table style="margin-top:8px"><tr><th style="width:150px">시각</th><th style="width:130px">단계</th><th>내용</th></tr>
+   ${o.pay_log.map(e=>`<tr><td class="mono">${esc(e.t)}</td><td><b>${esc(e.label)}</b></td><td>${esc(e.m||'')}</td></tr>`).join('')}</table></details>`:''}
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
  ${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
  ${can(1)?`<div class="kv"><b>처리상태</b><span><select id="mff">${Object.entries(FF).map(([k,v])=>`<option value="${k}" ${o.fulfill===k?'selected':''}>${v}</option>`).join('')}</select></span>
@@ -9264,6 +9312,15 @@ def _checkout_apply(html):
         "      card:{useEscrow:false,flowMode:'DEFAULT',useCardPoint:false,useAppCardOnly:false}\n"
         "    });")
     _ini_handler = (
+        "window.__mpPayOid='';window.__mpMobileGo=0;\n"
+        "// 결제창 닫힘(/inicis/close → postMessage)·페이지 이탈을 서버에 비콘으로 남겨\n"
+        "// 관리자 주문 상세에서 PENDING 사유를 확인할 수 있게 한다 (PAID 주문은 서버가 무시).\n"
+        "function mpPayEvt(c){try{if(window.__mpPayOid&&navigator.sendBeacon)\n"
+        "  navigator.sendBeacon('/api/pay/event',JSON.stringify({oid:window.__mpPayOid,c:c}));}catch(e){}}\n"
+        "window.addEventListener('message',function(e){\n"
+        "  if(e&&e.data==='mapdal:ini-close')mpPayEvt('close');});\n"
+        "window.addEventListener('pagehide',function(){\n"
+        "  if(!window.__mpMobileGo)mpPayEvt('exit');});\n"
         "document.getElementById('payBtn').addEventListener('click',function(){\n"
         "  if(!items.length)return;\n"
         "  if(!document.getElementById('ag1').checked){alert('필수 약관에 동의해 주세요.');return;}\n"
@@ -9294,6 +9351,7 @@ def _checkout_apply(html):
         "    const od=JSON.parse(xhr.responseText||'{}');\n"
         "    if(xhr.status<200||xhr.status>=300)throw new Error(od.detail||'주문 생성 실패');\n"
         "    if(!od.inicis)throw new Error('결제 파라미터 생성 실패');\n"
+        "    window.__mpPayOid=od.orderId||'';\n"
         "    // 이니시스는 PC/모바일 모듈이 분리되어 있다. 모바일에서 PC모듈(INIStdPay.js)을\n"
         "    // 호출하면 'Dev. Error — PC로 결제 진행' 얼럿이 뜨고 결제창이 열리지 않는다.\n"
         "    var _ua=(navigator.userAgent||'').toLowerCase();\n"
@@ -9307,12 +9365,13 @@ def _checkout_apply(html):
         "      f.action=od.mobilePayUrl;f.target='_self';\n"
         "      Object.keys(od.inicisMobile).forEach(function(k){var inp=document.createElement('input');\n"
         "        inp.type='hidden';inp.name=k;inp.value=od.inicisMobile[k];f.appendChild(inp);});\n"
-        "      document.body.appendChild(f);f.submit();return;\n"
+        "      document.body.appendChild(f);window.__mpMobileGo=1;mpPayEvt('open_m');f.submit();return;\n"
         "    }\n"
         "    Object.keys(od.inicis).forEach(function(k){var inp=document.createElement('input');\n"
         "      inp.type='hidden';inp.name=k;inp.value=od.inicis[k];f.appendChild(inp);});\n"
         "    document.body.appendChild(f);\n"
         "    if(typeof INIStdPay==='undefined')throw new Error('결제 모듈 로딩 실패 — 새로고침 후 다시 시도해 주세요');\n"
+        "    mpPayEvt('open_pc');\n"
         "    INIStdPay.pay('mpIniForm');   // 클릭 제스처 내 동기 호출 → 팝업 차단 회피")
     if _toss_handler in html:
         html = html.replace(_toss_handler, _ini_handler, 1)

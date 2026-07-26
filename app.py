@@ -159,7 +159,7 @@ def seed():
     with db() as c:
         for col in ('customer_id', 'member_id', 'contact_phone_norm',
                     'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
-                    'ga_cid', 'ga_sid', 'ga_mp_sent'):
+                    'ga_cid', 'ga_sid', 'ga_mp_sent', 'pay_log'):
             try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
             except Exception: pass
         try: c.exec('CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)')
@@ -515,6 +515,8 @@ async def create_order(req: Request):
         pass
     name0 = resolved[0]['n'][:28]
     order_name = name0 + (f' 외 {len(resolved)-1}건' if len(resolved) > 1 else '')
+    _pay_log(order_id, 'CREATED', '%s · %s원 · %s' %
+             ('모바일' if _is_mobile_ua(req) else 'PC', format(amount, ','), order_name[:60]))
 
     # ── INIStdPay STEP1 서명 파라미터 생성 (oid=order_id, price=amount) ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -566,11 +568,14 @@ async def inicis_return(req: Request):
         return RedirectResponse(f'/checkout?fail=1&msg={m}', status_code=303)
 
     if result_code != '0000':
+        _pay_log(oid, 'AUTH_FAIL', '[%s] %s' % (result_code, form.get('resultMsg', '인증 실패')))
         return _fail(form.get('resultMsg', '인증 실패'))
     if not (oid and auth_token and auth_url):
+        _pay_log(oid, 'AUTH_BAD', '인증 응답 파라미터 누락')
         return _fail('인증 응답 파라미터 누락')
     # 보안: authUrl 이 이니시스 도메인 + idc_name 일치 확인
     if not _ini_idc_host_ok(idc_name, auth_url):
+        _pay_log(oid, 'AUTH_BAD', '승인 URL 검증 실패')
         return _fail('승인 URL 검증 실패')
 
     with db() as c:
@@ -595,12 +600,14 @@ async def inicis_return(req: Request):
             res = json.loads(r.read().decode('utf-8'))
     except Exception as e:
         # 승인 통신 실패 → 망취소 시도 후 실패 처리
+        _pay_log(oid, 'APPROVE_ERR', '승인 통신 오류 — 망취소 시도')
         _ini_net_cancel(net_cancel_url, auth_token)
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
         return _fail('승인 통신 오류')
 
     if res.get('resultCode') != '0000':
+        _pay_log(oid, 'APPROVE_FAIL', '[%s] %s' % (res.get('resultCode', ''), res.get('resultMsg', '승인 실패')))
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
         return _fail(res.get('resultMsg', '승인 실패'))
@@ -608,6 +615,7 @@ async def inicis_return(req: Request):
     # 금액 위변조 검증: 승인금액(TotPrice) == 주문금액
     tot = int(str(res.get('TotPrice', '0')).replace(',', '') or 0)
     if tot != int(order['amount']):
+        _pay_log(oid, 'AMOUNT_MISMATCH', '승인 %s원 ≠ 주문 %s원 — 망취소' % (format(tot, ','), format(int(order['amount']), ',')))
         _ini_net_cancel(net_cancel_url, auth_token)
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
@@ -624,6 +632,7 @@ async def inicis_return(req: Request):
         vbank = res.get('vactBankName') or res.get('VACT_BankName') or ''
         vname = res.get('VACT_Name') or res.get('vactName') or ''
         vdate = (str(res.get('VACT_Date') or '') + str(res.get('VACT_Time') or '')).strip()
+        _pay_log(oid, 'VBANK_ISSUED', '%s %s · 입금대기' % (vbank, vnum))
         try:
             with db() as c:
                 c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
@@ -642,6 +651,7 @@ async def inicis_return(req: Request):
             pass
         return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
+    _pay_log(oid, 'PAID', '%s · TID …%s' % (method or 'Card', str(tid)[-6:]))
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
@@ -685,10 +695,13 @@ async def inicis_mobile_return(req: Request):
         return RedirectResponse(f'/checkout?fail=1&msg={m}', status_code=303)
 
     if status != '00':
+        _pay_log(oid, 'AUTH_FAIL', '[%s] %s' % (status, rmesg or '인증 실패'))
         return _fail(rmesg or '인증 실패')
     if not (oid and tid and req_url):
+        _pay_log(oid, 'AUTH_BAD', '인증 응답 파라미터 누락')
         return _fail('인증 응답 파라미터 누락')
     if not _ini_mobile_req_url_ok(req_url):
+        _pay_log(oid, 'AUTH_BAD', '승인 URL 검증 실패')
         return _fail('승인 URL 검증 실패')
 
     with db() as c:
@@ -708,6 +721,7 @@ async def inicis_mobile_return(req: Request):
         with urllib.request.urlopen(reqx, timeout=25) as r:
             body = r.read().decode('utf-8', 'replace')
     except Exception:
+        _pay_log(oid, 'APPROVE_ERR', '승인 통신 오류')
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
         return _fail('승인 통신 오류')
@@ -715,6 +729,7 @@ async def inicis_mobile_return(req: Request):
     # 승인 응답은 key=value&... 형태의 평문(NVP)으로 온다.
     res = dict(urllib.parse.parse_qsl(body.strip(), keep_blank_values=True))
     if str(res.get('P_STATUS', '')) != '00':
+        _pay_log(oid, 'APPROVE_FAIL', '[%s] %s' % (res.get('P_STATUS', ''), res.get('P_RMESG1', '') or '승인 실패'))
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
         return _fail(res.get('P_RMESG1', '') or '승인 실패')
@@ -725,6 +740,7 @@ async def inicis_mobile_return(req: Request):
     except ValueError:
         paid = 0
     if paid != int(order['amount']):
+        _pay_log(oid, 'AMOUNT_MISMATCH', '승인 %s원 ≠ 주문 %s원' % (format(paid, ','), format(int(order['amount']), ',')))
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
         return _fail('결제 금액 불일치')
@@ -739,6 +755,7 @@ async def inicis_mobile_return(req: Request):
         vbank = res.get('P_VACT_BANK_NAME') or res.get('P_FN_NM') or ''
         vname = res.get('P_VACT_NAME') or ''
         vdate = (str(res.get('P_VACT_DATE') or '') + str(res.get('P_VACT_TIME') or '')).strip()
+        _pay_log(oid, 'VBANK_ISSUED', '%s %s · 입금대기' % (vbank, vnum))
         try:
             with db() as c:
                 c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
@@ -755,6 +772,7 @@ async def inicis_mobile_return(req: Request):
             pass
         return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
+    _pay_log(oid, 'PAID', '%s · TID …%s' % (method or 'Card', str(pay_tid)[-6:]))
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
@@ -817,6 +835,7 @@ async def inicis_vbank_noti(req: Request):
                 do_award = False
                 if order and order['status'] != 'PAID':
                     if amt == int(order['amount']):        # 금액 위변조 검증
+                        _pay_log(oid, 'PAID', '가상계좌 입금 확인 · %s원' % format(amt, ','))
                         try:
                             c.exec("UPDATE orders SET status='PAID', payment_key=?, "
                                    "pay_method='VBank', paid_at=? "
@@ -1004,13 +1023,71 @@ def _award_purchase_points(oid: str):
     except Exception:
         pass                                        # 적립 실패가 결제 완료를 막지 않는다
 
+def _pay_log(oid: str, code: str, msg: str = ''):
+    """주문 결제 진행 이력 추가 — orders.pay_log (JSON 배열, 최대 40건).
+
+    PENDING 사유 추적용: 주문생성→결제창 호출→창닫힘/이탈→인증→승인→완료의
+    각 단계를 남겨 관리자 상세에서 미결제 원인을 확인한다. 실패는 결제를 막지 않는다."""
+    if not oid:
+        return
+    try:
+        with db() as c:
+            r = c.one('SELECT pay_log FROM orders WHERE order_id=?', (oid,))
+            if r is None:
+                return
+            try:
+                log = json.loads(r['pay_log'] or '[]')
+            except Exception:
+                log = []
+            if not isinstance(log, list):
+                log = []
+            log.append({'t': kst_iso()[:19], 'c': str(code)[:24], 'm': str(msg or '')[:160]})
+            c.exec('UPDATE orders SET pay_log=? WHERE order_id=?',
+                   (json.dumps(log[-40:], ensure_ascii=False), oid))
+    except Exception:
+        pass                                        # 컬럼 미생성 등 — 이력만 포기
+
+# 클라이언트 비콘 이벤트 화이트리스트 — 메시지는 서버 고정 문구(로그 오염 방지)
+_PAY_EVENT_CODES = {
+    'open_pc': ('PAY_OPEN_PC', 'PC 결제창 호출'),
+    'open_m':  ('PAY_OPEN_M',  '모바일 결제창으로 이동'),
+    'close':   ('WINDOW_CLOSE', '구매자가 결제창을 닫음'),
+    'exit':    ('PAGE_EXIT',    '결제 미완료 상태로 페이지 이탈'),
+}
+
+@app.post('/api/pay/event')
+async def api_pay_event(req: Request):
+    """체크아웃 페이지 sendBeacon 수신 — 결제창 호출/창닫힘/이탈 시그널.
+
+    closeUrl(/inicis/close)은 쿼리 금지(V023)라 주문번호를 못 받으므로,
+    close 페이지가 부모창에 postMessage → 부모(체크아웃)가 여기로 비콘을 쏜다.
+    PENDING 주문에만 기록하며 항상 200 (비콘은 응답을 읽지 않는다)."""
+    try:
+        d = json.loads((await req.body())[:400].decode('utf-8', 'replace') or '{}')
+    except Exception:
+        return {'ok': True}
+    oid = str(d.get('oid') or '')[:40]
+    ev = _PAY_EVENT_CODES.get(str(d.get('c') or ''))
+    if oid and ev:
+        try:
+            with db() as c:
+                r = c.one('SELECT status FROM orders WHERE order_id=?', (oid,))
+            if r and r['status'] == 'PENDING':
+                _pay_log(oid, ev[0], ev[1])
+        except Exception:
+            pass
+    return {'ok': True}
+
 @app.api_route('/inicis/close', methods=['GET', 'POST'])
 async def inicis_close(req: Request):
     """결제창 닫기 URL(closeUrl) — 쿼리스트링 없는 순수 경로(V023 회피).
-       결제 팝업/레이어를 닫고 결제 페이지로 복귀시킨다."""
+       결제 팝업/레이어를 닫고 결제 페이지로 복귀시킨다.
+       부모창(체크아웃)에 postMessage 로 '창 닫힘'을 알려 PENDING 사유를 기록한다."""
     return HTMLResponse(
         "<!doctype html><meta charset='utf-8'><title>결제 취소</title>"
-        "<script>try{if(window.opener){window.close();}"
+        "<script>try{if(parent&&parent!==window)parent.postMessage('mapdal:ini-close','*')}catch(e){}"
+        "try{if(window.opener)window.opener.postMessage('mapdal:ini-close','*')}catch(e){}"
+        "try{if(window.opener){window.close();}"
         "else{location.replace('/checkout');}}catch(e){location.replace('/checkout');}</script>"
         "<body style=\"font-family:sans-serif;padding:40px;text-align:center;color:#141414\">"
         "결제를 취소했습니다. 창이 닫히지 않으면 <a href='/checkout'>여기</a>를 눌러 주세요.</body>")

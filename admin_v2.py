@@ -2598,7 +2598,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
    <b>입금 대기 중</b> — 아직 입금되지 않았습니다. 통장 입금 확인 전에는 발송하지 마세요.
    이니시스 입금통보가 오면 자동으로 결제완료로 바뀝니다.</div>`:''}
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
- ${o.items.map(i=>{const pid=String(i.id||''),u=pid?(pid.indexOf('k2g::')===0?'/album-detail?uid='+encodeURIComponent(pid.slice(5)):'/p/'+encodeURIComponent(pid)):'';return`<tr><td>${u?`<a href="${u}" target="_blank" rel="noopener" title="상품페이지 새 탭 열기" style="color:inherit">${esc(i.name)}<span style="opacity:.45;font-size:11px;margin-left:4px">↗</span></a>`:esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`}).join('')}</table>
+ ${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
  ${can(1)?`<div class="kv"><b>처리상태</b><span><select id="mff">${Object.entries(FF).map(([k,v])=>`<option value="${k}" ${o.fulfill===k?'selected':''}>${v}</option>`).join('')}</select></span>
  <b>송장번호</b><span><input id="mtr" value="${esc(o.tracking)}" style="width:100%"></span>
  <b>메모</b><span><input id="mmemo" value="${esc(o.admin_memo)}" style="width:100%"></span>
@@ -2609,7 +2609,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  ${can(2)&&o.status!=='CANCELLED'?`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund})">${o.can_refund?'결제취소(환불)':'주문취소 표시'}</button>`:''}
  ${can(1)?`<button class="btn" onclick="saveFulfill('${esc(o.order_id)}')">저장</button>`:''}
  <button class="btn ghost" onclick="closeM()">닫기</button></div>
- ${o.can_refund&&can(2)?'<div class="hint">결제취소 시 토스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
+ ${o.can_refund&&can(2)?'<div class="hint">결제취소 시 이니시스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
  $('#mbg').style.display='flex';}catch(e){toast(e.message)}}
 function closeM(){$('#mbg').style.display='none';$('#mbox').classList.remove('wide')}
 $('#mbg').addEventListener('click',e=>{if(e.target.id==='mbg')closeM()});
@@ -9513,10 +9513,18 @@ def _order_complete_copy(html):
         "      else if(album&&!other)msg='주문 확인 메일을 보내드렸습니다. 음반은 안전 포장 후 순차 출고됩니다.';\n"
         "      else msg='주문 확인 메일을 보내드렸습니다. 상품은 확인 후 순차 출고됩니다.';\n"
         "      el.textContent=msg;}\n"
+        "    function mpPurchase(d,o){try{\n"
+        "      if(!d||!window.gtag)return;\n"
+        "      if(String(d.status||'')!=='PAID')return;\n"
+        "      var k='mpPur_'+o; if(sessionStorage.getItem(k))return; sessionStorage.setItem(k,'1');\n"
+        "      gtag('event','purchase',{transaction_id:String(o),value:Number(d.amount)||0,currency:'KRW',\n"
+        "        items:(d.items||[]).map(function(it){return{item_id:String(it.id||''),\n"
+        "          item_name:String(it.n||it.name||''),price:Number(it.p||it.price)||0,quantity:Number(it.q)||1}})});\n"
+        "    }catch(e){}}\n"
         "    if(!oid){paint(null);return;}\n"
         "    fetch('/api/orders/'+encodeURIComponent(oid))\n"
         "      .then(function(r){return r.ok?r.json():null})\n"
-        "      .then(function(d){paint(d&&d.items)})\n"
+        "      .then(function(d){paint(d&&d.items);mpPurchase(d,oid);})\n"
         "      .catch(function(){paint(null)});}\n"
         "  function go(){var q=new URLSearchParams(location.search);\n"
         "    setDesc(q.get('oid')||q.get('orderId'));}\n"

@@ -527,6 +527,8 @@ def ensure_ready():
     except Exception: pass
     try: _migrate_new_drops_page_edits() # NEW/DROPS 편집본에 옵션 카드 UI 반영 (멱등)
     except Exception: pass
+    try: _migrate_home_page_edits() # 홈 편집본을 배포 정적본과 동기화 — 백업 후 교체 (멱등)
+    except Exception: pass
     try: _artists_migrate_ordinal() # 구버전이 만든 'N집' 서수 표기 팀 병합·정정 (멱등)
     except Exception: pass
     try: _artists_migrate_variants() # 구버전이 만든 역순 표기('있지 (ITZY)'류) 중복 팀 병합 (멱등)
@@ -8229,6 +8231,31 @@ def _drop_terms_for(d):
     elif legacy and not winners:
         winners.append({'kind': 'DEFAULT', 'label': '당첨자 유의사항', 'html': legacy})
     return entry, winners
+
+def _migrate_home_page_edits():
+    """홈(mapdal_home_mockup_v1.html)의 DB 편집본을 배포 정적본과 동기화 (멱등).
+
+    편집본(page_edits)이 디스크(깃허브 배포본)보다 우선 서빙되므로, 과거에
+    [페이지] 탭으로 홈을 저장한 이력이 있으면 새 배포가 화면에 반영되지 않는다
+    (2026-07 히어로 PC/모바일 이미지 분기 미표시 사례). 홈은 깃허브 단일 출처
+    원칙에 따라 배포본으로 교체하되, 기존 편집본은 page_history 에 백업해 둔다.
+    가드: 정적본에 img_m(분기 마커)이 있을 때만, 그리고 내용이 다를 때만 1회 동작."""
+    try:
+        row = one("SELECT html FROM page_edits WHERE path='mapdal_home_mockup_v1.html'")
+        if not row:
+            return
+        fp = os.path.join(BASE, 'static', 'mapdal_home_mockup_v1.html')
+        if not os.path.isfile(fp):
+            return
+        fresh = open(fp, encoding='utf-8').read()
+        if 'img_m' not in fresh or (row.get('html') or '') == fresh:
+            return
+        run('INSERT INTO page_history VALUES(?,?,?,?,?)',
+            (uid(), 'mapdal_home_mockup_v1.html', row.get('html') or '', now_iso(), '시스템(동기화 백업)'))
+        run("UPDATE page_edits SET html=?, updated=?, by_admin=? WHERE path='mapdal_home_mockup_v1.html'",
+            (fresh, now_iso(), '시스템(배포 동기화)'))
+    except Exception:
+        pass
 
 def _migrate_new_drops_page_edits():
     """new-drops.html의 DB 편집본이 있으면 최신 정적본(mpDropOptUI)으로 동기화.

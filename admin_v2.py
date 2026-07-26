@@ -8735,6 +8735,70 @@ def _serve_k2g_from_db(html, path=''):
     except Exception:
         return html
 
+# ── 앨범 상세 텍스트: per-uid 서빙 ──────────────────────────────────────
+#   album-detail.html은 DET_EMB(부분 임베드 ~292KB)로 첫 렌더 후, 웹에서는
+#   항상 k2g_texts.json(5.8MB) 전체를 재fetch해 DET를 덮어쓰는 구조였다.
+#   → 서빙 시 임베드를 요청 uid 1건으로 축소하고 fetch 대상을
+#     /api/k2g/text/{uid}(~1KB)로 치환한다. 페이지 JS 무수정 호환:
+#     API가 {uid:{...}} 형태를 반환하므로 DET=j; DET[uid] 그대로 동작하고,
+#     항목이 없으면 404(빈 바디) → x.json() 실패 → catch → 첫 렌더 유지.
+#   texts 소스(4,943건)가 임베드(589건)의 상위집합이라, 임베드에 없던
+#   앨범도 이제 첫 페인트부터 상세가 포함된다(개선). 실패 시 원본 폴백.
+_k2g_texts_cache = {'sig': None, 'map': None}
+
+def _k2g_texts_map():
+    fp = os.path.join(STATIC_DIR, 'k2g_texts.json')
+    try:
+        st = os.stat(fp); sig = (int(st.st_mtime), st.st_size)
+    except Exception:
+        return {}
+    if _k2g_texts_cache['map'] is not None and _k2g_texts_cache['sig'] == sig:
+        return _k2g_texts_cache['map']
+    try:
+        m = json.load(open(fp, encoding='utf-8'))
+        if not isinstance(m, dict):
+            m = {}
+    except Exception:
+        m = _k2g_texts_cache['map'] or {}
+    _k2g_texts_cache.update(sig=sig, map=m)
+    return m
+
+def _k2g_first_uid():
+    body = _k2g_catalog_json()
+    if not body:
+        return None
+    m = re.match(r'\[\["([A-Za-z0-9_-]{1,40})"', body)
+    return m.group(1) if m else None
+
+_DET_UID_RE = re.compile(r'[A-Za-z0-9_-]{1,40}')
+
+def _serve_det_emb(html, uid=None):
+    k = html.find('const DET_EMB=')
+    if k < 0:
+        return html
+    try:
+        u = str(uid or '').strip()
+        if not _DET_UID_RE.fullmatch(u):
+            u = _k2g_first_uid() or ''
+        if not u:
+            return html                        # uid 확정 불가(미백필 등) → 원본 유지
+        j = html.find('{', k)
+        if j < 0:
+            return html
+        obj, end = json.JSONDecoder().raw_decode(html, j)
+        if not isinstance(obj, dict):
+            return html
+        entry = _k2g_texts_map().get(u) or obj.get(u)
+        small = {u: entry} if entry else {}
+        body = json.dumps(small, ensure_ascii=False, separators=(',', ':'))
+        body = body.replace('</', '<\\/').replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
+        html = html[:j] + body + html[end:]
+        html = html.replace("fetch('k2g_texts.json')",
+                            "fetch('/api/k2g/text/%s')" % u, 1)
+        return html
+    except Exception:
+        return html
+
 # ══════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════════
 # 홈페이지 수정의견 반영 (2026-07 · 맵달_홈페이지_의견.pdf)
@@ -10002,6 +10066,7 @@ def _analytics_snippet():
 
 def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html, path)
+    html = _serve_det_emb(html, uid)
     html = _inject_shop_products(html)
     html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
@@ -12129,6 +12194,23 @@ def api_admin_artist_pending_resolve(request: Request, body: dict = Body(...)):
         audit(a, '아티스트검수', '', '무시(억제): ' + surface)
         return {'ok': True, 'mode': 'ignore'}
     raise HTTPException(400, 'action은 alias/create/ignore 중 하나입니다')
+
+# ── /api/k2g/text/{uid}: 앨범 상세 텍스트 per-uid ────────────────────────
+#    항목 없으면 404 빈 바디 → 페이지 .json() 실패 → catch → 임베드 유지.
+@admin_router.api_route('/api/k2g/text/{uid}', methods=['GET', 'HEAD'])
+def k2g_text_api(uid: str, request: Request):
+    if not _DET_UID_RE.fullmatch(uid or ''):
+        raise HTTPException(404)
+    entry = _k2g_texts_map().get(uid)
+    if entry is None:
+        return Response(status_code=404)
+    body = json.dumps({uid: entry}, ensure_ascii=False, separators=(',', ':'))
+    etag = '"kt-%s"' % hashlib.md5(body.encode('utf-8')).hexdigest()[:16]
+    if request.headers.get('if-none-match') == etag:
+        return Response(status_code=304, headers={'ETag': etag})
+    return Response(body, media_type='application/json; charset=utf-8',
+                    headers={'ETag': etag, 'Cache-Control': 'public, max-age=86400',
+                             'Vary': 'Accept-Encoding'})
 
 # ── /k2g-data.js: K2G 카탈로그 외부 데이터 파일 ──────────────────────────
 #    window.__K2G 주입. URL의 v=내용해시가 변경 추적을 담당하므로 immutable

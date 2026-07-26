@@ -660,7 +660,17 @@ function dropAddCart(c){
  var el=document.querySelector('.util .cart');if(el)el.textContent='CART · '+cnt;
  return true}
 
+function won(n){n=Number(n||0);return '\u20A9'+n.toLocaleString('ko-KR')}
 function relSideHTML(c){
+ var ps=c.related_products||[];
+ if(ps.length){ /* KPOP SHOP의 같은 아티스트 앨범(A/Z/Diary VER. 등) → 앨범 상세로 연결 */
+  return '<div class="nd-relside"><h4>관련 상품</h4><div class="rs-track">'+ps.slice(0,6).map(function(p,i){
+   var bg=p.img?'<img src="'+esc(p.img)+'" alt="" loading="lazy">'
+    :'<span class="rs-ph" style="background:'+CATFALL+'"></span>';
+   var badge=p.soldout?'품절':(p.price>0?won(p.price):'ALBUM');
+   return '<a class="rs-th'+(i===0?' on':'')+'" href="'+esc(p.url)+'" data-t="'+esc(p.name)+'">'
+    +'<span class="rs-frame">'+bg+'<span class="rs-badge">'+esc(badge)+'</span></span></a>'}).join('')
+   +'</div><div class="rs-name" id="rsName">'+esc(ps[0].name)+'</div></div>'}
  if(!c.related||!c.related.length)return '';
  var all=[{id:c.id,title:c.title,image:c.image,cat_grad:c.cat_grad,cat_label:c.cat_label,cur:1}]
   .concat(c.related.slice(0,5));
@@ -673,11 +683,11 @@ function relSideHTML(c){
    :'<a class="rs-th" href="/new-drops?id='+x.id+'" data-t="'+esc(x.title)+'">'+inner+'</a>'}).join('')
   +'</div><div class="rs-name" id="rsName">'+esc(c.title)+'</div></div>'}
 function bindRelSide(){var tr=document.querySelector('.rs-track');if(!tr)return;
- var nm=$('#rsName');
+ var nm=$('#rsName'),def=nm?nm.textContent:'';
  tr.querySelectorAll('.rs-th').forEach(function(t){
   t.addEventListener('mouseenter',function(){if(nm)nm.textContent=t.dataset.t});
   t.addEventListener('mouseleave',function(){var on=tr.querySelector('.rs-th.on');
-   if(nm&&on)nm.textContent=on.dataset.t})})}
+   if(nm)nm.textContent=on?on.dataset.t:def})})}
 function detailSections(c){var s=[];
  if(c.content_html)s.push({id:'sec-info',label:'이벤트 안내',eyebrow:'EVENT DETAIL',title:'이벤트 안내',body:'<div class="body">'+c.content_html+'</div>'});
  if(c.benefit_html)s.push({id:'sec-benefit',label:'KPOP2GETHER X 맵달SEOUL 특전',eyebrow:'SPECIAL BENEFIT',title:'KPOP2GETHER X 맵달SEOUL 특전',body:'<div class="body">'+c.benefit_html+'</div>'});

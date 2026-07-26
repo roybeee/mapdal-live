@@ -773,7 +773,7 @@ function bcol(t){var h=0;for(var i=0;i<t.length;i++)h=(h*31+t.charCodeAt(i))>>>0
 function normNo(s){return String(s||'').replace(/\s+/g,'').toUpperCase()}
 var DET=null;
 function winTr(w,gi,i,cols){
- var h='<tr id="w-'+gi+'-'+i+'"><td class="c-i">'+w.i+'</td><td class="c-no">'+esc(w.no)+'</td>';
+ var h='<tr id="w-'+gi+'-'+i+'"><td class="c-i">'+w.i+'</td>'+(cols.no?'<td class="c-no">'+(w.no&&w.no!=='-'?esc(w.no):'-')+'</td>':'');
  if(cols.name)h+='<td>'+(w.name?esc(w.name):'-')+'</td>';
  if(cols.phone)h+='<td class="c-ph">'+(w.phone?esc(w.phone):'-')+'</td>';
  if(cols.badge)h+='<td>'+(w.badge?'<span class="nd-badge" style="background:'+bcol(w.badge)+'">'+esc(w.badge)+'</span>':'-')+'</td>';
@@ -802,7 +802,8 @@ function renderWinners(c){
  if(c.announce_body&&String(c.announce_body).trim())
   head+='<div class="nd-wbody">'+c.announce_body+'</div>';
 
- var defNotice=['Ctrl+F(모바일은 브라우저 메뉴의 “페이지에서 찾기”)를 눌러 주문번호를 직접 검색하여 확인하실 수 있습니다.',
+ var hasNo=(c.winner_groups||[]).some(function(g){return (g.winners||[]).some(function(w){return w.no&&w.no!=='-'})});
+ var defNotice=[hasNo?'Ctrl+F(모바일은 브라우저 메뉴의 “페이지에서 찾기”)를 눌러 주문번호를 직접 검색하여 확인하실 수 있습니다.':'아래 명단에서 성함과 연락처 뒤 4자리로 본인의 당첨 여부를 확인해 주세요.',
   '당첨자분에게는 주문 시 입력하신 연락처(문자·이메일)로 개별 안내가 발송될 예정입니다.',
   '개인정보 보호를 위해 성함은 일부 마스킹, 연락처는 뒤 4자리만 표시되며, 목록 순서는 참여 순서와 무관합니다.'];
  var lines=defNotice.concat((c.announce_notice||'').split('\n').filter(function(x){return x.trim()}));
@@ -810,7 +811,7 @@ function renderWinners(c){
 
  head+='<a class="nd-wgo" href="/new-drops?id='+c.id+'">이벤트 페이지 보러가기 <span class="arr">→</span></a>';
 
- head+='<div class="nd-wcheck"><h5>내 당첨 확인</h5>'
+ if(hasNo)head+='<div class="nd-wcheck"><h5>내 당첨 확인</h5>'
   +'<div class="frm"><input id="ndWq" placeholder="주문번호를 입력하세요 (예: MPD2607170001)" autocomplete="off">'
   +'<button id="ndWbtn" type="button">당첨 확인</button></div>'
   +'<div class="memb" id="ndMemb">회원이신가요? <a href="#" id="ndAuto">내 주문으로 자동 확인</a> — 최근 3개월 주문을 한 번에 대조합니다.</div>'
@@ -821,10 +822,11 @@ function renderWinners(c){
   +G.map(function(g,gi){return '<button type="button" class="nd-wchip" data-g="'+gi+'">'+esc(g.title||g.type||('그룹 '+(gi+1)))+'</button>'}).join('')+'</div>';
 
  head+=G.map(function(g,gi){
-  var cols={name:g.winners.some(function(w){return w.name}),
+  var cols={no:g.winners.some(function(w){return w.no&&w.no!=='-'}),
+            name:g.winners.some(function(w){return w.name}),
             phone:g.winners.some(function(w){return w.phone}),
             badge:g.winners.some(function(w){return w.badge})};
-  var th='<tr><th class="c-i">No.</th><th>주문번호</th>'+(cols.name?'<th>성함</th>':'')
+  var th='<tr><th class="c-i">No.</th>'+(cols.no?'<th>주문번호</th>':'')+(cols.name?'<th>성함</th>':'')
    +(cols.phone?'<th>연락처</th>':'')+(cols.badge?'<th>구분</th>':'')+'</tr>';
   return '<div class="nd-wsec" id="wg-'+gi+'">'
    +'<h3>'+esc(g.title||'당첨자')+(g.type?'<span class="nd-wtype">'+esc(g.type)+'</span>':'')+'<span class="cnt">'+g.count+'명</span></h3>'
@@ -850,6 +852,7 @@ function renderWinners(c){
   if(hit){var row=$('#w-'+hit.gi+'-'+hit.i);if(row){row.classList.add('hit');row.scrollIntoView({block:'center',behavior:'smooth'})}
    showRes('🎉 축하합니다! <b>'+esc(hit.g.title||hit.g.type||'당첨자')+'</b>에 당첨되셨습니다.'+(hit.w.badge?' <b>['+esc(hit.w.badge)+']</b>':'')+'<br>당첨 안내는 주문 시 연락처로 개별 발송됩니다.',true)}
   else showRes('입력하신 주문번호는 당첨자 명단에 없습니다.<br>주문번호 전체를 정확히 입력했는지 확인해 주세요.',false)}
+ if($('#ndWbtn')){
  $('#ndWbtn').onclick=doSearch;
  $('#ndWq').addEventListener('keydown',function(e){if(e.key==='Enter')doSearch()});
  $('#ndAuto').onclick=function(e){e.preventDefault();clearHits();pickG(-1);
@@ -865,7 +868,8 @@ function renderWinners(c){
     showRes('🎉 축하합니다! 내 주문 중 <b>'+hits.length+'건</b>이 당첨되었습니다 — '
      +hits.map(function(h){return esc(h.g.title||h.g.type||'')+' ('+esc(h.w.no)+')'}).join(' · '),true)}
    else showRes('아쉽지만 이번에는 당첨되지 않았습니다.<br>다음 드롭에서 다시 만나요!',false)})
-  .catch(function(){el.innerHTML='로그인이 필요합니다. <a href="/account" style="color:var(--red);font-weight:700">로그인 후 자동 확인</a>'}) };}
+  .catch(function(){el.innerHTML='로그인이 필요합니다. <a href="/account" style="color:var(--red);font-weight:700">로그인 후 자동 확인</a>'}) };
+ }}
 
 /* ── 오류/라우팅 ── */
 function renderError(msg){

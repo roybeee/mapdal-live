@@ -12133,7 +12133,7 @@ def api_admin_artist_pending_resolve(request: Request, body: dict = Body(...)):
 # ── /k2g-data.js: K2G 카탈로그 외부 데이터 파일 ──────────────────────────
 #    window.__K2G 주입. URL의 v=내용해시가 변경 추적을 담당하므로 immutable
 #    장기 캐시 — 카탈로그 수정 시 페이지가 새 v를 참조해 즉시 반영된다.
-@admin_router.get('/k2g-data.js')
+@admin_router.api_route('/k2g-data.js', methods=['GET', 'HEAD'])
 def k2g_data_js(request: Request):
     body = _k2g_catalog_json()
     if body is None:
@@ -12167,6 +12167,8 @@ def kpop_page():
 
 # ═══════ 정적 서빙 대체 (편집본 우선 · 반드시 모듈 마지막 라우트) ═══════
 import mimetypes
+mimetypes.add_type('image/webp', '.webp')    # Render Python 3.10 이하 DB에 webp 부재 → octet-stream 방지
+mimetypes.add_type('image/avif', '.avif')
 
 @admin_router.get('/{spath:path}')
 def serve_site(spath: str, request: Request):

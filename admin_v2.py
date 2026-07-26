@@ -3055,8 +3055,18 @@ function renderBanner(){
      <div id="bnpv${i}" style="width:230px;height:96px;background:linear-gradient(135deg,#E8332A,#B71F18);${s.img?`background-image:url('${esc(s.img)}');`:''}background-size:cover;background-position:center;border:1px solid #e3e1db;border-radius:6px;position:relative;overflow:hidden">
       <span id="bnchip${i}" style="position:absolute;left:8px;bottom:8px;display:${s.tag_label?'inline-block':'none'};font:700 10px 'IBM Plex Mono',monospace;letter-spacing:.04em;color:#fff;padding:3px 7px;border-radius:4px;background:${bnCss(s.tag_color)}">${esc(s.tag_label||'')}</span>
      </div>
-     <button class="btn sm" style="margin-top:6px;width:100%" onclick="$('#bnfile${i}').click()">이미지 업로드 (자동 리사이즈)</button>
+     <button class="btn sm" style="margin-top:6px;width:100%" onclick="$('#bnfile${i}').click()">PC 이미지 업로드</button>
      <input type="file" id="bnfile${i}" accept="image/*" style="display:none" onchange="bnUpload(${i},this)">
+     <div class="hint" style="margin-top:3px;font-size:11px">PC 권장 2560×1080 (2.4:1 크롭)</div>
+     <div style="display:flex;gap:8px;margin-top:10px;align-items:flex-start">
+      <div style="width:76px;height:95px;flex:0 0 auto;background:#f0eee8;${s.img_m?`background-image:url('${esc(s.img_m)}');`:''}background-size:cover;background-position:center;border:1px ${s.img_m?'solid':'dashed'} #cfccc4;border-radius:6px;display:flex;align-items:center;justify-content:center;font:10px 'IBM Plex Mono',monospace;color:#999">${s.img_m?'':'PC 이미지<br>사용'}</div>
+      <div style="flex:1;min-width:0">
+       <button class="btn sm ghost" style="width:100%" onclick="$('#bnfilem${i}').click()">모바일 이미지 업로드</button>
+       <input type="file" id="bnfilem${i}" accept="image/*" style="display:none" onchange="bnUpload(${i},this,'img_m')">
+       ${s.img_m?`<button class="btn sm ghost" style="width:100%;margin-top:4px" onclick="BN.slides[${i}].img_m='';renderBanner()">모바일 이미지 제거</button>`:''}
+       <div class="hint" style="margin-top:3px;font-size:11px">모바일 권장 1080×1350 (4:5 원본 노출) — 비우면 PC 이미지로 표시</div>
+      </div>
+     </div>
     </div>
     <div style="flex:1;min-width:300px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
      <label class="bnf">태그 키워드<input list="bntags" value="${esc(s.tag_label||'')}" oninput="bnSet(${i},'tag_label',this.value)" placeholder="예: VIDEOCALL"></label>
@@ -3081,13 +3091,14 @@ function bnSet(i,k,v){BN.slides[i][k]=v;
  if(k==='tag_label'){const c=$('#bnchip'+i);c.textContent=v;c.style.display=v?'inline-block':'none';}
  if(k==='tag_color'){$('#bnchip'+i).style.background=bnCss(v);
   document.querySelectorAll('#bnsw'+i+' button').forEach(b=>b.style.borderColor=(b.dataset.c===v)?'#141414':'#e3e1db');}}
-async function bnUpload(i,inp){const f=inp.files[0];if(!f)return;inp.value='';
- const pv=$('#bnpv'+i);pv.style.opacity=.5;
- try{const u=await uploadFile(f);BN.slides[i].img=u;renderBanner();toast('업로드 완료 — 저장을 눌러 홈에 반영하세요');}
+async function bnUpload(i,inp,key){const f=inp.files[0];if(!f)return;inp.value='';key=key||'img';
+ const pv=$('#bnpv'+i);if(pv)pv.style.opacity=.5;
+ try{const u=await uploadFile(f);BN.slides[i][key]=u;renderBanner();
+  toast((key==='img_m'?'모바일':'PC')+' 이미지 업로드 완료 — 저장을 눌러 홈에 반영하세요');}
  catch(e){if(e.message!=='세션 만료')toast(e.message);}
  const pv2=$('#bnpv'+i);if(pv2)pv2.style.opacity=1;}
 function bnMove(i,d){const s=BN.slides,j=i+d;if(j<0||j>=s.length)return;const t=s[i];s[i]=s[j];s[j]=t;renderBanner();}
-function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
+function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',img_m:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
 async function saveBanner(){try{BN.interval_ms=parseInt($('#bniv').value)||3000;
  const d=await api('/admin/api/banner',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(BN)});
  toast('저장 완료 — 홈페이지에 '+d.slides+'개 슬라이드 반영');}catch(e){toast(e.message)}}

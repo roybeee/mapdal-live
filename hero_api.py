@@ -86,6 +86,7 @@ DEFAULT_DATA = {
 # ----------------------------------------------------------------------
 class Slide(BaseModel):
     img: str = Field("", max_length=600)
+    img_m: str = Field("", max_length=600)         # 모바일 전용 이미지(≤1024px) — 비우면 img 폴백
     href: str = Field("", max_length=600)
     eyebrow: str = Field("", max_length=120)
     title: str = Field("", max_length=120)

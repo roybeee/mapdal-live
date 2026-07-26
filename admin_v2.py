@@ -10154,10 +10154,138 @@ function load(append){fetch('/api/reviews?product_id='+encodeURIComponent(pid)+'
 fetch('/api/member/me').then(function(r){return r.json()}).then(function(d){me=d||{}}).catch(function(){}).then(function(){load(false)});
 })();</script>"""
 
+_MP_ECOM_JS = r"""<script>
+/*mpEcomJs — GA4 전자상거래 퍼널 계측 (전 페이지 공통 주입)
+  add_to_cart/remove_from_cart: localStorage('mapdal_cart') 저장 지점 전역 훅 — 페이지별 수정 불필요
+  sign_up/login: fetch 전역 훅 (/api/member/signup·login 성공 시)
+  view_item_list·select_item(/shop) · view_item(PDP·앨범) · view_cart · begin_checkout · add_payment_info
+  모든 경로 try/catch — 계측 실패가 페이지 동작에 영향을 주는 일은 절대 없다. */
+(function(){try{
+var CK='mapdal_cart';
+function ev(n,p){try{if(window.gtag)gtag('event',n,p)}catch(e){}}
+function cat(id,nm){id=String(id||'');var s=(String(nm||'')+' '+id).toLowerCase();
+ if(id.indexOf('mpd::')===0)return'drops';
+ if(id.indexOf('k2g::')===0||s.indexOf('album')>-1)return'album';
+ if(s.indexOf('tteok')>-1||s.indexOf('kimbap')>-1||s.indexOf('bowl')>-1||s.indexOf('kfood')>-1||s.indexOf('k-food')>-1||s.indexOf('\uB5A1\uBCF6\uC774')>-1||s.indexOf('\uAE40\uBC25')>-1)return'kfood';
+ if(s.indexOf('hood')>-1||s.indexOf('tee')>-1||s.indexOf('shirt')>-1||s.indexOf('cap')>-1||s.indexOf('apparel')>-1||s.indexOf('\uD6C4\uB514')>-1||s.indexOf('\uD2F0\uC154\uCE20')>-1||s.indexOf('\uBCFC\uCEA1')>-1)return'apparel';
+ if(s.indexOf('glass')>-1||s.indexOf('mat')>-1||s.indexOf('gift')>-1||s.indexOf('living')>-1||s.indexOf('\uC720\uB9AC')>-1||s.indexOf('\uB9E4\uD2B8')>-1||s.indexOf('\uAE30\uD504\uD2B8')>-1)return'living';
+ return'shop'}
+function toIt(i,q){return{item_id:String(i.id||''),item_name:String(i.n||i.name||'').slice(0,100),
+ price:Number(i.p||i.price)||0,quantity:Number(q!=null?q:i.q)||1,item_category:cat(i.id,i.n||i.name)}}
+function cartRaw(){try{var a=JSON.parse(localStorage.getItem(CK)||'[]');return(a&&a.length!==undefined)?a:[]}catch(e){return[]}}
+function val(arr){var v=0,i;for(i=0;i<arr.length;i++){v+=(Number(arr[i].price)||0)*(Number(arr[i].quantity)||1)}return Math.round(v)}
+
+/* [1] add_to_cart / remove_from_cart — 장바구니 저장 전역 훅
+   주의: Storage 인스턴스 속성 대입(localStorage.setItem=fn)은 스펙상
+   아이템 저장으로 변환되어 무시된다 → 반드시 prototype 을 패치한다. */
+try{var _SP=window.Storage&&Storage.prototype;
+if(_SP&&_SP.setItem){var _orig=_SP.setItem;
+_SP.setItem=function(k,v){
+ var isCart=(k===CK&&this===window.localStorage);
+ var oldA=null;if(isCart){try{oldA=cartRaw()}catch(e){oldA=[]}}
+ _orig.call(this,k,v);
+ if(!isCart||oldA===null)return;
+ try{
+  var newA;try{newA=JSON.parse(v||'[]')||[]}catch(e2){newA=[]}
+  if(!newA.length&&!oldA.length)return;
+  var om={},nm={},meta={},id,d,i;
+  for(i=0;i<oldA.length;i++){id=String(oldA[i].id||'');om[id]=(om[id]||0)+(Number(oldA[i].q)||1);meta[id]=oldA[i]}
+  for(i=0;i<newA.length;i++){id=String(newA[i].id||'');nm[id]=(nm[id]||0)+(Number(newA[i].q)||1);meta[id]=newA[i]}
+  var add=[],rem=[];
+  for(id in nm){d=nm[id]-(om[id]||0);if(d>0)add.push(toIt(meta[id],d))}
+  for(id in om){d=om[id]-(nm[id]||0);if(d>0)rem.push(toIt(meta[id],d))}
+  if(add.length)ev('add_to_cart',{currency:'KRW',value:val(add),items:add});
+  if(rem.length)ev('remove_from_cart',{currency:'KRW',value:val(rem),items:rem});
+ }catch(e3){}
+};}}catch(e){}
+
+/* [2] sign_up / login — fetch 전역 훅 (응답 소비 없음·원본 Promise 그대로 반환) */
+try{if(window.fetch){var _f=window.fetch;
+window.fetch=function(u){var pr=_f.apply(this,arguments);
+ try{var url=(u&&u.url)?u.url:String(u||'');
+  var kind=url.indexOf('/api/member/signup')>-1?'sign_up':(url.indexOf('/api/member/login')>-1?'login':'');
+  if(kind){pr.then(function(r){if(r&&r.ok)ev(kind,{method:'email'})},function(){})}
+ }catch(e){}
+ return pr};}}catch(e){}
+
+/* [3] 페이지 타입별 퍼널 이벤트 */
+function pageName(){try{var m=document.querySelector('meta[property="og:title"]');
+ var h=document.querySelector('h1');
+ var t=(m&&m.getAttribute('content'))||(h&&h.textContent)||document.title||'';
+ return String(t).replace(/\s+/g,' ').trim().slice(0,100)}catch(e){return''}}
+function priceFromDom(){
+ try{var ld=document.querySelectorAll('script[type="application/ld+json"]'),i,j,of,p;
+  for(i=0;i<ld.length;i++){try{j=JSON.parse(ld[i].textContent||'');of=j&&j.offers;
+   if(of){p=Number((of.price!=null)?of.price:(of[0]&&of[0].price));if(p>0)return p}}catch(e1){}}
+ }catch(e){}
+ try{var el=document.querySelector('[data-price]');
+  if(el){var p2=Number(String(el.getAttribute('data-price')||'').replace(/[^0-9]/g,''));if(p2>0)return p2}}catch(e){}
+ try{var cs=document.querySelectorAll('.price,[class*="price"],[id*="price"]'),k,m2,p3;
+  for(k=0;k<cs.length;k++){m2=(cs[k].textContent||'').match(/([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})/);
+   if(m2){p3=Number(m2[1].replace(/,/g,''));if(p3>=1000&&p3<10000000)return p3}}}catch(e){}
+ return 0}
+function idFromUrl(u){try{
+ if(u.pathname==='/album-detail'||u.pathname==='/album-detail.html')
+  return'k2g::'+(u.searchParams.get('id')||'');
+ return u.pathname.replace(/\.html$/,'').slice(1)}catch(e){return''}}
+function viewItem(P){try{
+ var id=(P==='/album-detail')?idFromUrl(new URL(location.href)):P.slice(1);
+ var nm=pageName(),pr=priceFromDom();
+ var it={item_id:id,item_name:nm||id,item_category:cat(id,nm)};if(pr>0)it.price=pr;
+ var pp={items:[it]};if(pr>0){pp.currency='KRW';pp.value=pr}
+ ev('view_item',pp)}catch(e){}}
+function listItems(){var out=[],seen={},i,a,h,u,id,nm,img;
+ var as=document.querySelectorAll('a[href*="/product-"],a[href*="/album-detail"]');
+ for(i=0;i<as.length&&out.length<30;i++){a=as[i];h=a.getAttribute('href')||'';
+  try{u=new URL(h,location.origin)}catch(e){continue}
+  if(u.origin!==location.origin)continue;
+  id=idFromUrl(u);
+  if(!id||id==='k2g::'||seen[id])continue;seen[id]=1;
+  nm=(a.getAttribute('aria-label')||a.title||a.textContent||'').replace(/\s+/g,' ').trim().slice(0,100);
+  if(!nm){img=a.querySelector&&a.querySelector('img');if(img)nm=(img.alt||'').slice(0,100)}
+  out.push({item_id:id,item_name:nm||id,item_category:cat(id,nm),index:out.length})}
+ return out}
+var _lsent=false;
+function listOnce(tryN){try{if(_lsent)return;var its=listItems();
+ if(!its.length){if(tryN<2)setTimeout(function(){listOnce(tryN+1)},1200);return}
+ _lsent=true;ev('view_item_list',{item_list_id:'shop',item_list_name:'SHOP',items:its});
+ document.addEventListener('click',function(e){try{
+  var t=e.target;
+  while(t&&t!==document&&!(t.tagName&&t.tagName.toUpperCase()==='A'))t=t.parentNode;
+  if(!t||t===document)return;
+  var h=(t.getAttribute&&t.getAttribute('href'))||'';
+  if(h.indexOf('/product-')<0&&h.indexOf('/album-detail')<0)return;
+  var u;try{u=new URL(h,location.origin)}catch(e2){return}
+  var id=idFromUrl(u);if(!id||id==='k2g::')return;
+  var nm=(t.getAttribute('aria-label')||t.textContent||'').replace(/\s+/g,' ').trim().slice(0,100);
+  ev('select_item',{item_list_id:'shop',items:[{item_id:id,item_name:nm||id,item_category:cat(id,nm)}]})
+ }catch(e3){}},true)}catch(e){}}
+function boot(){try{
+ var P=(location.pathname||'/').replace(/\.html$/,'').replace(/\/+$/,'')||'/';
+ if(P==='/cart'){var c=[],cr=cartRaw(),i;for(i=0;i<cr.length;i++)c.push(toIt(cr[i]));
+  if(c.length)ev('view_cart',{currency:'KRW',value:val(c),items:c})}
+ else if(P==='/checkout'){var c2=[],cr2=cartRaw(),j;for(j=0;j<cr2.length;j++)c2.push(toIt(cr2[j]));
+  if(c2.length)ev('begin_checkout',{currency:'KRW',value:val(c2),items:c2});
+  var pb=document.getElementById('payBtn');
+  if(pb)pb.addEventListener('click',function(){try{
+   var c3=[],cr3=cartRaw(),k;for(k=0;k<cr3.length;k++)c3.push(toIt(cr3[k]));
+   if(c3.length)ev('add_payment_info',{currency:'KRW',value:val(c3),payment_type:'INIStdPay',items:c3})
+  }catch(e){}},true)}
+ else if(P.indexOf('/product-')===0||P==='/album-detail'){viewItem(P)}
+ else if(P==='/shop'){listOnce(0)}
+}catch(e){}}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',boot)}else{boot()}
+}catch(e){}})();
+</script>"""
+
 def _analytics_snippet():
     """GA4·네이버 애널리틱스 — 환경변수 설정 시에만 주입(미설정 = 완전 무변화).
     Render 환경변수: GA4_ID = G-XXXXXXXXXX / NAVER_SA_ID = 네이버 애널리틱스 발급키.
-    async 로드라 렌더링 비차단. purchase 등 전자상거래 이벤트는 2단계에서 확장."""
+    async 로드라 렌더링 비차단.
+    GA4 설정 시 전자상거래 퍼널 런타임(_MP_ECOM_JS)을 함께 주입한다:
+    view_item_list·select_item·view_item·add_to_cart·remove_from_cart·
+    view_cart·begin_checkout·add_payment_info·sign_up·login.
+    (purchase 는 주문완료 페이지 클라 이벤트 + app.py 서버 MP 백업의 이중 라인.)"""
     ga = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('GA4_ID', ''))
     nv = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('NAVER_SA_ID', ''))
     if not ga and not nv:
@@ -10172,6 +10300,13 @@ def _analytics_snippet():
               '<script>if(window.wcs){if(!window.wcs_add)window.wcs_add={};'
               'wcs_add["wa"]="%s";try{wcs.inflow()}catch(e){}wcs_do();}</script>' % nv)
     return s
+
+def _ecom_snippet():
+    """GA4 전자상거래 퍼널 런타임 — GA4_ID 설정 시에만 주입(마커 mpEcomJs).
+    mpAnalytics 와 마커를 분리한 이유: 관리자 편집으로 구 스니펫이 본문에
+    베이크된 페이지에도 퍼널 계측이 독립적으로 주입되어야 하기 때문."""
+    ga = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('GA4_ID', ''))
+    return _MP_ECOM_JS if ga else ''
 
 def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html, path)
@@ -10201,6 +10336,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpDropRecover' not in html: add += ENTRYRECOVER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if 'mpAnalytics' not in html: add += _analytics_snippet()
+    if 'mpEcomJs' not in html: add += _ecom_snippet()
     if 'mpKakaoCh' not in html: add += _kakao_channel_snippet()
     if 'mpReviews' not in html and (path == '/album-detail' or path.startswith('/product-') or 'qna-wrap' in html):
         add += _REVIEW_SNIPPET

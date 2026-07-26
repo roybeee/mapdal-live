@@ -5,7 +5,7 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 - 동시 주문 안전: 트랜잭션 + 행 잠금(FOR UPDATE), 재고 원자적 차감
 - 결제 승인 멱등 처리 (중복 승인 방지)
 """
-import os, json, secrets, datetime, base64, hashlib
+import os, json, secrets, datetime, base64, hashlib, threading
 import urllib.request, urllib.error, urllib.parse
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query
@@ -34,6 +34,17 @@ INICIS_MOBILE_HASHKEY = os.getenv('INICIS_MOBILE_HASHKEY', '')
 #   Cloudflare/Render 프록시 뒤에서는 req.base_url이 실제 도메인과 달라질 수 있으므로
 #   SITE_ORIGIN 환경변수로 실도메인을 고정하는 것이 가장 안전. 미설정 시 헤더로 추론.
 SITE_ORIGIN    = os.getenv('SITE_ORIGIN', 'https://mapdal.kr').rstrip('/')
+
+# ── GA4 서버사이드 계측 (Measurement Protocol) ──────────────────────────
+#   클라이언트 purchase(주문완료 페이지 도달 시 전송)는 결제창 이탈·인앱 전환·
+#   창 닫힘 시 유실된다(업계 통상 5~15%). PAID 확정 시점에 서버가 동일
+#   transaction_id + client_id 로 재전송하면 GA4 가 transaction_id 기준으로
+#   중복을 제거하므로 유실분만 정확히 보전된다.
+#   GA4_ID · GA4_API_SECRET 두 환경변수가 모두 있을 때만 동작(미설정 = 완전 무변화).
+#   GA4_API_SECRET: GA4 관리 > 데이터 스트림 > Measurement Protocol API 비밀번호 생성.
+GA4_ID         = ''.join(ch for ch in os.getenv('GA4_ID', '') if ch.isalnum() or ch in '-_')
+GA4_API_SECRET = os.getenv('GA4_API_SECRET', '').strip()
+_GA_COLS_OK    = None         # ga_* 컬럼 존재 여부 (최초 1회 판정 후 캐시 — _has_vbank_cols 와 동일 패턴)
 
 # ── 시각 기준 ──────────────────────────────────────────────────────────
 #  운영 서버(Render 싱가포르)의 시스템 시계는 UTC 다. now() 를 그대로 저장하면
@@ -147,11 +158,13 @@ def seed():
     #   방금 추가한 컬럼이 롤백된다(운영에서 vbank_* 누락 → 승인 시 500).
     with db() as c:
         for col in ('customer_id', 'member_id', 'contact_phone_norm',
-                    'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at'):
+                    'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
+                    'ga_cid', 'ga_sid', 'ga_mp_sent'):
             try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
             except Exception: pass
         try: c.exec('CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)')
         except Exception: pass
+
 
     with db() as c:
         n = c.one('SELECT COUNT(*) AS n FROM products')['n']
@@ -194,13 +207,27 @@ def _has_vbank_cols() -> bool:
             _VB_COLS_OK = False
     return _VB_COLS_OK
 
+def _has_ga_cols() -> bool:
+    """orders.ga_* 컬럼 존재 여부 — 매 조회 예외는 PG 트랜잭션을 오염시키므로 1회 판정 후 캐시."""
+    global _GA_COLS_OK
+    if _GA_COLS_OK is None:
+        try:
+            with db() as c:
+                c.exec('SELECT ga_cid, ga_sid, ga_mp_sent FROM orders WHERE 1=0')
+            _GA_COLS_OK = True
+        except Exception:
+            _GA_COLS_OK = False
+            print('[ga4] orders.ga_* 컬럼 미가용 — cid 저장 없이 동작(서버 purchase 백업 비활성)', flush=True)
+    return _GA_COLS_OK
+
 def _migrate_columns():
     """컬럼 추가만 따로 수행한다. seed() 가 시드 데이터 문제로 실패해도
        마이그레이션은 반드시 완료되어야 한다(누락 시 주문 조회·승인이 500)."""
     try:
         with db() as c:
             for col in ('customer_id', 'member_id', 'contact_phone_norm',
-                        'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at'):
+                        'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
+                        'ga_cid', 'ga_sid', 'ga_mp_sent'):
                 try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
                 except Exception: pass
         print('[db] 컬럼 마이그레이션 완료', flush=True)
@@ -419,6 +446,11 @@ async def create_order(req: Request):
         except Exception:
             customer_id = ''
 
+    # GA4 클라이언트/세션 식별자 — 결제 승인 시 서버사이드 purchase 백업 전송에 사용.
+    # 체크아웃의 /api/orders 호출은 동일 오리진(XHR)이라 _ga 쿠키가 함께 도착한다.
+    ga_cid, ga_sid = _ga_cookie_ids(req)
+    _ga_ok = _has_ga_cols()              # 주문 트랜잭션 밖에서 판정 (내부 예외 → PG abort 방지)
+
     changed_stock_ids = []
     with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
         sub, resolved = 0, []
@@ -453,11 +485,20 @@ async def create_order(req: Request):
             ship_fee = 0 if sub >= FREE_SHIP_OVER else SHIP_FEE
         amount = sub + ship_fee
         order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
-        c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) VALUES(?,?,?,?,?,?,?,?,?,?)',
-               (order_id, kst_iso(), 'PENDING',
-                amount, json.dumps(buyer, ensure_ascii=False),
-                json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
-                phone_norm or None))
+        # ga_* 컬럼 존재 여부는 지연 프로브(_has_ga_cols, 1회 판정 캐시)로 확정한다.
+        #   트랜잭션 내부 try/except 폴백은 PG 에서 트랜잭션 abort 를 유발하므로 금지.
+        if _ga_ok:
+            c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm,ga_cid,ga_sid) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                   (order_id, kst_iso(), 'PENDING',
+                    amount, json.dumps(buyer, ensure_ascii=False),
+                    json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
+                    phone_norm or None, ga_cid or None, ga_sid or None))
+        else:
+            c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                   (order_id, kst_iso(), 'PENDING',
+                    amount, json.dumps(buyer, ensure_ascii=False),
+                    json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
+                    phone_norm or None))
         if customer_id:
             try:
                 c.exec('INSERT INTO account_order_links(order_id,customer_id,member_id,link_source,linked_at,verified_at) VALUES(?,?,?,?,?,?)',
@@ -610,6 +651,7 @@ async def inicis_return(req: Request):
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
                    "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
     _award_purchase_points(oid)
+    _ga4_mp_purchase(oid)                             # 서버사이드 purchase 백업 (무해 실패)
     try:
         import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
     except Exception:
@@ -722,6 +764,7 @@ async def inicis_mobile_return(req: Request):
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
                    "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', oid))
     _award_purchase_points(oid)
+    _ga4_mp_purchase(oid)                             # 서버사이드 purchase 백업 (무해 실패)
     try:
         import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
     except Exception:
@@ -786,6 +829,7 @@ async def inicis_vbank_noti(req: Request):
                         do_award = True
             if do_award:
                 _award_purchase_points(oid)                # 멱등: 내부에서 중복 방지
+                _ga4_mp_purchase(oid)                      # 서버사이드 purchase 백업
                 try:
                     import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
                 except Exception:
@@ -827,6 +871,7 @@ async def inicis_mobile_noti(req: Request):
                     _paid = False
             if _paid:
                 _award_purchase_points(oid)
+                _ga4_mp_purchase(oid)                      # 서버사이드 purchase 백업
                 try:
                     import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
                 except Exception:
@@ -834,6 +879,99 @@ async def inicis_mobile_noti(req: Request):
         except Exception:
             pass
     return PlainTextResponse('OK')
+
+def _ga_cookie_ids(req):
+    """요청 쿠키에서 GA4 client_id / session_id 추출 (없으면 빈 문자열 2개).
+
+    · _ga = GA1.1.<rand>.<epoch>            → cid = "<rand>.<epoch>"
+    · _ga_<측정ID뒷부분> 세션 쿠키
+        구형 GS1.1.<sid>.<n>...             → 3번째 세그먼트
+        신형 GS2.1.s<sid>$o<n>$...          → 's' 접두 토큰
+    파싱 실패는 조용히 무시한다 — 계측은 어떤 경우에도 주문을 방해하지 않는다."""
+    cid = sid = ''
+    try:
+        raw = req.cookies.get('_ga', '')
+        parts = raw.split('.')
+        if len(parts) >= 4 and parts[-2].isdigit() and parts[-1].isdigit():
+            cid = parts[-2] + '.' + parts[-1]
+        suf = GA4_ID.split('-', 1)[1] if '-' in GA4_ID else ''
+        if suf:
+            sraw = req.cookies.get('_ga_' + suf, '')
+            for tok in sraw.replace('$', '.').split('.'):
+                if tok[:1] == 's' and tok[1:].isdigit():
+                    sid = tok[1:]; break
+            if not sid:
+                sp = sraw.split('.')
+                if len(sp) >= 3 and sp[2].isdigit():
+                    sid = sp[2]
+    except Exception:
+        pass
+    return cid[:64], sid[:32]
+
+def _ga4_item_cat(pid, name=''):
+    """GA4 item_category 추론 — 프리픽스 우선, 이름 키워드 보조."""
+    p = str(pid or '')
+    s = (p + ' ' + str(name or '')).lower()
+    if p.startswith('mpd::'): return 'drops'
+    if p.startswith('k2g::') or 'album' in s: return 'album'
+    if any(k in s for k in ('tteok', 'kimbap', 'bowl', 'kfood', 'k-food', '떡볶이', '김밥')): return 'kfood'
+    if any(k in s for k in ('hood', 'tee', 'shirt', 'cap', 'apparel', '후디', '티셔츠', '볼캡')): return 'apparel'
+    if any(k in s for k in ('glass', 'mat', 'gift', 'living', '유리', '매트', '기프트')): return 'living'
+    return 'shop'
+
+def _ga4_mp_purchase(oid: str):
+    """PAID 확정 주문의 purchase 를 GA4 Measurement Protocol 로 서버 전송.
+
+    · 백그라운드 데몬 스레드 — 결제 플로우를 1ms 도 지연시키지 않는다.
+    · 클라이언트 이벤트와 동일 transaction_id + client_id → GA4 가 중복 제거.
+    · cid 미보유 주문은 전송하지 않는다(새 사용자 생성으로 인한 이중 계상 방지).
+    · ga_mp_sent 클레임(행 잠금)으로 PC/모바일/가상계좌 노티 중복 수신에도 1회만 전송."""
+    if not (GA4_ID and GA4_API_SECRET and _has_ga_cols()):
+        return
+    def _run():
+        try:
+            with db() as c:
+                o = c.one(f'SELECT * FROM orders WHERE order_id=?{LOCK}', (oid,))
+                if not o or o.get('status') != 'PAID':
+                    return
+                cid = (o.get('ga_cid') or '').strip()
+                if not cid:
+                    return
+                if str(o.get('ga_mp_sent') or '') == '1':
+                    return
+                c.exec("UPDATE orders SET ga_mp_sent='1' WHERE order_id=?", (oid,))
+                items = json.loads(o.get('items') or '[]')
+                amount = int(o.get('amount') or 0)
+                sid = str(o.get('ga_sid') or '').strip()
+            g_items, sub = [], 0
+            for it in items[:100]:                        # GA4 items 한도(200) 대비 여유
+                p = int(it.get('p') or 0); q = int(it.get('q') or 1); sub += p * q
+                g_items.append({'item_id': str(it.get('id') or '')[:100],
+                                'item_name': str(it.get('n') or '')[:100],
+                                'price': p, 'quantity': q,
+                                'item_category': _ga4_item_cat(it.get('id'), it.get('n'))})
+            params = {'transaction_id': oid, 'value': amount, 'currency': 'KRW',
+                      'shipping': max(0, amount - sub), 'items': g_items,
+                      'engagement_time_msec': 1}
+            if sid.isdigit():
+                params['session_id'] = int(sid)           # 세션 연결 → 유입경로 귀속 유지
+            payload = {'client_id': cid,
+                       'events': [{'name': 'purchase', 'params': params}]}
+            url = ('https://www.google-analytics.com/mp/collect?measurement_id=%s&api_secret=%s'
+                   % (GA4_ID, urllib.parse.quote(GA4_API_SECRET)))
+            body = json.dumps(payload).encode('utf-8')
+            for attempt in (1, 2):                        # 일시 장애 대비 1회 재시도
+                try:
+                    urllib.request.urlopen(urllib.request.Request(
+                        url, data=body, headers={'Content-Type': 'application/json'}),
+                        timeout=4)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        print(f'[ga4] MP purchase 전송 실패 {oid}: {type(e).__name__}: {e}', flush=True)
+        except Exception as e:
+            print(f'[ga4] MP purchase 처리 실패 {oid}: {type(e).__name__}: {e}', flush=True)
+    threading.Thread(target=_run, daemon=True).start()
 
 def _award_purchase_points(oid: str):
     """결제 완료 주문에 구매 적립 1% 지급 (드롭 상품·배송비 제외).

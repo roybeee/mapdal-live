@@ -8218,6 +8218,60 @@ def api_drops_public(request: Request):
                          'now': now.strftime('%Y-%m-%dT%H:%M')},
                         headers={'Cache-Control': 'no-store'})
 
+def _drop_related_products(c):
+    """드롭 상세 '관련 상품' — 같은 아티스트의 K2G 앨범 상품을 자동 매칭한다.
+    제목의 대괄호 앨범명([GOLDEN HOUR : Part.5] 등)과 일치하는 판매 버전(A/Z/Diary VER.)을
+    최우선으로, 이어서 같은 아티스트의 다른 앨범을 배열순으로 채운다(최대 8개).
+    카탈로그에서 아티스트를 못 찾으면 빈 목록 → 프런트는 기존 관련 이벤트로 폴백."""
+    artist = str(c.get('artist') or '').strip()
+    if not artist:
+        return []
+    # '에이티즈(ATEEZ)' 류 표기 → {에이티즈, ATEEZ, 원문} 정규화 키 집합
+    keys = {_catalog_norm_key(a) for a in _artist_split_surface(artist)[2]}
+    keys.discard('')
+    if not keys:
+        return []
+    try:  # 등록 아티스트면 별칭 전체로 확장 — 한/영·구표기 차이를 흡수
+        am = _artists_alias_map()
+        hit = next((am[k] for k in keys if k in am), None)
+        if hit:
+            r = one('SELECT id, name, name_en, aliases FROM artists WHERE id=?', (hit['id'],))
+            if r:
+                keys |= _artist_alias_keys(r)
+    except Exception:
+        pass
+    idx = _artist_catalog_index()
+    albums, seen = [], set()
+    for bkey, b in idx.items():
+        # 버킷 표기('에이티즈(ATEEZ)')를 {에이티즈, ateez, 병기원문}으로 전개해
+        # 드롭의 단일 표기('에이티즈'/'ATEEZ')와 정확 키 교차 매칭한다.
+        bkeys = {bkey}
+        for s in (b.get('surface') or {}):
+            bkeys |= {_catalog_norm_key(a) for a in _artist_split_surface(s)[2]}
+        bkeys.discard('')
+        if not (bkeys & keys):
+            continue
+        for it in b.get('albums') or []:
+            if it['uid'] in seen:
+                continue
+            seen.add(it['uid']); albums.append(it)
+    if not albums:
+        return []
+    title = str(c.get('title') or '')
+    phrases = [p for p in (_catalog_norm_key(x) for x in
+                           re.findall(r'\[([^\]\[]+)\]', title) + re.findall(r'【([^】]+)】', title))
+               if len(p) >= 3]
+    def _rank(it):
+        n = _catalog_norm_key(it.get('name'))
+        matched = 0 if (phrases and any(p in n for p in phrases)) else 1
+        return (matched, 1 if it.get('event') else 0, 1 if it.get('soldout') else 0,
+                num(it.get('sort')) if it.get('sort') is not None else 999999999,
+                str(it.get('uid') or ''))
+    albums.sort(key=_rank)
+    return [{'uid': it['uid'], 'name': it['name'], 'title': it['title'],
+             'img': it['img'], 'price': it['price'], 'pct': it['pct'],
+             'soldout': it['soldout'], 'url': it['url']} for it in albums[:8]]
+
 @admin_router.get('/api/drops/{did}')
 def api_drop_public_detail(did: int):
     try: ensure_ready()
@@ -8252,7 +8306,8 @@ def api_drop_public_detail(did: int):
               'announce_notice': str(d.get('announce_notice') or ''),
               'announce_body': str(d.get('announce_body') or ''),
               'winner_groups': (_drop_winner_groups(d, masked=True) if c['announce'] == 'ANNOUNCED' else []),
-              'related': rel[:8]})
+              'related': rel[:8],
+              'related_products': _drop_related_products(c)})
     c['entry_terms_html'], wt = _drop_terms_for(d)
     c['winner_terms'] = wt
     c['winner_terms_html'] = next((w['html'] for k in ('VIDEOCALL', 'FANSIGN', 'DEFAULT')

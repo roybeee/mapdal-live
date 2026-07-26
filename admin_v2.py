@@ -323,6 +323,10 @@ def ensure_ready():
            created_at TEXT, verified_at TEXT, UNIQUE(kind, value_norm))""",
         """CREATE TABLE IF NOT EXISTS consent_history(id TEXT PRIMARY KEY, customer_id TEXT, member_id TEXT,
            consent_type TEXT, policy_version TEXT, granted INTEGER, source TEXT, ip TEXT, created_at TEXT)""",
+        """CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY, product_id TEXT, order_id TEXT,
+           member_id TEXT, customer_id TEXT, author TEXT, rating INTEGER, body TEXT, photos TEXT,
+           verified INTEGER DEFAULT 1, status TEXT DEFAULT '게시', created TEXT, admin_memo TEXT)""",
+        """CREATE INDEX IF NOT EXISTS idx_reviews_pid ON reviews(product_id, status, created)""",
         """CREATE TABLE IF NOT EXISTS point_ledger(id TEXT PRIMARY KEY, customer_id TEXT, member_id TEXT,
            event_type TEXT, amount INTEGER, balance_after INTEGER, event_key TEXT UNIQUE, order_id TEXT,
            reason TEXT, expires_at TEXT, created_at TEXT, by_admin TEXT)""",
@@ -2527,6 +2531,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <button class="btn" onclick="createAdmin()">계정 발급</button></div>
   <div class="hint">계정 발급 시 임시 비밀번호가 한 번만 표시됩니다 — 전달 후 본인이 우측 상단 [비밀번호]에서 변경하도록 안내하세요. 비밀번호 분실 시 [비밀번호 재설정]으로 새 임시 비밀번호를 발급하거나, [비밀번호 변경]으로 대표가 원하는 비밀번호를 직접 지정해 전달할 수 있습니다. 마스터 토큰(Render의 ADMIN_TOKEN)은 비상용이며 로그인 화면의 '비상 접속'에서만 사용합니다.</div></div>
   <div class="panel"><h3>감사 로그 <span class="tag">누가 · 언제 · 무엇을</span></h3><div id="audit" class="loading">불러오는 중…</div></div></section>
+<section id="t-reviews" style="display:none"><div class="loading">불러오는 중…</div></section>
 <section id="t-system" style="display:none"><div id="sys" class="loading">불러오는 중…</div></section>
 </main>
 <div class="modal-bg" id="mbg"><div class="modal" id="mbox"></div></div>
@@ -2544,8 +2549,21 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['artists','아티스트',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['admins','관리자',3],['system','시스템',0]];
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,admins:loadAdmins,system:loadSys};
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['artists','아티스트',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['reviews','리뷰',0],['admins','관리자',3],['system','시스템',0]];
+async function loadReviews(pg){pg=pg||1;try{const d=await api('/admin/api/reviews?page='+pg);
+ $('#t-reviews').innerHTML='<div class="panel"><h3>상품 리뷰 <span class="tag">'+d.total+'건</span></h3>'+
+ (d.rows.length? d.rows.map(r=>'<div style="border-bottom:1px solid #eee;padding:10px 4px">'+
+  '<b>'+esc(r.product_id)+'</b> · <span style="color:#E8332A">'+'★'.repeat(r.rating||0)+'</span> · '+esc(r.author||'')+' · '+esc((r.created||'').slice(0,10))+
+  ' <span class="tag">'+esc(r.status||'')+'</span>'+(r.verified?' <span class="tag">구매인증</span>':'')+
+  '<div style="margin:6px 0;white-space:pre-wrap">'+esc(r.body||'')+'</div>'+
+  ((r.photos&&r.photos.length)? r.photos.map(u=>'<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" style="width:64px;height:64px;object-fit:cover;margin:0 6px 6px 0;border:1px solid #ddd" loading="lazy"></a>').join(''):'')+
+  '<div style="margin-top:6px"><button class="btn" onclick="rvStatus(\''+r.id+'\',\''+((r.status==='게시')?'숨김':'게시')+'\')">'+((r.status==='게시')?'숨김 처리':'게시 복원')+'</button></div></div>').join('')
+ :'<div class="hint">아직 등록된 리뷰가 없습니다.</div>')+
+ (d.total>30?'<div style="margin-top:10px"><button class="btn" onclick="loadReviews('+(pg+1)+')">다음 페이지</button></div>':'')+'</div>'}
+ catch(e){$('#t-reviews').innerHTML='<div class="hint">'+esc(e.message)+'</div>'}}
+async function rvStatus(id,st){if(st==='숨김'&&!confirm('이 리뷰를 화면에서 숨길까요?'))return;
+ try{await api('/admin/api/reviews/'+encodeURIComponent(id)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})});toast('처리되었습니다');loadReviews(1)}catch(e){toast(e.message)}}
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,reviews:()=>loadReviews(1),admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -10056,6 +10074,86 @@ def _drops_ship_notice_apply(html):
         html = html.replace(_src, _dst, 1)
     return html
 
+_REVIEW_SNIPPET = r"""<div id="mpReviews"></div><script>(function(){
+var q=new URLSearchParams(location.search);
+var pid=(typeof PID!=='undefined'&&PID)?PID:(function(){
+  if(/\/album-detail/.test(location.pathname)&&q.get('uid'))return 'k2g::'+q.get('uid');
+  var m=location.pathname.match(/^\/(product-[A-Za-z0-9._-]+?)(?:\.html)?$/);return m?m[1]:null;})();
+if(!pid)return;
+var css='#mpRv{max-width:1080px;margin:34px auto;padding:0 20px;font-family:inherit;color:#141414}'
++'#mpRv h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:10px}'
++'#mpRv .sum{font-size:13px;color:#87867F;margin-bottom:14px}#mpRv .st{color:#E8332A;letter-spacing:1px}'
++'#mpRv .it{border-top:1px solid #E2E0D9;padding:13px 2px}#mpRv .hd{font-size:12.5px;color:#87867F}'
++'#mpRv .hd b{color:#141414}#mpRv .vf{background:#141414;color:#FFB000;font-size:10.5px;padding:2px 6px;border-radius:2px;margin-left:6px}'
++'#mpRv .bd{margin:7px 0 4px;font-size:14px;line-height:1.65;white-space:pre-wrap}'
++'#mpRv .ph img{width:76px;height:76px;object-fit:cover;border:1px solid #E2E0D9;margin:4px 6px 0 0}'
++'#mpRv .wbtn{background:#141414;color:#fff;border:0;padding:10px 18px;font-weight:700;cursor:pointer}'
++'#mpRv form{border:1px solid #E2E0D9;background:#fff;padding:16px;margin:12px 0;display:none}'
++'#mpRv .stars button{font-size:22px;background:none;border:0;cursor:pointer;color:#D8D6CE;padding:0 2px}'
++'#mpRv .stars button.on{color:#E8332A}'
++'#mpRv textarea{width:100%;min-height:90px;border:1px solid #E2E0D9;padding:10px;font:inherit;font-size:14px;margin:10px 0;box-sizing:border-box}'
++'#mpRv .sub{background:#E8332A;color:#fff;border:0;padding:10px 20px;font-weight:700;cursor:pointer}'
++'#mpRv .more{background:none;border:1px solid #E2E0D9;padding:8px 16px;cursor:pointer;margin-top:10px}';
+var st=document.createElement('style');st.textContent=css;document.head.appendChild(st);
+var root=document.getElementById('mpReviews');
+var sec=document.createElement('section');sec.id='mpRv';root.appendChild(sec);
+var host=document.querySelector('.qna-wrap')||document.querySelector('footer');
+if(host)host.parentNode.insertBefore(root,host);
+var page=1,me={login:false},rating=0;
+function esc2(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function stars(n){var s='';for(var i=1;i<=5;i++)s+=(i<=n?'\u2605':'\u2606');return s}
+function render(d,append){
+  var head='<h2>구매 리뷰 <span class="st">'+stars(Math.round(d.avg||0))+'</span><span style="font-size:14px;font-weight:400">'+(d.avg||0)+' \u00b7 '+(d.count||0)+'\uac74</span></h2>'
+   +'<div class="sum">\uc2e4\uc81c \uacb0\uc81c \uc644\ub8cc \uace0\uac1d\ub9cc \uc791\uc131\ud560 \uc218 \uc788\ub294 \uad6c\ub9e4 \uc778\uc99d \ub9ac\ubdf0\uc785\ub2c8\ub2e4.</div>'
+   +'<button class="wbtn" id="mpRvW">\ub9ac\ubdf0 \uc4f0\uae30</button>'
+   +'<form id="mpRvF"><div class="stars" id="mpRvS"></div>'
+   +'<textarea id="mpRvT" maxlength="1000" placeholder="\uc0c1\ud488\uc740 \uc5b4\ub560\ub098\uc694? 10\uc790 \uc774\uc0c1 \uc791\uc131\ud574 \uc8fc\uc138\uc694. (\ud3ec\uce74 \uc778\uc99d\uc0f7 \ud658\uc601!)"></textarea>'
+   +'<div style="margin-bottom:10px"><input type="file" id="mpRvP" accept="image/*" multiple> <span style="font-size:12px;color:#87867F">\uc0ac\uc9c4 \ucd5c\ub300 3\uc7a5</span></div>'
+   +'<button type="button" class="sub" id="mpRvGo">\ub4f1\ub85d</button></form><div id="mpRvL"></div>';
+  if(!append)sec.innerHTML=head;
+  var list=(d.rows||[]).map(function(r){return '<div class="it"><div class="hd"><span class="st">'+stars(r.rating)+'</span> <b>'+esc2(r.author)+'</b> \u00b7 '+esc2(r.at)+(r.verified?'<span class="vf">\uad6c\ub9e4\uc778\uc99d</span>':'')+'</div>'
+   +'<div class="bd">'+esc2(r.body)+'</div>'
+   +(r.photos&&r.photos.length?'<div class="ph">'+r.photos.map(function(u){return '<a href="'+esc2(u)+'" target="_blank" rel="noopener"><img src="'+esc2(u)+'" loading="lazy" alt="\ub9ac\ubdf0 \uc0ac\uc9c4"></a>'}).join('')+'</div>':'')+'</div>'}).join('');
+  var L=document.getElementById('mpRvL');
+  if(append)L.insertAdjacentHTML('beforeend',list);
+  else L.innerHTML=list||'<div class="it" style="color:#87867F;font-size:13.5px">\uccab \ub9ac\ubdf0\uc758 \uc8fc\uc778\uacf5\uc774 \ub418\uc5b4 \uc8fc\uc138\uc694.</div>';
+  var old=document.getElementById('mpRvM');if(old)old.remove();
+  if((d.count||0)>page*d.size)L.insertAdjacentHTML('afterend','<button class="more" id="mpRvM">\ub354\ubcf4\uae30</button>');
+  bind();
+}
+function bind(){
+  var w=document.getElementById('mpRvW'),f=document.getElementById('mpRvF'),S=document.getElementById('mpRvS');
+  if(w)w.onclick=function(){
+    if(!me.login){if(confirm('\ub85c\uadf8\uc778 \ud6c4 \uc791\uc131\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4. \ub85c\uadf8\uc778 \ud398\uc774\uc9c0\ub85c \uc774\ub3d9\ud560\uae4c\uc694?'))location.href='/account';return}
+    f.style.display=(f.style.display==='block')?'none':'block'};
+  if(S&&!S.children.length){for(var i=1;i<=5;i++){(function(n){var b=document.createElement('button');b.type='button';b.textContent='\u2605';
+    b.onclick=function(){rating=n;[].forEach.call(S.children,function(x,j){x.className=j<n?'on':''})};S.appendChild(b)})(i)}}
+  var go=document.getElementById('mpRvGo');
+  if(go)go.onclick=submit;
+  var mo=document.getElementById('mpRvM');
+  if(mo)mo.onclick=function(){page++;load(true)};
+}
+function submit(){
+  var t=document.getElementById('mpRvT').value.trim();
+  if(!rating)return alert('\ubcc4\uc810\uc744 \uc120\ud0dd\ud574 \uc8fc\uc138\uc694');
+  if(t.length<10)return alert('\ub9ac\ubdf0\ub294 10\uc790 \uc774\uc0c1 \uc791\uc131\ud574 \uc8fc\uc138\uc694');
+  var files=[].slice.call(document.getElementById('mpRvP').files||[]).slice(0,3);
+  var go=document.getElementById('mpRvGo');go.disabled=true;go.textContent='\ub4f1\ub85d \uc911\u2026';
+  var ups=files.map(function(f){var fd=new FormData();fd.append('file',f);
+    return fetch('/api/member/reviews/photo',{method:'POST',body:fd}).then(function(r){return r.ok?r.json():r.json().then(function(j){throw new Error(j.detail||'\uc0ac\uc9c4 \uc5c5\ub85c\ub4dc \uc2e4\ud328')})}).then(function(j){return j.url})});
+  Promise.all(ups).then(function(urls){
+    return fetch('/api/member/reviews',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({product_id:pid,rating:rating,body:t,photos:urls})})
+  }).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||'\ub4f1\ub85d \uc2e4\ud328');return j})})
+  .then(function(){alert('\ub9ac\ubdf0\uac00 \ub4f1\ub85d\ub418\uc5c8\uc2b5\ub2c8\ub2e4. \uac10\uc0ac\ud569\ub2c8\ub2e4!');page=1;load(false)})
+  .catch(function(e){alert(e.message)})
+  .then(function(){go.disabled=false;go.textContent='\ub4f1\ub85d'});
+}
+function load(append){fetch('/api/reviews?product_id='+encodeURIComponent(pid)+'&page='+page)
+  .then(function(r){return r.json()}).then(function(d){render(d,append)}).catch(function(){});}
+fetch('/api/member/me').then(function(r){return r.json()}).then(function(d){me=d||{}}).catch(function(){}).then(function(){load(false)});
+})();</script>"""
+
 def _analytics_snippet():
     """GA4·네이버 애널리틱스 — 환경변수 설정 시에만 주입(미설정 = 완전 무변화).
     Render 환경변수: GA4_ID = G-XXXXXXXXXX / NAVER_SA_ID = 네이버 애널리틱스 발급키.
@@ -10104,6 +10202,8 @@ def _inject_auth(html, path='', uid=None):
     if 'mpFooter' not in html: add += footer_snippet()
     if 'mpAnalytics' not in html: add += _analytics_snippet()
     if 'mpKakaoCh' not in html: add += _kakao_channel_snippet()
+    if 'mpReviews' not in html and (path == '/album-detail' or path.startswith('/product-') or 'qna-wrap' in html):
+        add += _REVIEW_SNIPPET
     if not add: return html
     i = html.lower().rfind('</body>')
     return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
@@ -10338,6 +10438,141 @@ def _kakao_channel_snippet():
             'border-radius:50%%;background:#FEE500;display:flex;align-items:center;justify-content:center;'
             'box-shadow:0 4px 14px rgba(0,0,0,.18)}#mpKakaoCh:hover{transform:translateY(-2px)}'
             '@media(max-width:768px){#mpKakaoCh{bottom:88px;right:14px}}</style>' % u)
+
+# ═══════ 상품 리뷰 (구매 인증) ═══════════════════════════════════════════
+#   작성 자격: 로그인 회원 + 해당 상품이 포함된 결제완료(PAID) 주문 보유.
+#   product_id 는 mp::/k2g:: id 또는 정적 PDP 슬러그 — 구매 대조는
+#   app._product_id_candidates 로 변형(.html 유무 등)을 흡수한다.
+_REVIEW_PAGE = 10
+
+def _review_mask(name):
+    s = str(name or '').strip() or '구매자'
+    return (s[0] + '*' * max(1, len(s) - 1)) if len(s) > 1 else (s + '*')
+
+def _review_pid_norm(pid):
+    p = str(pid or '').strip()
+    return p if re.fullmatch(r'[A-Za-z0-9가-힣:._-]{1,80}', p) else ''
+
+def _review_bought(member, pid):
+    """(구매여부, 근거 주문번호) — 회원의 결제완료 주문 items 대조."""
+    cands = {pid}
+    try:
+        import app as _app
+        cands |= set(_app._product_id_candidates(pid))
+    except Exception:
+        pass
+    try:
+        ors = rows('SELECT order_id, items, status FROM orders WHERE member_id=? OR customer_id=? '
+                   'ORDER BY created DESC LIMIT 200',
+                   (member.get('id') or '', member.get('customer_id') or ''))
+    except Exception:
+        ors = []
+    for o in ors:
+        if (o.get('status') or '') != 'PAID':
+            continue
+        for it in jload(o.get('items'), []):
+            if str(it.get('id') or '') in cands:
+                return True, o['order_id']
+    return False, ''
+
+@admin_router.get('/api/reviews')
+def api_reviews_list(product_id: str = '', page: int = 1):
+    pid = _review_pid_norm(product_id)
+    if not pid:
+        raise HTTPException(400, 'product_id')
+    try: ensure_ready()
+    except Exception: pass
+    page = max(1, min(num(page) or 1, 500)); off = (page - 1) * _REVIEW_PAGE
+    try:
+        rs = rows("SELECT id, author, rating, body, photos, verified, created FROM reviews "
+                  "WHERE product_id=? AND status='게시' ORDER BY created DESC LIMIT ? OFFSET ?",
+                  (pid, _REVIEW_PAGE, off))
+        agg = one("SELECT COUNT(*) AS n, COALESCE(AVG(rating),0) AS a FROM reviews "
+                  "WHERE product_id=? AND status='게시'", (pid,)) or {}
+    except Exception:
+        rs, agg = [], {}
+    out = [{'id': r['id'], 'author': r.get('author') or '구매자', 'rating': num(r.get('rating')),
+            'body': r.get('body') or '', 'photos': jload(r.get('photos'), []),
+            'verified': bool(num(r.get('verified'))), 'at': (r.get('created') or '')[:10]} for r in rs]
+    return {'rows': out, 'count': num(agg.get('n')), 'avg': round(float(agg.get('a') or 0), 1),
+            'page': page, 'size': _REVIEW_PAGE}
+
+@admin_router.post('/api/member/reviews')
+def api_review_write(request: Request, body: dict = Body(...)):
+    m = member_of(request)
+    if not m:
+        raise HTTPException(401, '로그인이 필요합니다')
+    pid = _review_pid_norm(body.get('product_id'))
+    if not pid:
+        raise HTTPException(400, '상품 정보를 확인할 수 없습니다')
+    rating = num(body.get('rating'))
+    if not (1 <= rating <= 5):
+        raise HTTPException(400, '별점을 선택해 주세요')
+    txt = str(body.get('body') or '').strip()
+    if len(txt) < 10:
+        raise HTTPException(400, '리뷰 내용은 10자 이상 작성해 주세요')
+    txt = txt[:1000]
+    pub = (r2_conf().get('public') or '').rstrip('/')
+    photos = []
+    for u in (body.get('photos') or [])[:3]:
+        u = str(u or '')
+        if (pub and u.startswith(pub + '/')) or u.startswith('/admin/asset/'):
+            photos.append(u[:2000])
+    bought, oid = _review_bought(m, pid)
+    if not bought:
+        raise HTTPException(403, '구매하신 상품에만 리뷰를 작성할 수 있습니다 (결제완료 주문 기준)')
+    if one('SELECT id FROM reviews WHERE product_id=? AND member_id=?', (pid, m['id'])):
+        raise HTTPException(400, '이미 이 상품에 리뷰를 작성하셨습니다')
+    rid = uid()
+    run('INSERT INTO reviews VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (rid, pid, oid, m['id'], m.get('customer_id') or '', _review_mask(m.get('name')),
+         rating, txt, json.dumps(photos, ensure_ascii=False), 1, '게시', now_iso(), ''))
+    return {'ok': True, 'id': rid}
+
+@admin_router.post('/api/member/reviews/photo')
+async def api_review_photo(request: Request, file: UploadFile = File(...)):
+    m = member_of(request)
+    if not m:
+        raise HTTPException(401, '로그인이 필요합니다')
+    data = await file.read()
+    res = store_image(data, file.content_type or '', 'reviews')
+    return {'ok': True, 'url': res.get('url')}
+
+@admin_router.post('/api/member/reviews/{rid}/delete')
+def api_review_delete(rid: str, request: Request):
+    m = member_of(request)
+    if not m:
+        raise HTTPException(401, '로그인이 필요합니다')
+    n = run('DELETE FROM reviews WHERE id=? AND member_id=?', (rid, m['id']))
+    if not n:
+        raise HTTPException(404, '내 리뷰가 아니거나 이미 삭제되었습니다')
+    return {'ok': True}
+
+@admin_router.get('/admin/api/reviews')
+def api_admin_reviews(request: Request, page: int = 1, status: str = ''):
+    a = get_actor(request); need(a, 0)
+    page = max(1, num(page) or 1); off = (page - 1) * 30
+    w, args = '', ()
+    if status:
+        w, args = 'WHERE status=?', (status,)
+    rs = rows('SELECT * FROM reviews %s ORDER BY created DESC LIMIT 30 OFFSET ?' % w, args + (off,))
+    for r in rs:
+        r['photos'] = jload(r.get('photos'), [])
+    total = one('SELECT COUNT(*) AS n FROM reviews %s' % w, args) or {}
+    return {'rows': rs, 'total': num(total.get('n')), 'page': page}
+
+@admin_router.post('/admin/api/reviews/{rid}/status')
+def api_admin_review_status(rid: str, request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 1, '리뷰 관리')
+    st = body.get('status')
+    if st not in ('게시', '숨김'):
+        raise HTTPException(400, 'bad status')
+    n = run('UPDATE reviews SET status=?, admin_memo=? WHERE id=?',
+            (st, str(body.get('memo') or '')[:200], rid))
+    if not n:
+        raise HTTPException(404, 'not found')
+    audit(a, '리뷰상태', rid, st)
+    return {'ok': True}
 
 @admin_router.get('/api/member/overview')
 def api_m_overview(request: Request):

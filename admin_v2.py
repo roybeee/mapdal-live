@@ -13,7 +13,7 @@ v2 전체 기능 + ① 고객(회원) CRM  ② 알림톡/SMS 발송(솔라피)  
 import os, re, json, sqlite3, base64, hashlib, hmac, secrets, datetime, time, socket, calendar
 import urllib.request, urllib.error, urllib.parse
 from fastapi import APIRouter, HTTPException, Request, Body, UploadFile, File
-from fastapi.responses import HTMLResponse, Response, JSONResponse
+from fastapi.responses import HTMLResponse, Response, JSONResponse, RedirectResponse
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
@@ -8519,19 +8519,18 @@ _CARD_RE_CACHE = {}
 def _hide_removed_static_cards(html):
     """삭제된 own 상품의 정적 col-card를 목록 페이지 서빙 시 제거 (멱등)."""
     pages = _own_removed_pages()
-    if not pages or 'col-card' not in html:
+    if not pages or '-card' not in html:
         return html
     for pg in pages:
         rx = _CARD_RE_CACHE.get(pg)
         if rx is None:
+            # 목록형 카드 앵커 전반(col/pod/cp/b/rec-card)을 커버 — 클래스가 href보다
+            # 앞에 오는 실마크업 기준. 텍스트 인라인 링크는 문장 훼손 위험이 있어 제외.
             rx = re.compile(
-                r'<(?:a|div)[^>]*class="[^"]*col-card[^"]*"[^>]*href="/?(?:%s)(?:\.html)?[?#"][^\x00]*?</(?:a|div)>'
-                % re.escape(pg), re.S)
-            # 위 패턴이 과탐지될 수 있어, 안전한 앵커 기반 2차 패턴을 기본 사용
-            rx = re.compile(
-                r'<a class="col-card"[^>]*href="/?%s(?:\.html)?"[\s\S]*?</a>' % re.escape(pg))
+                r'<a\s+class="[^"]*\b(?:col|pod|cp|b|rec)-card[^"]*"[^>]*'
+                r'href="/?%s(?:\.html)?["?#][\s\S]*?</a>' % re.escape(pg))
             _CARD_RE_CACHE[pg] = rx
-        html = rx.sub('', html, count=1)
+        html = rx.sub('', html)
     return html
 
 def _inject_shop_products(html):
@@ -9986,7 +9985,7 @@ def _sitemap_xml():
         if f in _SEO_HOME_ALIAS_FILES:
             continue
         slug = f[:-5]
-        if ('/' + slug) in _SEO_NOINDEX or slug in removed:
+        if ('/' + slug) in _SEO_NOINDEX or slug in removed or slug in _LEGACY_REDIRECTS:
             continue
         locs.append(SITE_ORIGIN + '/' + slug)
     locs.append(SITE_ORIGIN + '/kpop')
@@ -10231,6 +10230,14 @@ def system_sms(phone, text, tag, order_id=''):
 #   notify_log(order_id+template) 이중 가드로 return·noti 레이스에도 1회만 발송.
 #   솔라피 미설정 시 system_sms 가 DRY 기록 — 주문 흐름에는 어떤 경우에도 영향 없음.
 _ORDER_NOTIFY_TAGS = {'paid': '주문결제완료', 'deposit_wait': '입금안내', 'shipped': '배송시작'}
+_KR_MOBILE_RE = re.compile(r'^01[016789]\d{7,8}$')
+
+def _alimtalk_tpl(event):
+    """승인된 카카오 알림톡 템플릿 ID — Render 환경변수로 주입(미설정 = SMS 발송).
+    ALIMTALK_TPL_PAID / ALIMTALK_TPL_DEPOSIT / ALIMTALK_TPL_SHIPPED"""
+    key = {'paid': 'ALIMTALK_TPL_PAID', 'deposit_wait': 'ALIMTALK_TPL_DEPOSIT',
+           'shipped': 'ALIMTALK_TPL_SHIPPED'}.get(event, '')
+    return (os.environ.get(key) or '').strip() if key else ''
 
 def _vdue_fmt(s):
     s = re.sub(r'\D', '', str(s or ''))
@@ -10258,10 +10265,17 @@ def _order_notify(oid, event):
             except Exception: phone = ''
         if len(phone) < 9:
             return
+        if not _KR_MOBILE_RE.fullmatch(phone):
+            # 해외·비휴대폰 번호는 SMS/알림톡 미지원 — 실패 노이즈 대신 생략 기록
+            run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
+                (uid(), now_iso(), oid, phone, 'sms', tag, 'SKIP',
+                 '국내 휴대폰이 아닌 수신번호 — 발송 생략(해외 고객은 이메일 안내 예정)', '시스템'))
+            return
         amt = num(r.get('amount'))
         if event == 'paid':
             text = ('[맵달SEOUL] 결제가 완료되었습니다.\n주문번호: %s\n결제금액: %s원\n'
                     '주문/배송조회: mapdal.kr/account' % (oid, format(amt, ',')))
+            kv = {'#{주문번호}': oid, '#{결제금액}': format(amt, ',')}
         elif event == 'deposit_wait':
             b = (r.get('vbank_name') or '').strip(); n2 = (r.get('vbank_num') or '').strip()
             h = (r.get('vbank_holder') or '').strip(); due = (r.get('vbank_due') or '').strip()
@@ -10269,10 +10283,34 @@ def _order_notify(oid, event):
             text = ('[맵달SEOUL] 주문이 접수되었습니다. 아래 계좌로 입금해 주세요.\n%s%s\n입금액: %s원%s'
                     % (acct, (' (예금주 %s)' % h) if h else '', format(amt, ','),
                        ('\n입금기한: %s' % _vdue_fmt(due)) if due else ''))
+            kv = {'#{입금계좌}': acct, '#{예금주}': h or '-',
+                  '#{입금액}': format(amt, ','), '#{입금기한}': _vdue_fmt(due) or '-'}
         else:
             trk = (r.get('tracking') or '').strip()
             text = ('[맵달SEOUL] 상품이 발송되었습니다.\n주문번호: %s%s\n배송조회: mapdal.kr/account'
                     % (oid, ('\n운송장번호: %s' % trk) if trk else ''))
+            kv = {'#{주문번호}': oid, '#{운송장번호}': trk}
+        # ── 알림톡 우선 발송 (환경변수 완비 시) → 실패하면 SMS 폴백 ──
+        cf = solapi_conf(); tpl = _alimtalk_tpl(event)
+        if event == 'shipped' and not (r.get('tracking') or '').strip():
+            tpl = ''                                  # 운송장 없는 발송은 SMS 문구가 자연스럽다
+        if cf['key'] and cf['sec'] and cf['sender'] and cf['pf'] and tpl:
+            msg = {'to': phone, 'from': digits(cf['sender']),
+                   'kakaoOptions': {'pfId': cf['pf'], 'templateId': tpl,
+                                    'variables': {k: str(v) for k, v in kv.items()}}}
+            try:
+                res = solapi_send(msg)
+                failed = res.get('failedMessageList') or []
+                if not failed:
+                    run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
+                        (uid(), now_iso(), oid, phone, 'alimtalk', tag, 'SENT', text[:150], '시스템'))
+                    return
+                fd = (failed[0].get('statusMessage', '') or 'provider error')[:100]
+            except Exception as e:
+                fd = str(e)[:100]
+            run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
+                (uid(), now_iso(), oid, phone, 'alimtalk', tag + '(대체전환)', 'FAILED',
+                 '알림톡 실패 → SMS 대체발송: ' + fd, '시스템'))
         system_sms(phone, text, tag, oid)
     except Exception:
         pass
@@ -12340,10 +12378,27 @@ import mimetypes
 mimetypes.add_type('image/webp', '.webp')    # Render Python 3.10 이하 DB에 webp 부재 → octet-stream 방지
 mimetypes.add_type('image/avif', '.avif')
 
+# 고아·중복 레거시 페이지 → 정식 경로 301 (sitemap 에서도 제외된다)
+#   bestsellers: 정적 큐레이션 3종 중 2종이 삭제 상품 — 실판매 데이터 기반
+#   재구축 전까지 /shop 으로 보낸다(재구축 시 이 항목만 제거하면 부활).
+_LEGACY_REDIRECTS = {'new-drops-2': '/new-drops', 'bestsellers': '/shop'}
+
 @admin_router.get('/{spath:path}')
 def serve_site(spath: str, request: Request):
     if not spath or spath.startswith(('admin', 'api/', 'auth/', 'p/')):
         raise HTTPException(404)
+    # ── 레거시 정리 ──
+    #   ① 관리자에서 삭제된 자체상품의 정적 PDP: 목록에선 숨겨지지만 직접 URL·
+    #      옛 링크로는 열려 결제 단계에서 실패하는 유령 페이지가 된다 → /shop 301.
+    #   ② 고아 중복 페이지(_LEGACY_REDIRECTS) → 정식 페이지 301.
+    _slug = spath[:-5] if spath.endswith('.html') else spath
+    if _slug in _LEGACY_REDIRECTS:
+        return RedirectResponse(_LEGACY_REDIRECTS[_slug], status_code=301)
+    try:
+        if _slug.startswith('product-') and _slug in _own_removed_pages():
+            return RedirectResponse('/shop', status_code=301)
+    except Exception:
+        pass
     name = os.path.basename(spath)
     seo_path, seo_uid = '', None                     # SEO: 클린 경로 (+앨범 uid)
     if name.endswith('.html') and '/' not in spath:

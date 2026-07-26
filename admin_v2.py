@@ -2598,7 +2598,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
    <b>입금 대기 중</b> — 아직 입금되지 않았습니다. 통장 입금 확인 전에는 발송하지 마세요.
    이니시스 입금통보가 오면 자동으로 결제완료로 바뀝니다.</div>`:''}
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
- ${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
+ ${o.items.map(i=>{const pid=String(i.id||''),u=pid?(pid.indexOf('k2g::')===0?'/album-detail?uid='+encodeURIComponent(pid.slice(5)):'/p/'+encodeURIComponent(pid)):'';return`<tr><td>${u?`<a href="${u}" target="_blank" rel="noopener" title="상품페이지 새 탭 열기" style="color:inherit">${esc(i.name)}<span style="opacity:.45;font-size:11px;margin-left:4px">↗</span></a>`:esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`}).join('')}</table>
  ${can(1)?`<div class="kv"><b>처리상태</b><span><select id="mff">${Object.entries(FF).map(([k,v])=>`<option value="${k}" ${o.fulfill===k?'selected':''}>${v}</option>`).join('')}</select></span>
  <b>송장번호</b><span><input id="mtr" value="${esc(o.tracking)}" style="width:100%"></span>
  <b>메모</b><span><input id="mmemo" value="${esc(o.admin_memo)}" style="width:100%"></span>

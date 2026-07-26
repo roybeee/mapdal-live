@@ -595,6 +595,10 @@ async def inicis_return(req: Request):
             with db() as c:
                 c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
                        "WHERE order_id=? AND status<>'PAID'", (tid, 'VBank', oid))
+        try:
+            import admin_v2 as _av; _av.order_notify_async(oid, 'deposit_wait')
+        except Exception:
+            pass
         return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
     try:
@@ -606,6 +610,10 @@ async def inicis_return(req: Request):
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
                    "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
     _award_purchase_points(oid)
+    try:
+        import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
+    except Exception:
+        pass
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
 @app.api_route('/inicis/mobile-return', methods=['GET', 'POST'])
@@ -699,6 +707,10 @@ async def inicis_mobile_return(req: Request):
             with db() as c:
                 c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
                        "WHERE order_id=? AND status<>'PAID'", (pay_tid, 'VBank', oid))
+        try:
+            import admin_v2 as _av; _av.order_notify_async(oid, 'deposit_wait')
+        except Exception:
+            pass
         return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
     try:
@@ -710,6 +722,10 @@ async def inicis_mobile_return(req: Request):
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
                    "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', oid))
     _award_purchase_points(oid)
+    try:
+        import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
+    except Exception:
+        pass
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
 @app.api_route('/inicis/vbank-noti', methods=['GET', 'POST'])
@@ -770,6 +786,10 @@ async def inicis_vbank_noti(req: Request):
                         do_award = True
             if do_award:
                 _award_purchase_points(oid)                # 멱등: 내부에서 중복 방지
+                try:
+                    import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
+                except Exception:
+                    pass
     except Exception:
         # 예외가 나도 OK 를 돌려주지 않으면 10회 재전송된다.
         # 통보 자체는 수신했으므로 OK 로 응답하고 로그로 남긴다.
@@ -807,6 +827,10 @@ async def inicis_mobile_noti(req: Request):
                     _paid = False
             if _paid:
                 _award_purchase_points(oid)
+                try:
+                    import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
+                except Exception:
+                    pass
         except Exception:
             pass
     return PlainTextResponse('OK')

@@ -802,6 +802,7 @@ def api_order_mark_paid(oid: str, request: Request):
         _app._award_purchase_points(oid)
     except Exception:
         pass
+    order_notify_async(oid, 'paid')                       # 결제완료 문자 (이중 가드 내장)
     audit(a, '입금확인(수동)', oid, '%s → PAID' % (r.get('status') or ''))
     return {'ok': True, 'order_id': oid, 'status': 'PAID'}
 
@@ -825,9 +826,12 @@ def api_fulfill(oid: str, request: Request, body: dict = Body(...)):
     if 'fulfill' not in _state['ocols']: raise HTTPException(400, '컬럼 준비 중 — 새로고침 후 재시도')
     f = body.get('fulfill')
     if f not in ('NEW', 'PREPARING', 'SHIPPED', 'DONE', 'CANCELLED'): raise HTTPException(400, 'bad fulfill')
+    prev = one('SELECT fulfill FROM orders WHERE order_id=?', (oid,))
     n = run('UPDATE orders SET fulfill=?, tracking=?, admin_memo=? WHERE order_id=?',
             (f, (body.get('tracking') or '').strip(), (body.get('memo') or '').strip(), oid))
     if not n: raise HTTPException(404, 'not found')
+    if f == 'SHIPPED' and (not prev or (prev.get('fulfill') or '') != 'SHIPPED'):
+        order_notify_async(oid, 'shipped')            # 배송시작 문자 — 최초 전환 시 1회
     audit(a, '주문처리변경', oid, '%s / 송장 %s' % (f, body.get('tracking') or '-'))
     return {'ok': True}
 
@@ -10100,6 +10104,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpDropRecover' not in html: add += ENTRYRECOVER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if 'mpAnalytics' not in html: add += _analytics_snippet()
+    if 'mpKakaoCh' not in html: add += _kakao_channel_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
     return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
@@ -10220,6 +10225,81 @@ def system_sms(phone, text, tag, order_id=''):
         run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
             (uid(), now_iso(), order_id, phone, 'sms', tag, 'FAILED', str(e)[:150], '시스템'))
         return False, False
+
+# ── 주문 상태 자동 알림(SMS) ──────────────────────────────────────────────
+#   트리거: 결제완료(PC·모바일·입금통보·관리자 수동확인) / 가상계좌 입금안내 / 배송시작.
+#   notify_log(order_id+template) 이중 가드로 return·noti 레이스에도 1회만 발송.
+#   솔라피 미설정 시 system_sms 가 DRY 기록 — 주문 흐름에는 어떤 경우에도 영향 없음.
+_ORDER_NOTIFY_TAGS = {'paid': '주문결제완료', 'deposit_wait': '입금안내', 'shipped': '배송시작'}
+
+def _vdue_fmt(s):
+    s = re.sub(r'\D', '', str(s or ''))
+    try:
+        if len(s) >= 12: return '%s-%s-%s %s:%s' % (s[:4], s[4:6], s[6:8], s[8:10], s[10:12])
+        if len(s) >= 8:  return '%s-%s-%s' % (s[:4], s[4:6], s[6:8])
+    except Exception:
+        pass
+    return str(s or '')
+
+def _order_notify(oid, event):
+    try:
+        tag = _ORDER_NOTIFY_TAGS.get(event)
+        if not tag:
+            return
+        r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+        if not r:
+            return
+        if one("SELECT id FROM notify_log WHERE order_id=? AND template=? AND status IN ('SENT','DRY')",
+               (oid, tag)):
+            return                                    # 이미 발송(또는 DRY 기록)됨
+        phone = digits(r.get('contact_phone_norm') or '')
+        if len(phone) < 9:
+            try: phone = digits((jload(r.get('buyer'), {}) or {}).get('phone') or '')
+            except Exception: phone = ''
+        if len(phone) < 9:
+            return
+        amt = num(r.get('amount'))
+        if event == 'paid':
+            text = ('[맵달SEOUL] 결제가 완료되었습니다.\n주문번호: %s\n결제금액: %s원\n'
+                    '주문/배송조회: mapdal.kr/account' % (oid, format(amt, ',')))
+        elif event == 'deposit_wait':
+            b = (r.get('vbank_name') or '').strip(); n2 = (r.get('vbank_num') or '').strip()
+            h = (r.get('vbank_holder') or '').strip(); due = (r.get('vbank_due') or '').strip()
+            acct = (' '.join(x for x in (b, n2) if x)).strip() or '주문완료 화면의 계좌'
+            text = ('[맵달SEOUL] 주문이 접수되었습니다. 아래 계좌로 입금해 주세요.\n%s%s\n입금액: %s원%s'
+                    % (acct, (' (예금주 %s)' % h) if h else '', format(amt, ','),
+                       ('\n입금기한: %s' % _vdue_fmt(due)) if due else ''))
+        else:
+            trk = (r.get('tracking') or '').strip()
+            text = ('[맵달SEOUL] 상품이 발송되었습니다.\n주문번호: %s%s\n배송조회: mapdal.kr/account'
+                    % (oid, ('\n운송장번호: %s' % trk) if trk else ''))
+        system_sms(phone, text, tag, oid)
+    except Exception:
+        pass
+
+def order_notify_async(oid, event):
+    """결제 리다이렉트·관리자 응답을 붙잡지 않는 백그라운드 발송."""
+    try:
+        import threading
+        threading.Thread(target=_order_notify, args=(oid, event), daemon=True).start()
+    except Exception:
+        pass
+
+def _kakao_channel_snippet():
+    """카카오톡 채널 플로팅 버튼 — 환경변수 KAKAO_CHANNEL_URL 설정 시에만 전 페이지 주입.
+    (예: https://pf.kakao.com/_xxxxxx) 미설정 = 완전 무변화."""
+    u = (os.environ.get('KAKAO_CHANNEL_URL') or '').strip()
+    if not (u.startswith('http://') or u.startswith('https://')):
+        return ''
+    u = u.replace('"', '%22').replace("'", '%27').replace('<', '').replace('>', '')
+    return ('<a id="mpKakaoCh" href="%s" target="_blank" rel="noopener" aria-label="카카오톡 채널 문의">'
+            '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+            '<path d="M12 3C6.9 3 2.8 6.2 2.8 10.2c0 2.5 1.6 4.7 4.1 6l-.9 3.4c-.1.3.3.6.6.4l4-2.4'
+            'c.5.1.9.1 1.4.1 5.1 0 9.2-3.2 9.2-7.2S17.1 3 12 3z" fill="#191919"/></svg></a>'
+            '<style>#mpKakaoCh{position:fixed;right:18px;bottom:24px;z-index:60;width:52px;height:52px;'
+            'border-radius:50%%;background:#FEE500;display:flex;align-items:center;justify-content:center;'
+            'box-shadow:0 4px 14px rgba(0,0,0,.18)}#mpKakaoCh:hover{transform:translateY(-2px)}'
+            '@media(max-width:768px){#mpKakaoCh{bottom:88px;right:14px}}</style>' % u)
 
 @admin_router.get('/api/member/overview')
 def api_m_overview(request: Request):

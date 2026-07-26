@@ -8696,19 +8696,42 @@ def _k2g_catalog_json():
     _k2g_cat_cache.update(t=time.time(), body=body)
     return body
 
-def _serve_k2g_from_db(html):
-    """서빙 HTML의 인라인 K2G 배열을 DB 카탈로그로 치환.
-    실패·미백필 시 정적 스냅숏을 그대로 서빙(무해한 폴백)."""
+def _k2g_data_ver():
+    """카탈로그 내용 해시(10자) — /k2g-data.js 캐시버스트 버전.
+    관리자 수정 → _k2g_cache_bust() → 다음 서빙부터 새 버전 URL → 즉시 반영."""
+    body = _k2g_catalog_json()
+    if not body:
+        return None
+    return hashlib.md5(body.encode('utf-8')).hexdigest()[:10]
+
+def _serve_k2g_from_db(html, path=''):
+    """서빙 HTML의 인라인 K2G 배열(정적 스냅숏)을 외부 데이터 파일 참조로 치환.
+    · 배열 리터럴 → (window.__K2G||[]) + 해당 <script> 직전에
+      <script src="/k2g-data.js?v=해시"> 동기 삽입 — 실행 순서가 보존되어
+      기존 페이지 JS(K2G.find 등) 무수정 호환. 브라우저는 데이터 파일을
+      전 페이지 공용으로 1회만 내려받아 캐시한다(HTML 응답 ~0.9MB 경량화).
+    · /shop 은 _kpop_apply 가 앨범을 비우므로 데이터 파일 태그를 싣지 않는다.
+    · 미백필·DB 장애 시 기존과 동일하게 정적 스냅숏 인라인 폴백(무해).
+    · 치환 후 'const K2G=[' 패턴이 사라져 재호출·_kpop_empty_k2g 모두 멱등/무해."""
     if 'const K2G=[' not in html:
         return html
     try:
-        body = _k2g_catalog_json()
-        if not body:
+        ver = _k2g_data_ver()
+        if not ver:
             return html
         b = _find_k2g_array_bounds(html)
         if not b:
             return html
-        return html[:b[0]] + body + html[b[1]:]
+        html = html[:b[0]] + '(window.__K2G||[])' + html[b[1]:]
+        if path in ('/shop', '/shop.html', 'shop.html'):
+            return html
+        k = html.find('const K2G=')
+        s = html.rfind('<script', 0, k) if k >= 0 else -1
+        tag = '<script src="/k2g-data.js?v=%s"></script>' % ver
+        if s >= 0:
+            return html[:s] + tag + html[s:]
+        i = html.lower().find('</head>')
+        return (html[:i] + tag + html[i:]) if i >= 0 else html
     except Exception:
         return html
 
@@ -9958,8 +9981,27 @@ def _drops_ship_notice_apply(html):
         html = html.replace(_src, _dst, 1)
     return html
 
+def _analytics_snippet():
+    """GA4·네이버 애널리틱스 — 환경변수 설정 시에만 주입(미설정 = 완전 무변화).
+    Render 환경변수: GA4_ID = G-XXXXXXXXXX / NAVER_SA_ID = 네이버 애널리틱스 발급키.
+    async 로드라 렌더링 비차단. purchase 등 전자상거래 이벤트는 2단계에서 확장."""
+    ga = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('GA4_ID', ''))
+    nv = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('NAVER_SA_ID', ''))
+    if not ga and not nv:
+        return ''
+    s = '<!--mpAnalytics-->'
+    if ga:
+        s += ('<script async src="https://www.googletagmanager.com/gtag/js?id=%s"></script>'
+              "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}"
+              ";gtag('js',new Date());gtag('config','%s');</script>" % (ga, ga))
+    if nv:
+        s += ('<script src="https://wcs.naver.net/wcslog.js"></script>'
+              '<script>if(window.wcs){if(!window.wcs_add)window.wcs_add={};'
+              'wcs_add["wa"]="%s";try{wcs.inflow()}catch(e){}wcs_do();}</script>' % nv)
+    return s
+
 def _inject_auth(html, path='', uid=None):
-    html = _serve_k2g_from_db(html)
+    html = _serve_k2g_from_db(html, path)
     html = _inject_shop_products(html)
     html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
@@ -9984,6 +10026,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpDropInput' not in html: add += DROPINPUT_SNIPPET
     if 'mpDropRecover' not in html: add += ENTRYRECOVER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
+    if 'mpAnalytics' not in html: add += _analytics_snippet()
     if not add: return html
     i = html.lower().rfind('</body>')
     return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
@@ -12087,6 +12130,23 @@ def api_admin_artist_pending_resolve(request: Request, body: dict = Body(...)):
         return {'ok': True, 'mode': 'ignore'}
     raise HTTPException(400, 'action은 alias/create/ignore 중 하나입니다')
 
+# ── /k2g-data.js: K2G 카탈로그 외부 데이터 파일 ──────────────────────────
+#    window.__K2G 주입. URL의 v=내용해시가 변경 추적을 담당하므로 immutable
+#    장기 캐시 — 카탈로그 수정 시 페이지가 새 v를 참조해 즉시 반영된다.
+@admin_router.get('/k2g-data.js')
+def k2g_data_js(request: Request):
+    body = _k2g_catalog_json()
+    if body is None:
+        body = '[]'
+    etag = '"k2g-%s"' % hashlib.md5(body.encode('utf-8')).hexdigest()[:16]
+    if request.headers.get('if-none-match') == etag:
+        return Response(status_code=304, headers={'ETag': etag})
+    return Response('window.__K2G=' + body + ';',
+                    media_type='application/javascript; charset=utf-8',
+                    headers={'ETag': etag,
+                             'Cache-Control': 'public, max-age=31536000, immutable',
+                             'Vary': 'Accept-Encoding'})
+
 # ── /kpop: shop.html을 앨범 전용관 모드로 변환 서빙 ──────────────────────
 #    ※ 캐치올(serve_site)보다 먼저 등록되어야 한다 (등록 순서 = 매칭 순서).
 @admin_router.get('/kpop')
@@ -12135,4 +12195,8 @@ def serve_site(spath: str, request: Request):
     data = open(fp, 'rb').read()
     if mt == 'text/html':
         return HTMLResponse(_inject_auth(data.decode('utf-8', errors='replace'), seo_path, seo_uid), headers={'Cache-Control': 'no-cache'})
+    if spath.startswith('img/e/'):
+        # 내용 해시 파일명 → 영구 캐시 안전 (교체는 새 해시 파일명으로)
+        return Response(data, media_type=mt,
+                        headers={'Cache-Control': 'public, max-age=31536000, immutable'})
     return Response(data, media_type=mt)

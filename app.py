@@ -157,19 +157,23 @@ def seed():
         for stmt in ddl.strip().split(';'):
             if stmt.strip(): c.exec(stmt)
 
-    # ── 컬럼 마이그레이션은 반드시 별도 트랜잭션으로 분리한다 ──
-    #   아래 시드 블록은 상품이 이미 있으면 `return` 으로 빠져나가는데,
-    #   그 return 이 `with db()` 안에 있으면 트랜잭션이 커밋되지 않아
-    #   방금 추가한 컬럼이 롤백된다(운영에서 vbank_* 누락 → 승인 시 500).
-    with db() as c:
-        for col in ('customer_id', 'member_id', 'contact_phone_norm',
-                    'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
-                    'ga_cid', 'ga_sid', 'ga_mp_sent', 'pay_log'):
-            try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
-            except Exception: pass
-        try: c.exec('CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)')
-        except Exception: pass
+    # ── 컬럼 마이그레이션은 반드시 _migrate_columns() 로만 수행한다 ──
+    #   (1) 시드 블록은 상품이 이미 있으면 `return` 으로 빠져나가므로 같은
+    #       트랜잭션에 섞으면 커밋 전에 롤백된다.
+    #   (2) PostgreSQL 은 트랜잭션 안에서 문장 하나가 실패하면 트랜잭션 전체가
+    #       '중단(aborted)' 상태가 되어 이후 문장이 전부 무시된다 — 한 블록에서
+    #       전 컬럼을 돌리던 종전 방식은 이미 존재하는 첫 컬럼(customer_id)에서
+    #       중단돼 vbank_* 가 영영 생성되지 않았다(2026-07-27 운영 재현 확정).
+    _migrate_columns()
 
+    # own_removed 조회는 테이블이 없을 수 있어 반드시 별도 트랜잭션으로 격리한다.
+    # (본 블록 안에서 실패하면 PG 트랜잭션이 중단돼 상품 INSERT까지 전부 무효가 된다)
+    removed = set()
+    try:
+        with db() as c:
+            removed = {x['id'] for x in c.all('SELECT id FROM own_removed')}
+    except Exception:
+        pass
 
     with db() as c:
         n = c.one('SELECT COUNT(*) AS n FROM products')['n']
@@ -183,10 +187,6 @@ def seed():
         for it in json.load(open(os.path.join(BASE, 'data', 'k2g_catalog.json'))):
             price = int(it['p'].replace(',', '')) if it['p'] else 0
             rows.append((f"k2g::{it['u']}", it['n'], price, int(it['s']), 'k2g', None))
-        try:
-            removed = {x['id'] for x in c.all('SELECT id FROM own_removed')}
-        except Exception:
-            removed = set()
         ins = ('INSERT INTO products VALUES(?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING'
                if IS_PG else 'INSERT OR IGNORE INTO products VALUES(?,?,?,?,?,?)')
         for r in rows:
@@ -225,27 +225,49 @@ def _has_ga_cols() -> bool:
             print('[ga4] orders.ga_* 컬럼 미가용 — cid 저장 없이 동작(서버 purchase 백업 비활성)', flush=True)
     return _GA_COLS_OK
 
+# orders 확장 컬럼 단일 목록 — seed()·_migrate_columns()·자가치유가 전부 이것만 본다.
+_ORDER_EXTRA_COLS = ('customer_id', 'member_id', 'contact_phone_norm',
+                     'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
+                     'ga_cid', 'ga_sid', 'ga_mp_sent', 'pay_log')
+
+def _add_order_col(col: str) -> bool:
+    """컬럼 1개 = 트랜잭션 1개. 반드시 이 단위를 유지한다.
+
+    PostgreSQL 은 트랜잭션 내부에서 문장 하나가 실패하면 트랜잭션이 '중단
+    (aborted)' 상태가 되어, except 로 삼켜도 이후 모든 문장이
+    InFailedSqlTransaction 으로 무시된다. 종전처럼 with db() 한 블록에서
+    전 컬럼을 ALTER 하면 이미 존재하는 첫 컬럼(customer_id)에서 중단돼
+    나머지(vbank_* 등)가 전부 누락된다 — '[db] 컬럼 마이그레이션 완료' 로그가
+    찍히면서도 실제로는 아무것도 안 된다(2026-07-27 운영 PG 재현으로 확정).
+    SQLite 는 이런 중단 개념이 없어 로컬 테스트로는 잡히지 않는다."""
+    try:
+        with db() as c:
+            c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
+        return True                                   # 신규 추가됨
+    except Exception:
+        return False                                  # 이미 존재(정상) 또는 DB 미준비
+
 def _migrate_columns():
     """컬럼 추가만 따로 수행한다. seed() 가 시드 데이터 문제로 실패해도
        마이그레이션은 반드시 완료되어야 한다(누락 시 주문 조회·승인이 500)."""
+    global _VB_COLS_OK, _GA_COLS_OK
+    added = [col for col in _ORDER_EXTRA_COLS if _add_order_col(col)]
     try:
         with db() as c:
-            for col in ('customer_id', 'member_id', 'contact_phone_norm',
-                        'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
-                        'ga_cid', 'ga_sid', 'ga_mp_sent'):
-                try: c.exec('ALTER TABLE orders ADD COLUMN %s TEXT' % col)
-                except Exception: pass
-        print('[db] 컬럼 마이그레이션 완료', flush=True)
-    except Exception as e:
-        print(f'[db] 컬럼 마이그레이션 실패: {e}', flush=True)
+            c.exec('CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created)')
+    except Exception:
+        pass
+    _VB_COLS_OK = None                    # 판정 캐시 무효화 → 방금 생긴 컬럼을
+    _GA_COLS_OK = None                    # 재기동 없이 즉시 사용한다.
+    print('[db] 컬럼 마이그레이션 완료 (신규 %s)' % (', '.join(added) if added else '없음'),
+          flush=True)
 
 def _init_db():
-    global DB_READY, _VB_COLS_OK
+    global DB_READY
     try:
         if IS_PG:
             _connect_pg_with_retry()
-        _migrate_columns()          # seed 보다 먼저, 독립적으로
-        _VB_COLS_OK = None          # 판정 캐시 초기화 → 다음 조회 때 재판정
+        _migrate_columns()          # seed 보다 먼저, 독립적으로 (캐시 재판정 포함)
         seed()
         DB_READY = True
         print('[db] 준비 완료', flush=True)
@@ -401,18 +423,26 @@ def _vbank_finalize(oid: str, tid: str, vnum: str, vbank: str, vname: str, vdate
     _pay_log(oid, 'VBANK_ISSUED',
              (('%s %s' % (vbank, vnum)).strip() + ' · 입금대기') if vnum
              else '채번 응답에 계좌번호 없음 — 이니시스 상점관리자에서 확인 필요')
-    try:
+    def _upd_full():
         with db() as c:
             c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
                    "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
                    "WHERE order_id=? AND status<>'PAID'",
                    (tid, 'VBank', vnum, vbank, vname, vdate, oid))
+    try:
+        _upd_full()
     except Exception:
-        # 컬럼 마이그레이션이 아직 안 된 DB에서도 주문을 잃지 않는다.
-        # 계좌 상세는 못 남겨도 '입금대기' 상태는 반드시 기록되어야 한다.
-        with db() as c:
-            c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
-                   "WHERE order_id=? AND status<>'PAID'", (tid, 'VBank', oid))
+        # 컬럼 미생성 DB — 즉석 마이그레이션 후 1회 재시도(자가치유).
+        # 계좌가 저장되지 않으면 3개 채널(완료화면·마이페이지·SMS) 전부가
+        # 빈 값을 안내하게 되므로, 여기서 포기하기 전에 반드시 복구를 시도한다.
+        try:
+            _migrate_columns()
+            _upd_full()
+        except Exception:
+            # 그래도 실패하면 계좌 상세는 못 남겨도 '입금대기' 는 반드시 기록한다.
+            with db() as c:
+                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
+                       "WHERE order_id=? AND status<>'PAID'", (tid, 'VBank', oid))
     try:
         import admin_v2 as _av; _av.order_notify_async(oid, 'deposit_wait')
     except Exception:

@@ -2562,6 +2562,8 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="hint" style="margin-bottom:10px">▲▼로 순서를 바꾸고, [노출] 체크를 끄면 홈에서 숨겨집니다. 히어로 슬라이드 자체는 [메인배너] 탭에서 관리합니다. [기본값 복원]을 누르면 원본 순서·전체 노출로 돌아갑니다.</div>
   <div id="hbbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-cust" style="display:none">
+  <div class="panel"><h3>고객 현황 대시보드 <span class="tag">RFM 세그먼트 · 가입채널 · 도달 가능 모수</span></h3>
+  <div id="cdash" class="loading">고객 데이터를 분석하는 중…</div></div>
   <div class="panel"><h3>소셜 로그인 연동 <span class="tag">카카오 · 네이버 · Google · Apple</span></h3>
   <div id="oauthStat" class="loading">연동 상태를 확인하는 중…</div></div>
   <div class="panel"><h3>통합 고객·계정 <span class="tag">회원 · 비회원 주문 · 포인트 · 동의</span></h3>
@@ -2569,11 +2571,11 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <select id="ast" onchange="loadAccounts(1)"><option value="">상태 전체</option><option>ACTIVE</option><option>GUEST</option><option>LOCKED</option><option>WITHDRAWN</option><option>MERGED</option></select>
   <select id="apv" onchange="loadAccounts(1)"><option value="">가입방법 전체</option><option value="email">이메일</option><option value="google">Google</option><option value="kakao">카카오</option><option value="naver">네이버</option><option value="apple">Apple</option></select>
   <select id="avf" onchange="loadAccounts(1)"><option value="">인증 전체</option><option value="phone">휴대폰 인증</option><option value="none">인증 없음</option></select>
-  <select id="aseg" onchange="loadAccounts(1)"><option value="">구매 전체</option><option value="buyer">구매 고객</option><option value="no_order">주문 없는 가입자</option></select>
+  <select id="aseg" onchange="loadAccounts(1)"><option value="">구매 전체</option><option value="buyer">구매 고객</option><option value="no_order">미구매 가입자</option><option value="rfm_vip">VIP</option><option value="rfm_loyal">충성 고객</option><option value="rfm_new">신규 구매</option><option value="rfm_stable">일반 고객</option><option value="rfm_risk">이탈 위험</option><option value="rfm_dormant">휴면</option></select>
   <select id="aissue" onchange="loadAccounts(1)"><option value="">점검 전체</option><option value="duplicate">중복계정 의심</option></select>
   <select id="asup" onchange="loadAccounts(1)"><option value="">마이페이지 업무 전체</option><option value="pending">CS 미처리</option><option value="request">취소·반품·교환</option><option value="inquiry">1:1 미답변</option><option value="pqna">상품 Q&amp;A 미답변</option><option value="restock">재입고 알림 대기</option><option value="liked">좋아요 보유</option><option value="sessions">활성 로그인</option></select>
   <label style="font-size:12px;white-space:nowrap"><input type="checkbox" id="amk" onchange="loadAccounts(1)"> 마케팅 동의</label>
-  <button class="btn" onclick="loadAccounts(1)">검색</button><button class="btn ghost" onclick="resetAccounts()">초기화</button></div>
+  <button class="btn" onclick="loadAccounts(1)">검색</button><button class="btn ghost" onclick="resetAccounts()">초기화</button><button class="btn ghost" id="accsv" onclick="accountsCsv()">CSV</button></div>
   <div class="hint" style="margin-bottom:10px">개인정보는 기본 마스킹됩니다. 원문 조회는 매니저 이상이 사유를 남긴 경우에만 감사로그와 함께 허용됩니다.</div>
   <div id="aqcards" class="cards" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px"></div>
   <div id="clist" class="loading">통합 고객을 불러오는 중…</div></div></section>
@@ -2628,12 +2630,12 @@ async function loadReviews(pg){pg=pg||1;try{const d=await api('/admin/api/review
  catch(e){$('#t-reviews').innerHTML='<div class="hint">'+esc(e.message)+'</div>'}}
 async function rvStatus(id,st){if(st==='숨김'&&!confirm('이 리뷰를 화면에서 숨길까요?'))return;
  try{await api('/admin/api/reviews/'+encodeURIComponent(id)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})});toast('처리되었습니다');loadReviews(1)}catch(e){toast(e.message)}}
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,reviews:()=>loadReviews(1),admins:loadAdmins,system:loadSys};
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadCustDash();loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,reviews:()=>loadReviews(1),admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
 if(!can(2)){['pnew','mergeBtn'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
-if(!can(1)){['csvbtn','optcsvbtn','tpladd','ccsv','catalogCsv','inventoryCsv'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
+if(!can(1)){['csvbtn','optcsvbtn','tpladd','ccsv','catalogCsv','inventoryCsv','accsv'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
 
 async function loadDash(){try{const d=await api('/admin/api/summary');
  const mx=Math.max(1,...d.series.map(s=>s.v));
@@ -2853,13 +2855,55 @@ async function loadAccounts(page){accountPage=page;const q=new URLSearchParams({
  $('#clist').innerHTML=`<table><tr><th>고객번호 / 고객</th><th>연락처</th><th>계정</th><th>상태</th><th class="right">주문</th><th class="right">구매액</th><th class="right">포인트</th><th>마이페이지</th><th>최근활동</th><th></th></tr>
  ${d.rows.map(c=>`<tr><td><b class="mono">${esc(c.customer_no)}</b><div class="group-sub">${esc(c.name)||'이름 없음'} · ${esc(c.grade)}</div></td>
  <td><span class="mono">${esc(c.phone)||'-'}</span><div class="group-sub">${esc(c.email)||'-'}</div></td><td>${c.providers.map(p=>`<span class="meta-chip">${esc(p)}</span>`).join(' ')||'-'}</td>
- <td><span class="st ${c.status==='ACTIVE'?'PAID':c.status==='LOCKED'?'FAILED':'PENDING'}">${esc(c.status)}</span>${c.marketing?' <span class="meta-chip">마케팅</span>':''}</td>
+ <td><span class="st ${c.status==='ACTIVE'?'PAID':c.status==='LOCKED'?'FAILED':'PENDING'}">${esc(c.status)}</span>${c.seg?' <span class="meta-chip" style="background:'+(RFMC[c.seg]||'#666')+';color:#fff">'+RFMKR[c.seg]+'</span>':''}${c.marketing?' <span class="meta-chip">마케팅</span>':''}</td>
  <td class="right mono">${c.orders}</td><td class="right mono">${won(c.spend)}</td><td class="right mono"><b>${c.points.toLocaleString()}P</b></td>
  <td style="font-size:11px;line-height:1.7">${c.support.req?'<b style="color:#E8332A">요청 '+c.support.req+'</b> ':''}${c.support.inq?'<b style="color:#E8332A">1:1 '+c.support.inq+'</b> ':''}${c.support.pqna?'<b style="color:#E8332A">Q&A '+c.support.pqna+'</b> ':''}${c.support.restock?'재입고 '+c.support.restock+' ':''}${c.support.likes?'♥ '+c.support.likes+' ':''}${c.support.sessions?'세션 '+c.support.sessions:''}</td>
  <td class="mono">${esc(c.last_order||c.last_login||'-')}</td><td><button class="btn sm ghost" onclick="openAccount('${esc(c.id)}')">통합관리</button></td></tr>`).join('')||'<tr><td colspan="10" class="loading">조건에 맞는 고객이 없습니다.</td></tr>'}</table>${pager(page,d,'loadAccounts')}`
  }catch(e){$('#clist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 function supportFilter(v){$('#asup').value=v;loadAccounts(1)}
 function resetAccounts(){$('#aq').value='';$('#ast').value='';$('#apv').value='';$('#avf').value='';$('#aseg').value='';$('#aissue').value='';$('#asup').value='';$('#amk').checked=false;loadAccounts(1)}
+const RFMC={vip:'#E8332A',loyal:'#9a6b00',new:'#1a7f37',stable:'#5a5a5a',risk:'#c05621',dormant:'#8b8b8b'};
+const RFMKR={vip:'VIP',loyal:'충성',new:'신규',stable:'일반',risk:'이탈위험',dormant:'휴면'};
+const CHKR={kakao:'카카오',naver:'네이버',google:'Google',apple:'Apple',email:'이메일',guest:'비회원 주문'};
+async function loadCustDash(){const el=$('#cdash');if(!el)return;el.className='loading';el.textContent='고객 데이터를 분석하는 중…';
+ try{const d=await api('/admin/api/customer-dash');el.className='';const k=d.kpi;
+ const delta=k.prev_30?Math.round((k.new_30-k.prev_30)/k.prev_30*100):null;
+ const kpis=[['총 고객',k.total.toLocaleString(),'회원 '+k.members+' · 게스트 '+k.guests],
+  ['신규 고객 · 30일',k.new_30+'명',(delta===null?'오늘 '+k.new_today+' · 7일 '+k.new_7:'직전 30일 대비 '+(delta>=0?'+':'')+delta+'% · 오늘 '+k.new_today)],
+  ['구매 고객',k.buyers+'명','가입→구매 전환 '+k.buyer_rate+'%'],
+  ['재구매율',k.repeat_rate+'%','2회 이상 구매 '+k.repeat+'명'],
+  ['객단가 AOV',won(k.aov),'구매고객당 누적 '+won(k.arppu)],
+  ['30일 활성 구매',k.active_30+'명','최근 30일 내 결제']];
+ const segCards=d.rfm.map(s=>`<button class="card" style="text-align:left;cursor:pointer;border-top:3px solid ${RFMC[s.key]||'#ccc'}" onclick="rfmFilter('rfm_${s.key}')"><div class="k">${s.label}</div><div class="v" style="font-size:20px">${s.count}<span style="font-size:11px;color:#888">명</span></div><div class="s">${s.desc}</div><div class="s" style="color:#141414">누적 ${won(s.spend)}</div></button>`).join('')
+  +`<button class="card" style="text-align:left;cursor:pointer;border-top:3px solid #bbb" onclick="rfmFilter('no_order')"><div class="k">미구매 가입자</div><div class="v" style="font-size:20px">${k.no_order}<span style="font-size:11px;color:#888">명</span></div><div class="s">주문 이력 없음</div><div class="s" style="color:#141414">첫 구매 유도 대상</div></button>`;
+ const chRows=d.channels.map(c=>{const cv=c.count?Math.round(c.buyers/c.count*100):0;return `<tr><td>${CHKR[c.provider]||esc(c.provider)}</td><td class="right mono">${c.count}</td><td class="right mono">${c.buyers}</td><td class="right mono">${cv}%</td><td class="right mono">${won(c.spend)}</td></tr>`}).join('')||'<tr><td colspan="5" class="loading">데이터 없음</td></tr>';
+ const topRows=d.pareto.top.map((t,i)=>`<tr style="cursor:pointer" onclick="openAccount('${esc(t.id)}')"><td class="mono">${i+1}</td><td><b class="mono">${esc(t.customer_no)}</b><div class="group-sub">${esc(t.name)||'이름 없음'} · ${esc(t.grade)}</div></td><td class="right mono">${t.orders}</td><td class="right mono">${won(t.spend)}</td><td class="mono">${esc(t.last)}</td></tr>`).join('')||'<tr><td colspan="5" class="loading">구매 고객 없음</td></tr>';
+ const mx=Math.max(1,...d.series.map(s=>Math.max(s.signup,s.first_buy)));
+ const bars=d.series.map(s=>`<div style="flex:1;display:flex;align-items:flex-end;gap:1px" title="${s.d} · 가입 ${s.signup} · 첫구매 ${s.first_buy}"><div style="flex:1;background:#141414;min-height:2px;height:${Math.round(s.signup/mx*100)}%"></div><div style="flex:1;background:#E8332A;min-height:2px;height:${Math.round(s.first_buy/mx*100)}%"></div></div>`).join('');
+ const reach=[['마케팅 동의',d.reach.marketing+'명','전체의 '+d.reach.mkt_rate+'%'],
+  ['알림톡·SMS 타겟',d.reach.sms_target+'명','마케팅 동의 ∩ 휴대폰 인증'],
+  ['이메일 타겟',d.reach.email_target+'명','마케팅 동의 ∩ 이메일 보유'],
+  ['휴대폰 인증',d.reach.phone+'명','본인확인 완료'],
+  ['이메일 보유',d.reach.email+'명','발송 가능 주소']].map(x=>`<div class="card"><div class="k">${x[0]}</div><div class="v" style="font-size:19px">${x[1]}</div><div class="s">${x[2]}</div></div>`).join('');
+ el.innerHTML=`<div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">${kpis.map(x=>`<div class="card"><div class="k">${x[0]}</div><div class="v" style="font-size:19px">${x[1]}</div><div class="s">${x[2]}</div></div>`).join('')}</div>
+ <h4 style="margin:2px 0 8px">RFM 고객 세그먼트 <span class="tag">카드를 누르면 아래 고객 목록이 필터링됩니다</span></h4>
+ <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:12px">${segCards}</div>
+ <div class="grid2"><div><h4 style="margin:2px 0 8px">가입 채널별 성과 <span class="tag">복수 연동 시 채널별 중복 집계</span></h4>
+ <table><tr><th>채널</th><th class="right">고객</th><th class="right">구매고객</th><th class="right">전환율</th><th class="right">구매액</th></tr>${chRows}</table></div>
+ <div><h4 style="margin:2px 0 8px">매출 기여 TOP 10 <span class="tag">상위 10% 고객 = 매출 ${d.pareto.top_share}%</span></h4>
+ <table><tr><th>#</th><th>고객</th><th class="right">주문</th><th class="right">구매액</th><th>최근구매</th></tr>${topRows}</table></div></div>
+ <h4 style="margin:14px 0 8px">최근 30일 신규 가입 · 첫 구매 <span class="tag"><span style="display:inline-block;width:9px;height:9px;background:#141414;vertical-align:middle"></span> 가입&nbsp; <span style="display:inline-block;width:9px;height:9px;background:#E8332A;vertical-align:middle"></span> 첫 구매</span></h4>
+ <div style="display:flex;align-items:flex-end;gap:3px;height:110px">${bars}</div>
+ <div class="chart-x"><span>${d.series[0].d.slice(5)}</span><span>${d.series[14].d.slice(5)}</span><span>${d.series[29].d.slice(5)}</span></div>
+ <h4 style="margin:14px 0 8px">도달 가능 마케팅 모수 <span class="tag">타겟 발송 전 확인</span></h4>
+ <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:4px">${reach}</div>
+ <div class="hint">등급 분포: ${d.grades.map(g=>esc(g.grade)+' '+g.count).join(' · ')||'-'} &nbsp;—&nbsp; RFM 기준(결제완료 주문): VIP 3회+ · 60일 내, 충성 2회+ · 90일 내, 신규 첫구매 30일 내, 일반 1회 · 90일 내, 이탈위험 91~180일, 휴면 180일 초과. CSV 버튼으로 현재 필터 그대로 내보내 알림톡·이메일 타겟 명단을 만들 수 있습니다.</div>`;
+ }catch(e){el.className='loading';el.textContent=e.message}}
+function rfmFilter(k){$('#aseg').value=k;loadAccounts(1);const t=$('#clist');if(t&&t.scrollIntoView)t.scrollIntoView({behavior:'smooth',block:'start'})}
+function accountsCsv(){const q=new URLSearchParams();
+ if($('#aq').value)q.set('query',$('#aq').value);if($('#ast').value)q.set('status',$('#ast').value);if($('#apv').value)q.set('provider',$('#apv').value);if($('#avf').value)q.set('verified',$('#avf').value);if($('#aseg').value)q.set('segment',$('#aseg').value);if($('#aissue').value)q.set('issue',$('#aissue').value);if($('#asup').value)q.set('support',$('#asup').value);if($('#amk').checked)q.set('marketing','1');
+ if(can(2)&&confirm('휴대폰·이메일 원문(마스킹 해제)을 포함할까요?\n[확인] 원문 포함 — 사유 입력 필수, 감사로그 기록\n[취소] 마스킹 상태로 내보내기')){const reason=prompt('원문 내보내기 사유를 입력하세요 (감사로그에 기록됩니다)');if(!reason)return;q.set('raw','1');q.set('reason',reason)}
+ location.href='/admin/api/accounts.csv?'+q}
 async function openAccount(id){try{const d=await api('/admin/api/accounts/'+encodeURIComponent(id));window._account=d;const c=d.customer;$('#mbox').classList.add('wide');
  const tb=(title,head,body)=>`<div style="margin-top:16px"><h4 style="margin:0 0 7px">${title}</h4><table><tr>${head}</tr>${body||'<tr><td colspan="6" class="loading">없음</td></tr>'}</table></div>`;
  $('#mbox').innerHTML=`<h3>${esc(c.name)||'이름 없음'} <span class="tag mono">${esc(c.customer_no)}</span> <span class="st ${c.status==='ACTIVE'?'PAID':'PENDING'}">${esc(c.status)}</span></h3>
@@ -6710,10 +6754,52 @@ def api_members(request: Request):
             'status': r.get('customer_status') or r.get('status') or 'ACTIVE',
             'gender': r.get('gender') or '', 'birth': ((r.get('birth') or '')[:4] if len(r.get('birth') or '')==10 else (r.get('birth') or ''))} for r in rs]}
 
-@admin_router.get('/admin/api/accounts')
-def api_accounts(request: Request):
-    a = get_actor(request); need(a, 0)
-    p=request.query_params; where=[]; args=[]
+# ── 고객 현황 대시보드 · RFM 세그먼트 ────────────────────────────────────
+#  결제완료(PAID) 주문만으로 판정한다. _rfm_seg(파이썬)와 _rfm_sql(목록 필터 SQL)은
+#  반드시 동일한 판정을 내려야 한다 — 대시보드 카드 수치와 카드 클릭 시 목록 건수가
+#  1건이라도 어긋나면 신뢰를 잃는다. 변경 시 두 함수를 함께 고치고 테스트로 대조할 것.
+RFM_SEGMENTS = [
+    ('vip', 'VIP', '3회 이상 구매 · 최근 60일 내 재구매'),
+    ('loyal', '충성 고객', '2회 이상 구매 · 최근 90일 내 구매'),
+    ('new', '신규 구매', '첫 구매가 최근 30일 이내'),
+    ('stable', '일반 고객', '1회 구매 · 최근 31~90일'),
+    ('risk', '이탈 위험', '마지막 구매 91~180일 경과'),
+    ('dormant', '휴면', '마지막 구매 180일 초과'),
+]
+
+def _rfm_cuts(today=None):
+    t = today or kst_today()
+    return {k: (t - datetime.timedelta(days=n)).isoformat()
+            for k, n in (('d30', 30), ('d60', 60), ('d90', 90), ('d180', 180))}
+
+def _rfm_seg(paid_cnt, last_paid, cuts):
+    """PAID 주문수·마지막 PAID 일시(ISO) → 세그먼트 키. 구매 이력 없으면 None."""
+    if not paid_cnt or not last_paid: return None
+    if paid_cnt >= 3 and last_paid >= cuts['d60']: return 'vip'
+    if paid_cnt >= 2 and last_paid >= cuts['d90']: return 'loyal'
+    if paid_cnt == 1 and last_paid >= cuts['d30']: return 'new'
+    if paid_cnt == 1 and last_paid >= cuts['d90']: return 'stable'
+    if last_paid >= cuts['d180']: return 'risk'
+    return 'dormant'
+
+def _rfm_sql(key):
+    """세그먼트 키 → (WHERE 조건, 인자). _rfm_seg 와 수학적으로 동치인 독립 조건식."""
+    cuts = _rfm_cuts()
+    PC = "(SELECT COUNT(*) FROM orders o WHERE o.customer_id=c.id AND o.status='PAID')"
+    PL = "COALESCE((SELECT MAX(o.created) FROM orders o WHERE o.customer_id=c.id AND o.status='PAID'),'')"
+    m = {
+        'vip':     ('(%s>=3 AND %s>=?)' % (PC, PL), [cuts['d60']]),
+        'loyal':   ('(%s>=2 AND %s>=? AND NOT(%s>=3 AND %s>=?))' % (PC, PL, PC, PL), [cuts['d90'], cuts['d60']]),
+        'new':     ('(%s=1 AND %s>=?)' % (PC, PL), [cuts['d30']]),
+        'stable':  ('(%s=1 AND %s>=? AND %s<?)' % (PC, PL, PL), [cuts['d90'], cuts['d30']]),
+        'risk':    ('(%s>=1 AND %s>=? AND %s<?)' % (PC, PL, PL), [cuts['d180'], cuts['d90']]),
+        'dormant': ('(%s>=1 AND %s<?)' % (PC, PL), [cuts['d180']]),
+    }
+    return m.get(key)
+
+def _accounts_filter(p):
+    """통합 고객 목록·CSV 공용 검색조건 빌더 → (' WHERE …' 또는 '', 인자 리스트)."""
+    where=[]; args=[]
     q=(p.get('query') or '').strip()
     if q:
         kw='%'+q+'%'; where.append("(c.customer_no LIKE ? OR c.name LIKE ? OR EXISTS(SELECT 1 FROM members m WHERE m.customer_id=c.id AND (m.email LIKE ? OR m.phone LIKE ?)))")
@@ -6724,8 +6810,14 @@ def api_accounts(request: Request):
     if p.get('verified')=='phone': where.append("EXISTS(SELECT 1 FROM customer_contacts cc WHERE cc.customer_id=c.id AND cc.kind='PHONE' AND cc.verified=1)")
     if p.get('verified')=='none': where.append('NOT EXISTS(SELECT 1 FROM customer_contacts cc WHERE cc.customer_id=c.id AND cc.verified=1)')
     if p.get('marketing')=='1': where.append('c.marketing_ok=1')
-    if p.get('segment')=='no_order': where.append('NOT EXISTS(SELECT 1 FROM orders o WHERE o.customer_id=c.id)')
-    if p.get('segment')=='buyer': where.append('EXISTS(SELECT 1 FROM orders o WHERE o.customer_id=c.id)')
+    seg=(p.get('segment') or '')
+    if seg=='no_order': where.append('NOT EXISTS(SELECT 1 FROM orders o WHERE o.customer_id=c.id)')
+    elif seg=='buyer': where.append('EXISTS(SELECT 1 FROM orders o WHERE o.customer_id=c.id)')
+    elif seg.startswith('rfm_'):
+        cond=_rfm_sql(seg[4:])
+        if cond:
+            where.append(cond[0]); args += cond[1]
+            where.append("c.status NOT IN ('MERGED','WITHDRAWN')")
     if p.get('issue')=='duplicate':
         where.append("EXISTS(SELECT 1 FROM members m1 JOIN members m2 ON lower(m1.email)=lower(m2.email) AND m1.id<>m2.id WHERE m1.customer_id=c.id AND COALESCE(m1.email,'')<>'')")
     support=p.get('support') or ''
@@ -6742,16 +6834,22 @@ def api_accounts(request: Request):
     elif support in support_where:
         where.append(support_where[support])
         if support=='sessions': args.append(now_iso())
-    w=(' WHERE '+' AND '.join(where)) if where else ''
+    return (' WHERE '+' AND '.join(where)) if where else '', args
+
+@admin_router.get('/admin/api/accounts')
+def api_accounts(request: Request):
+    a = get_actor(request); need(a, 0)
+    p=request.query_params
+    w,args=_accounts_filter(p)
     page=max(1,int(p.get('page',1) or 1)); size=25
     total=num((one('SELECT COUNT(*) AS c FROM customer_profiles c'+w,tuple(args)) or {}).get('c'))
     rs=rows('SELECT c.* FROM customer_profiles c%s ORDER BY c.updated_at DESC,c.created_at DESC LIMIT %d OFFSET %d' % (w,size,(page-1)*size),tuple(args))
-    out=[]
+    out=[]; cuts=_rfm_cuts()
     for c in rs:
         ids=rows('SELECT provider,email_norm,last_login_at FROM auth_identities WHERE customer_id=? ORDER BY created_at',(c['id'],))
         phone=one("SELECT value FROM customer_contacts WHERE customer_id=? AND kind='PHONE' AND is_primary=1",(c['id'],)) or {}
         email=one("SELECT value FROM customer_contacts WHERE customer_id=? AND kind='EMAIL' AND is_primary=1",(c['id'],)) or {}
-        stats=one("SELECT COUNT(*) AS cnt,COALESCE(SUM(CASE WHEN status='PAID' THEN amount ELSE 0 END),0) AS spend,MAX(created) AS last_order FROM orders WHERE customer_id=?",(c['id'],)) or {}
+        stats=one("SELECT COUNT(*) AS cnt,COALESCE(SUM(CASE WHEN status='PAID' THEN 1 ELSE 0 END),0) AS pcnt,COALESCE(SUM(CASE WHEN status='PAID' THEN amount ELSE 0 END),0) AS spend,MAX(created) AS last_order,MAX(CASE WHEN status='PAID' THEN created END) AS last_paid FROM orders WHERE customer_id=?",(c['id'],)) or {}
         mp=one("SELECT "
                "(SELECT COUNT(*) FROM member_requests WHERE customer_id=? AND status IN ('접수','처리중')) AS req,"
                "(SELECT COUNT(*) FROM member_inquiries WHERE customer_id=? AND status<>'답변완료') AS inq,"
@@ -6762,6 +6860,7 @@ def api_accounts(request: Request):
                (c['id'],c['id'],c['id'],c['id'],c['id'],c['id'],now_iso())) or {}
         out.append({'id':c['id'],'customer_no':c.get('customer_no') or '','name':c.get('name') or '',
                     'status':c.get('status') or 'ACTIVE','grade':c.get('grade') or 'WELCOME',
+                    'seg':(_rfm_seg(num(stats.get('pcnt')),stats.get('last_paid') or '',cuts) or '') if (c.get('status') or '') not in ('MERGED','WITHDRAWN') else '',
                     'phone':_mask_phone(phone.get('value') or ''),'email':_mask_email(email.get('value') or ''),
                     'providers':[x['provider'] for x in ids],'last_login':max([x.get('last_login_at') or '' for x in ids] or ['']),
                     'orders':num(stats.get('cnt')),'spend':num(stats.get('spend')),'last_order':(stats.get('last_order') or '')[:10],
@@ -6775,6 +6874,147 @@ def api_accounts(request: Request):
         'locked':num((one("SELECT COUNT(*) AS c FROM customer_profiles WHERE status='LOCKED'") or {}).get('c')),
     }
     return {'total':total,'page':page,'size':size,'rows':out,'queues':queues}
+
+@admin_router.get('/admin/api/customer-dash')
+def api_customer_dash(request: Request):
+    """고객 현황 대시보드 — KPI · RFM 세그먼트 · 가입채널 성과 · 가입/첫구매 추이 ·
+    매출 파레토 · 도달 가능 마케팅 모수. 판정 기준은 PAID 주문, 기준시각은 KST."""
+    a = get_actor(request); need(a, 0)
+    today = kst_today(); cuts = _rfm_cuts(today)
+    t = today.isoformat()
+    d7 = (today - datetime.timedelta(days=6)).isoformat()
+    d30 = (today - datetime.timedelta(days=29)).isoformat()
+    p30 = (today - datetime.timedelta(days=59)).isoformat()
+    base = rows("SELECT id,customer_no,name,status,grade,marketing_ok,created_at FROM customer_profiles"
+                " WHERE status NOT IN ('MERGED','WITHDRAWN')")
+    total = len(base)
+    guests = sum(1 for r in base if (r.get('status') or '') == 'GUEST')
+    def _newcnt(since, until=None):
+        n = 0
+        for r in base:
+            ca = (r.get('created_at') or '')[:10]
+            if ca >= since and (until is None or ca < until): n += 1
+        return n
+    new_today = _newcnt(t); new_7 = _newcnt(d7); new_30 = _newcnt(d30); prev_30 = _newcnt(p30, d30)
+    agg = rows("SELECT o.customer_id AS cid, COUNT(*) AS cnt, COALESCE(SUM(o.amount),0) AS spend,"
+               " MAX(o.created) AS last, MIN(o.created) AS first FROM orders o"
+               " WHERE o.status='PAID' AND o.customer_id IS NOT NULL AND o.customer_id<>''"
+               " GROUP BY o.customer_id")
+    live_ids = {r['id'] for r in base}
+    agg = [r for r in agg if r['cid'] in live_ids]
+    aggmap = {r['cid']: r for r in agg}
+    buyers = len(agg)
+    paid_sum = sum(num(r['spend']) for r in agg)
+    paid_cnt = sum(num(r['cnt']) for r in agg)
+    repeat = sum(1 for r in agg if num(r['cnt']) >= 2)
+    active30 = sum(1 for r in agg if (r.get('last') or '') >= d30)
+    seg_cnt = {k: 0 for k, _, _ in RFM_SEGMENTS}; seg_spend = dict(seg_cnt)
+    for r in agg:
+        k = _rfm_seg(num(r['cnt']), r.get('last') or '', cuts)
+        if k: seg_cnt[k] += 1; seg_spend[k] += num(r['spend'])
+    #  '미구매 가입자' 카드는 목록의 segment=no_order 필터와 동일 SQL 로 계산해
+    #  카드 수치와 클릭 결과 건수가 항상 일치하도록 한다.
+    no_order = num((one('SELECT COUNT(*) AS c FROM customer_profiles c WHERE NOT EXISTS(SELECT 1 FROM orders o WHERE o.customer_id=c.id)') or {}).get('c'))
+    spends = sorted((num(r['spend']) for r in agg), reverse=True)
+    top_n = max(1, round(buyers * 0.1)) if buyers else 0
+    top_share = round(sum(spends[:top_n]) / paid_sum * 100) if paid_sum else 0
+    bmap = {r['id']: r for r in base}
+    top = []
+    for r in sorted(agg, key=lambda x: num(x['spend']), reverse=True)[:10]:
+        b = bmap.get(r['cid']) or {}
+        top.append({'id': r['cid'], 'customer_no': b.get('customer_no') or '', 'name': b.get('name') or '',
+                    'grade': b.get('grade') or '', 'orders': num(r['cnt']), 'spend': num(r['spend']),
+                    'last': (r.get('last') or '')[:10]})
+    ids = rows("SELECT ai.provider, ai.customer_id AS cid FROM auth_identities ai"
+               " JOIN customer_profiles c ON c.id=ai.customer_id WHERE c.status NOT IN ('MERGED','WITHDRAWN')")
+    ch = {}; seen = set()
+    for r in ids:
+        pv = r.get('provider') or 'email'
+        if (pv, r['cid']) in seen: continue
+        seen.add((pv, r['cid']))
+        d = ch.setdefault(pv, {'count': 0, 'buyers': 0, 'spend': 0})
+        d['count'] += 1
+        g = aggmap.get(r['cid'])
+        if g: d['buyers'] += 1; d['spend'] += num(g['spend'])
+    if guests:
+        gb = [aggmap[r['id']] for r in base if (r.get('status') or '') == 'GUEST' and r['id'] in aggmap]
+        ch['guest'] = {'count': guests, 'buyers': len(gb), 'spend': sum(num(x['spend']) for x in gb)}
+    channels = [dict(provider=k, **v) for k, v in sorted(ch.items(), key=lambda x: -x[1]['count'])]
+    days = [(today - datetime.timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
+    su = {}; fb = {}
+    for r in base:
+        d0 = (r.get('created_at') or '')[:10]
+        if d0 >= d30: su[d0] = su.get(d0, 0) + 1
+    for r in agg:
+        f0 = (r.get('first') or '')[:10]
+        if f0 >= d30: fb[f0] = fb.get(f0, 0) + 1
+    series = [{'d': d, 'signup': su.get(d, 0), 'first_buy': fb.get(d, 0)} for d in days]
+    mk_ids = {r['id'] for r in base if num(r.get('marketing_ok'))}
+    ph = {r['cid'] for r in rows("SELECT DISTINCT cc.customer_id AS cid FROM customer_contacts cc"
+                                 " JOIN customer_profiles c ON c.id=cc.customer_id"
+                                 " WHERE cc.kind='PHONE' AND cc.verified=1 AND c.status NOT IN ('MERGED','WITHDRAWN')")}
+    em = {r['cid'] for r in rows("SELECT DISTINCT cc.customer_id AS cid FROM customer_contacts cc"
+                                 " JOIN customer_profiles c ON c.id=cc.customer_id"
+                                 " WHERE cc.kind='EMAIL' AND c.status NOT IN ('MERGED','WITHDRAWN')")}
+    reach = {'marketing': len(mk_ids), 'mkt_rate': round(len(mk_ids) / total * 100) if total else 0,
+             'phone': len(ph), 'email': len(em),
+             'sms_target': len(mk_ids & ph), 'email_target': len(mk_ids & em)}
+    gr = {}
+    for r in base:
+        g = r.get('grade') or 'WELCOME'; gr[g] = gr.get(g, 0) + 1
+    grades = sorted(({'grade': k, 'count': v} for k, v in gr.items()), key=lambda x: -x['count'])
+    kpi = {'total': total, 'members': total - guests, 'guests': guests,
+           'new_today': new_today, 'new_7': new_7, 'new_30': new_30, 'prev_30': prev_30,
+           'buyers': buyers, 'buyer_rate': round(buyers / total * 100) if total else 0,
+           'repeat': repeat, 'repeat_rate': round(repeat / buyers * 100) if buyers else 0,
+           'active_30': active30,
+           'aov': paid_sum // paid_cnt if paid_cnt else 0,
+           'arppu': paid_sum // buyers if buyers else 0,
+           'paid_sum': paid_sum, 'no_order': no_order}
+    segs = [{'key': k, 'label': l, 'desc': d, 'count': seg_cnt[k], 'spend': seg_spend[k]} for k, l, d in RFM_SEGMENTS]
+    return {'kpi': kpi, 'rfm': segs, 'channels': channels, 'series': series,
+            'pareto': {'top_share': top_share, 'top_pct': 10, 'top': top},
+            'reach': reach, 'grades': grades}
+
+@admin_router.get('/admin/api/accounts.csv')
+def api_accounts_csv(request: Request):
+    """통합 고객 CSV — 목록과 동일한 검색조건으로 내보낸다. 연락처는 기본 마스킹,
+    원문(raw=1)은 매니저 이상 + 사유 필수 + 감사로그(개인정보 원문 조회와 동일 정책)."""
+    a = get_actor(request); need(a, 1, 'CSV 다운로드')
+    p = request.query_params
+    raw = p.get('raw') == '1'
+    reason = (p.get('reason') or '').strip()[:200]
+    if raw:
+        need(a, 2, '개인정보 원문 내보내기')
+        if not reason: raise HTTPException(400, '원문 내보내기 사유를 입력하세요')
+    w, args = _accounts_filter(p)
+    rs = rows('SELECT c.* FROM customer_profiles c%s ORDER BY c.updated_at DESC,c.created_at DESC LIMIT 20000' % w, tuple(args))
+    cuts = _rfm_cuts(); seg_kr = {k: l for k, l, _ in RFM_SEGMENTS}
+    prov_kr = {'kakao': '카카오', 'naver': '네이버', 'google': 'Google', 'apple': 'Apple', 'email': '이메일'}
+    head = ['고객번호','이름','상태','등급','RFM세그먼트','휴대폰','휴대폰인증','이메일','가입방법','마케팅동의','주문수','총구매액','최근주문일','포인트','가입일']
+    lines = [','.join(head)]
+    for c in rs:
+        ids = rows('SELECT provider FROM auth_identities WHERE customer_id=? ORDER BY created_at', (c['id'],))
+        phr = one("SELECT value,verified FROM customer_contacts WHERE customer_id=? AND kind='PHONE' AND is_primary=1", (c['id'],)) or {}
+        emr = one("SELECT value FROM customer_contacts WHERE customer_id=? AND kind='EMAIL' AND is_primary=1", (c['id'],)) or {}
+        st = one("SELECT COUNT(*) AS cnt,COALESCE(SUM(CASE WHEN status='PAID' THEN 1 ELSE 0 END),0) AS pcnt,"
+                 "COALESCE(SUM(CASE WHEN status='PAID' THEN amount ELSE 0 END),0) AS spend,"
+                 "MAX(created) AS last,MAX(CASE WHEN status='PAID' THEN created END) AS last_paid"
+                 " FROM orders WHERE customer_id=?", (c['id'],)) or {}
+        seg = _rfm_seg(num(st.get('pcnt')), st.get('last_paid') or '', cuts) if (c.get('status') or '') not in ('MERGED','WITHDRAWN') else None
+        pv = phr.get('value') or ''; ev = emr.get('value') or ''
+        lines.append(','.join(esc_csv(v) for v in [
+            c.get('customer_no') or '', c.get('name') or '', c.get('status') or '', c.get('grade') or '',
+            seg_kr.get(seg, '미구매' if not num(st.get('pcnt')) else ''),
+            (pv if raw else _mask_phone(pv)), ('인증' if num(phr.get('verified')) else ''),
+            (ev if raw else _mask_email(ev)),
+            '·'.join(prov_kr.get(x.get('provider'), x.get('provider') or '') for x in ids) or ('게스트' if (c.get('status') or '')=='GUEST' else ''),
+            ('동의' if num(c.get('marketing_ok')) else ''), num(st.get('cnt')), num(st.get('spend')),
+            (st.get('last') or '')[:10], num(c.get('points_balance')), (c.get('created_at') or '')[:10]]))
+    audit(a, '고객CSV' + ('(원문)' if raw else ''), 'accounts',
+          ('%d건' % len(rs)) + ((' · ' + reason) if reason else ''))
+    return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="mapdal_customers_%s.csv"' % kst_today().strftime('%Y%m%d')})
 
 @admin_router.get('/admin/api/accounts/{cid}')
 def api_account_detail(cid: str, request: Request):

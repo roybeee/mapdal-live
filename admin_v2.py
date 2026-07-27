@@ -10225,6 +10225,48 @@ def _seo_album_block(uid):
              _jsonld(_seo_breadcrumb('/kpop', 'KPOP(음반)', name[:60], canonical))]
     return {'title': name, 'block': '\n'.join(parts)}
 
+def _seo_drop_block(key):
+    """/new-drops?id=… 전용: 드롭별 제목·설명·canonical·og:image (카톡/문자 링크 썸네일).
+
+    key: '<id>' 또는 '<id>:w' (당첨자 발표 뷰 view=winners).
+    이벤트 포스터가 썸네일로, 이벤트 제목이 카드 본문으로 뜬다.
+    상대경로 이미지는 절대 URL로 승격 — 카카오 스크래퍼는 절대 URL만 인식한다."""
+    did_s, _, wv = str(key or '').partition(':')
+    if not did_s.isdigit():
+        return None
+    did = int(did_s)
+    d = next((x for x in _drops_all()
+              if isinstance(x, dict) and num(x.get('id')) == did and x.get('on', True)), None)
+    if not d:
+        return None                                   # 없거나 비공개(on=False) → 사이트 기본 OG
+    c = _drop_card(d, kst_now())
+    title = re.sub(r'\s+', ' ', c['title']).strip()
+    if not title:
+        return None
+    winners = (wv == 'w')
+    img = str(c.get('image') or '').strip()
+    img_url = (SITE_ORIGIN + img) if img.startswith('/') else (img if img.startswith('http') else OG_IMAGE_URL)
+    canonical = '%s/new-drops?id=%d%s' % (SITE_ORIGIN, did, '&view=winners' if winners else '')
+    fmt = lambda s: (s[5:16].replace('-', '/').replace('T', ' ') if len(s) >= 16 else s)
+    bits = [('%s — %s' % (c['artist'], c['cat_label'])) if c['artist'].strip() else c['cat_label']]
+    if winners:
+        bits[0] += ' 당첨자 명단 확인'
+    else:
+        bits[0] += ' 이벤트'
+        if c['sales_start'] and c['sales_end']:
+            bits.append('응모 %s ~ %s' % (fmt(c['sales_start']), fmt(c['sales_end'])))
+        if c['announce_at']:
+            bits.append('당첨 발표 %s' % fmt(c['announce_at']))
+    bits.append('맵달SEOUL NEW/DROPS')
+    desc = ' · '.join(bits)[:200]
+    page_title = ('당첨자 발표 · %s — MAPDAL SEOUL' if winners else '%s — MAPDAL SEOUL') % title
+    parts = ['<meta name="description" content="%s">' % _og_esc(desc),
+             '<link rel="canonical" href="%s">' % _og_esc(canonical),
+             '<meta property="og:url" content="%s">' % _og_esc(canonical),
+             '<meta property="og:image" content="%s">' % _og_esc(img_url),
+             _jsonld(_seo_breadcrumb('/new-drops', 'NEW / DROPS', title[:60], canonical))]
+    return {'title': page_title, 'block': '\n'.join(parts)}
+
 def _seo_insert_after_title(html, block):
     i = html.lower().find('</title>')
     if i >= 0:
@@ -10250,8 +10292,20 @@ def _seo_apply(html, path='', uid=None):
     if path == '/album-detail' and uid:
         ab = _seo_album_block(uid)
         if ab:
-            html = _OG_TITLE_RE.sub('<title>%s — MAPDAL SEOUL</title>' % _og_esc(ab['title'][:120]), html, count=1)
+            _t = _og_esc(ab['title'][:120])   # 람다 치환 — 제목 내 '\'가 re.sub 이스케이프로 오독되는 500 방지
+            html = _OG_TITLE_RE.sub(lambda m: '<title>%s — MAPDAL SEOUL</title>' % _t, html, count=1)
             parts.append(ab['block'])
+            if 'og:locale' not in html:
+                parts.append('<meta property="og:locale" content="ko_KR">')
+            return _seo_insert_after_title(html, '\n'.join(parts))
+    # ②-B 드롭 상세(/new-drops?id=) — 이벤트별 제목·설명·핵심 이미지 (카톡/문자 썸네일)
+    #     description을 <title> 직후(정적 meta보다 앞)에 삽입 → _inject_og·검색엔진이 먼저 읽는다.
+    if path == '/new-drops' and uid:
+        dk = _seo_drop_block(uid)
+        if dk:
+            _t = _og_esc(dk['title'][:150])
+            html = _OG_TITLE_RE.sub(lambda m: '<title>%s</title>' % _t, html, count=1)
+            parts.append(dk['block'])
             if 'og:locale' not in html:
                 parts.append('<meta property="og:locale" content="ko_KR">')
             return _seo_insert_after_title(html, '\n'.join(parts))
@@ -10334,6 +10388,12 @@ def _sitemap_xml():
             locs.append(SITE_ORIGIN + '/album-detail?uid=' + str(r['id'])[5:])
     except Exception:
         pass                                          # DB 미준비 시 페이지만이라도 제공 (fail-open)
+    try:
+        for d in _drops_all():                        # 공개 드롭 상세 — 이벤트별 OG·제목 서버 렌더와 세트
+            if isinstance(d, dict) and d.get('on', True) and num(d.get('id')):
+                locs.append(SITE_ORIGIN + '/new-drops?id=%d' % num(d.get('id')))
+    except Exception:
+        pass
     esc = lambda u: u.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
@@ -13067,8 +13127,10 @@ mimetypes.add_type('image/avif', '.avif')
 #   재구축 전까지 /shop 으로 보낸다(재구축 시 이 항목만 제거하면 부활).
 _LEGACY_REDIRECTS = {'new-drops-2': '/new-drops', 'bestsellers': '/shop'}
 
-@admin_router.get('/{spath:path}')
+@admin_router.api_route('/{spath:path}', methods=['GET', 'HEAD'])
 def serve_site(spath: str, request: Request):
+    # HEAD 명시 등록 — FastAPI .get()은 HEAD를 자동 포함하지 않아 카카오/페북 스크래퍼의
+    # HEAD 프리플라이트가 404 → 미리보기 누락 가능 (og-image·robots.txt와 동일한 조치).
     if not spath or spath.startswith(('admin', 'api/', 'auth/', 'p/')):
         raise HTTPException(404)
     # ── 레거시 정리 ──
@@ -13084,13 +13146,19 @@ def serve_site(spath: str, request: Request):
     except Exception:
         pass
     name = os.path.basename(spath)
-    seo_path, seo_uid = '', None                     # SEO: 클린 경로 (+앨범 uid)
+    seo_path, seo_uid = '', None                     # SEO: 클린 경로 (+상세 키: 앨범 uid · 드롭 id)
     if name.endswith('.html') and '/' not in spath:
         seo_path = '/home' if name in _SEO_HOME_ALIAS_FILES else '/' + name[:-5]
         if seo_path == '/album-detail':
             u = (request.query_params.get('uid') or '').strip()
             if re.fullmatch(r'[A-Za-z0-9_-]{1,40}', u):
                 seo_uid = u
+        elif seo_path == '/new-drops':
+            # 드롭 상세 공유 — 카톡/문자 미리보기에 이벤트별 제목·포스터 반영.
+            #   키 형식: '<id>' 또는 '<id>:w'(당첨자 발표 뷰 view=winners → 제목·canonical 분리)
+            u = (request.query_params.get('id') or '').strip()
+            if re.fullmatch(r'\d{1,10}', u):
+                seo_uid = u + (':w' if request.query_params.get('view') == 'winners' else '')
     if name.endswith('.html') and _PAGE_RE.fullmatch(name) and '/' not in spath:
         try:
             ensure_ready()

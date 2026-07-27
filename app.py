@@ -929,9 +929,14 @@ async def inicis_vbank_noti(req: Request):
             with db() as c:
                 order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
                 do_award = False
-                if order and order['status'] != 'PAID':
+                # 취소된 주문의 뒤늦은 입금 — PAID 로 되살리지 않는다(재고 이미 복원됨).
+                #   기록(_pay_log·audit)은 자체 커넥션을 여는 함수라 with db() 안에서
+                #   호출하면 SQLite BEGIN IMMEDIATE 중첩 잠금으로 유실된다 → 블록 밖에서.
+                late_deposit = bool(order and order['status'] == 'CANCELLED')
+                if late_deposit:
+                    pass
+                elif order and order['status'] != 'PAID':
                     if amt == int(order['amount']):        # 금액 위변조 검증
-                        _pay_log(oid, 'PAID', '가상계좌 입금 확인 · %s원' % format(amt, ','))
                         try:
                             c.exec("UPDATE orders SET status='PAID', payment_key=?, "
                                    "pay_method='VBank', paid_at=? "
@@ -942,7 +947,18 @@ async def inicis_vbank_noti(req: Request):
                                    "pay_method='VBank' WHERE order_id=? AND status<>'PAID'",
                                    (tid or (order.get('payment_key') or ''), oid))
                         do_award = True
+            if late_deposit:
+                _pay_log(oid, 'DEPOSIT_AFTER_CANCEL',
+                         '취소된 주문에 가상계좌 입금 %s원 · TID …%s — 수동 환불 필요'
+                         % (format(amt, ','), str(tid)[-6:]))
+                try:
+                    import admin_v2 as _av
+                    _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '취소후입금', oid,
+                              '가상계좌 %s원 입금 — 이니시스 상점관리자에서 환불 처리 필요' % format(amt, ','))
+                except Exception:
+                    pass
             if do_award:
+                _pay_log(oid, 'PAID', '가상계좌 입금 확인 · %s원' % format(amt, ','))
                 _award_purchase_points(oid)                # 멱등: 내부에서 중복 방지
                 _ga4_mp_purchase(oid)                      # 서버사이드 purchase 백업
                 try:
@@ -970,7 +986,12 @@ async def inicis_mobile_noti(req: Request):
         try:
             with db() as c:
                 order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
-                if order and order['status'] != 'PAID':
+                # 취소된 주문의 뒤늦은 입금통보 — PAID 로 되살리지 않는다(재고 이미 복원됨).
+                #   기록은 with db() 밖에서 수행한다(중첩 잠금 방지 — PC 노티와 동일).
+                _late = bool(order and order['status'] == 'CANCELLED')
+                if _late:
+                    _paid = False
+                elif order and order['status'] != 'PAID':
                     try:
                         paid = int(str(form.get('P_AMT', '0')).replace(',', '') or 0)
                     except ValueError:
@@ -984,6 +1005,17 @@ async def inicis_mobile_noti(req: Request):
                         _paid = False
                 else:
                     _paid = False
+            if _late:
+                _amt_disp = str(form.get('P_AMT', '0')).replace(',', '').strip() or '0'
+                _pay_log(oid, 'DEPOSIT_AFTER_CANCEL',
+                         '취소된 주문에 입금통보 %s원 · TID …%s — 수동 환불 필요'
+                         % (_amt_disp, str(tid)[-6:]))
+                try:
+                    import admin_v2 as _av
+                    _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '취소후입금', oid,
+                              '모바일 노티 %s원 — 이니시스 상점관리자에서 환불 처리 필요' % _amt_disp)
+                except Exception:
+                    pass
             if _paid:
                 _award_purchase_points(oid)
                 _ga4_mp_purchase(oid)                      # 서버사이드 purchase 백업

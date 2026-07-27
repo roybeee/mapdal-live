@@ -762,6 +762,7 @@ _PAY_LOG_LABELS = {
     'WINDOW_CLOSE': '결제창 닫음', 'PAGE_EXIT': '페이지 이탈', 'AUTH_FAIL': '카드 인증 실패',
     'AUTH_BAD': '인증 응답 이상', 'APPROVE_ERR': '승인 통신 오류', 'APPROVE_FAIL': '승인 거절',
     'AMOUNT_MISMATCH': '금액 불일치', 'VBANK_ISSUED': '가상계좌 발급', 'PAID': '결제 완료',
+    'CANCELLED': '주문 취소', 'DEPOSIT_AFTER_CANCEL': '취소 후 입금(환불 필요)',
 }
 
 def _pay_log_view(r):
@@ -987,6 +988,9 @@ def _order_cancel_core(a, r, reason):
     으로 중단되며 주문·요청 상태는 그대로 남는다(재시도 가능). 가상계좌 입금건은
     환불 API 규격이 달라(고객 환불계좌 필요) 자동 대상에서 제외하고 수동 안내한다."""
     oid = r['order_id']
+    prev_status = r.get('status') or ''
+    if prev_status == 'CANCELLED':                    # 이중취소 방지 — 재고 이중복원 차단
+        raise HTTPException(400, '이미 취소된 주문입니다')
     refunded = False
     if r.get('status') == 'PAID':
         tid = r.get(_state['paykey']) if _state['paykey'] else None
@@ -1062,8 +1066,14 @@ def _order_cancel_core(a, r, reason):
     audit(a, '환불' if refunded else '주문취소', oid,
           '%s / 금액 %s / 재고복원 %d%s' % (reason, num(r.get('amount')), restored,
                                           (' / 적립회수 %dP' % revoked) if revoked else ''))
+    try:                                              # 결제 진행 이력에도 남긴다 — 실패해도 취소는 유지
+        import app as _app
+        _app._pay_log(oid, 'CANCELLED', '%s · 이전상태 %s%s'
+                      % (reason[:80], prev_status or '?', ' · 환불완료' if refunded else ''))
+    except Exception:
+        pass
     return {'ok': True, 'refunded': refunded, 'stock_restored_items': restored,
-            'points_revoked': revoked}
+            'points_revoked': revoked, 'prev_status': prev_status}
 
 @admin_router.post('/admin/api/orders/{oid}/cancel')
 def api_cancel(oid: str, request: Request, body: dict = Body(...)):
@@ -2688,7 +2698,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <button class="btn sm" onclick="sendNotify('${esc(o.order_id)}')">발송</button></span></div>`:''}
  <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
  ${o.can_mark_paid&&can(2)?`<button class="btn" style="background:#1565c0;color:#fff" onclick="markPaid('${esc(o.order_id)}')">입금 확인 → 결제완료</button>`:''}
- ${can(2)&&o.status!=='CANCELLED'?`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund})">${o.can_refund?'결제취소(환불)':'주문취소 표시'}</button>`:''}
+ ${can(2)&&o.status!=='CANCELLED'?`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund},'${esc(o.status)}')">${o.can_refund?'결제취소(환불)':(o.status==='WAITING_DEPOSIT'?'입금대기 취소':'주문취소 표시')}</button>`:''}
  ${can(1)?`<button class="btn" onclick="saveFulfill('${esc(o.order_id)}')">저장</button>`:''}
  <button class="btn ghost" onclick="closeM()">닫기</button></div>
  ${o.can_refund&&can(2)?'<div class="hint">결제취소 시 이니시스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
@@ -2708,10 +2718,15 @@ async function markPaid(oid){
  if(!confirm('통장에 입금이 확인되었습니까?\n\n결제완료로 변경하면 구매 적립이 지급되고 발송 가능 상태가 됩니다.'))return;
  try{await post('/admin/api/orders/'+encodeURIComponent(oid)+'/mark-paid',{});
   toast('입금 확인 처리되었습니다');closeM();loadOrders(opage||1)}catch(e){toast(e.message)}}
-async function cancelOrder(oid,refund){if(!confirm(refund?'이니시스 결제취소(환불)를 실행합니다. 계속할까요?':'이 주문을 취소로 표시할까요?'))return;
+async function cancelOrder(oid,refund,st){
+ const msg=refund?'이니시스 결제취소(환불)를 실행합니다. 계속할까요?'
+  :(st==='WAITING_DEPOSIT'
+    ?'입금 전 가상계좌 주문입니다.\n\n· 환불 없이 주문이 취소되고 재고가 즉시 복원됩니다\n· 이미 발급된 입금계좌는 입금기한까지 유효할 수 있습니다\n· 취소 후 입금이 들어와도 결제완료로 바뀌지 않고 [취소 후 입금(환불 필요)]으로 기록됩니다\n\n계속할까요?'
+    :'이 주문을 취소로 표시할까요?');
+ if(!confirm(msg))return;
  const reason=prompt('취소 사유','고객 요청')||'고객 요청';
  try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});
- toast(r.refunded?'환불 완료 · 재고 복원':'취소 처리 완료');closeM();loadOrders(opage)}catch(e){alert(e.message)}}
+ toast(r.refunded?'환불 완료 · 재고 복원':(st==='WAITING_DEPOSIT'?'입금대기 취소 완료 · 재고 복원':'취소 처리 완료'));closeM();loadOrders(opage)}catch(e){alert(e.message)}}
 
 let PMODE='catalog',catalogPage=1,inventoryPage=1,reviewPage=1;window._inventory={};window._openGroup=null;
 const srcLabel=s=>({DIRECT:'직접등록',K2G:'K2G 연동',OWN:'기존상품'})[s]||s;

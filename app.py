@@ -30,6 +30,11 @@ INICIS_INIAPI  = os.getenv('INICIS_INIAPI', 'ItEQKi3rY7uvDS8l')
 #   미설정 시 P_CHKFAKE(위변조 검증)를 생략하고 결제는 정상 진행된다.
 #   운영에서는 반드시 설정할 것 — 금액 위변조 공격 방어에 필요.
 INICIS_MOBILE_HASHKEY = os.getenv('INICIS_MOBILE_HASHKEY', '')
+# PC 통합결제창 노출 수단 — 운영 스위치.
+#   가상계좌(VBank)가 상점 계약에 없거나 장애가 확인되면 Render 환경변수
+#   INICIS_GOPAYMETHOD=Card:DirectBank:HPP 로 코드 재배포 없이 즉시 내릴 수 있다.
+#   (2026-07-27 무통장입금 계좌 미안내 CS — 대응 레버)
+INICIS_GOPAYMETHOD = (os.getenv('INICIS_GOPAYMETHOD', '') or 'Card:DirectBank:VBank:HPP').strip()
 # 결제 returnUrl/closeUrl 도메인 — 이니시스는 요청페이지와 도메인 일치를 검증(V023).
 #   Cloudflare/Render 프록시 뒤에서는 req.base_url이 실제 도메인과 달라질 수 있으므로
 #   SITE_ORIGIN 환경변수로 실도메인을 고정하는 것이 가장 안전. 미설정 시 헤더로 추론.
@@ -365,6 +370,55 @@ def _ini_mobile_req_url_ok(url: str) -> bool:
         return False
     return p.scheme == 'https' and (p.hostname or '').endswith('inicis.com')
 
+# ── 가상계좌: 은행코드(금융결제원 표준) → 은행명 ─────────────────────────
+#   이니시스 응답이 은행명 필드 없이 코드(VACT_BankCode / P_VACT_BANK_CODE)만
+#   내려주는 연동 변형이 있어, 코드→이름 변환을 서버가 보장한다.
+#   이름을 못 구해도 계좌번호·예금주는 반드시 안내한다(은행명은 보조 정보).
+_VBANK_BANK_NAMES = {
+    '02': '산업은행', '03': 'IBK기업은행', '04': 'KB국민은행', '05': '하나은행',
+    '06': '수협은행', '07': '수협은행', '11': 'NH농협은행', '12': '지역농·축협',
+    '20': '우리은행', '23': 'SC제일은행', '26': '신한은행', '27': '씨티은행',
+    '31': 'iM뱅크(대구)', '32': '부산은행', '34': '광주은행', '35': '제주은행',
+    '37': '전북은행', '39': '경남은행', '45': '새마을금고', '48': '신협',
+    '50': '저축은행', '64': '산림조합', '71': '우체국', '81': '하나은행',
+    '88': '신한은행', '89': '케이뱅크', '90': '카카오뱅크', '92': '토스뱅크',
+}
+
+def _vbank_bank_name(code, fallback: str = '') -> str:
+    c = ''.join(ch for ch in str(code or '') if ch.isdigit())
+    if not c:
+        return fallback
+    return _VBANK_BANK_NAMES.get(c.zfill(2)[-2:], fallback) or fallback
+
+def _vbank_finalize(oid: str, tid: str, vnum: str, vbank: str, vname: str, vdate: str):
+    """가상계좌 채번 확정 — 입금대기 전환 + 계좌 저장 + 입금안내 발송 (PC·모바일 공용).
+
+    계좌정보가 고객에게 닿는 3개 채널(① 주문완료 화면 ② 마이페이지 주문내역
+    ③ SMS/알림톡)이 전부 여기서 저장한 vbank_* 를 읽는다. 따라서 채번이
+    성공했는데 이 함수가 호출되지 않거나 필드가 비면 '무통장입금을 선택했는데
+    계좌를 못 받았다'는 CS 가 재발한다. 채번 = 승인 아님(WAITING_DEPOSIT),
+    실제 입금은 /inicis/vbank-noti(PC)·/inicis/mobile-noti(모바일)에서 PAID 전환."""
+    _pay_log(oid, 'VBANK_ISSUED',
+             (('%s %s' % (vbank, vnum)).strip() + ' · 입금대기') if vnum
+             else '채번 응답에 계좌번호 없음 — 이니시스 상점관리자에서 확인 필요')
+    try:
+        with db() as c:
+            c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
+                   "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
+                   "WHERE order_id=? AND status<>'PAID'",
+                   (tid, 'VBank', vnum, vbank, vname, vdate, oid))
+    except Exception:
+        # 컬럼 마이그레이션이 아직 안 된 DB에서도 주문을 잃지 않는다.
+        # 계좌 상세는 못 남겨도 '입금대기' 상태는 반드시 기록되어야 한다.
+        with db() as c:
+            c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
+                   "WHERE order_id=? AND status<>'PAID'", (tid, 'VBank', oid))
+    try:
+        import admin_v2 as _av; _av.order_notify_async(oid, 'deposit_wait')
+    except Exception:
+        pass
+    return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+
 def _ini_mobile_params(order_id: str, amount: int, order_name: str,
                        buyer: dict, origin: str) -> dict:
     """모바일 결제요청 파라미터 (https://mobile.inicis.com/smart/payment/ 로 POST).
@@ -534,11 +588,16 @@ async def create_order(req: Request):
         'buyertel': (buyer.get('phone') or ''), 'buyeremail': (buyer.get('email') or ''),
         # acceptmethod: centerCd(Y)=IDC센터코드 수신(필수), below1000=1천원이하 카드결제 허용,
         #   HPP(2)=휴대폰결제 상품유형 '실물'(맵달=실물상품). 휴대폰결제 노출 시 HPP(1|2) 필수.
+        #   va_receipt=가상계좌 채번 시 현금영수증 정보 입력창 노출(실물 커머스 표준),
+        #   vbank(YYYYMMDD)=가상계좌 입금기한 지정 — 채번일 포함 3일(KST)로 고정해
+        #   기한 없는 계좌가 발급되거나 화면·SMS 안내에 기한이 비는 일을 막는다.
         # gopaymethod: 결제창에 노출할 수단. 빈 문자열('')이면 이니시스가 '선택 수단 없음'으로
         #   해석해 카드 탭이 아예 렌더링되지 않는다. 반드시 수단 코드를 콜론(:)으로 명시한다.
         #   Card=신용/체크카드(간편결제 포함), DirectBank=계좌이체, VBank=가상계좌, HPP=휴대폰
-        'gopaymethod': 'Card:DirectBank:VBank:HPP',
-        'acceptmethod': 'centerCd(Y):below1000:HPP(2)',
+        #   → INICIS_GOPAYMETHOD 환경변수로 재배포 없이 조정 가능(가상계좌 미계약 대응).
+        'gopaymethod': INICIS_GOPAYMETHOD,
+        'acceptmethod': 'centerCd(Y):below1000:HPP(2):va_receipt:vbank(%s)'
+                        % (kst_naive() + datetime.timedelta(days=3)).strftime('%Y%m%d'),
         'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/inicis/close',
     }
     # ── 모바일 결제 파라미터 (PC와 별개 모듈) ──
@@ -625,31 +684,21 @@ async def inicis_return(req: Request):
 
     # ── 가상계좌: 승인 = '계좌 발급'일 뿐 입금 완료가 아니다 ──
     #   이니시스는 채번 시점에 resultCode 0000 을 준다. 이를 PAID 로 처리하면
-    #   입금하지 않은 주문이 결제완료로 잡혀 미입금 발송 사고가 난다.
+    #   ① 입금하지 않은 주문이 결제완료로 잡혀 미입금 발송 사고가 나고
+    #   ② 완료 화면이 '결제 승인' 문구를 띄워 고객이 입금 계좌를 못 받는다.
+    #   판정을 payMethod 문자열 하나에 의존하지 않는다 — 연동 변형에서 이 필드가
+    #   비거나 표기가 다르면 그대로 ①②가 터진다(2026-07-27 무통장입금 CS 재발 방지).
+    #   payMethod · TID 접두(StdpayVBNK) · 채번 계좌번호(VACT_Num) 존재 중
+    #   하나라도 가상계좌를 가리키면 가상계좌로 처리한다.
     #   실제 입금은 별도 노티(/inicis/vbank-noti)로 통보되며 그때 PAID 로 바꾼다.
-    if str(method).strip().lower() in ('vbank', 'vacct'):
-        vnum = res.get('VACT_Num') or res.get('vactNum') or ''
-        vbank = res.get('vactBankName') or res.get('VACT_BankName') or ''
+    vact_num = str(res.get('VACT_Num') or res.get('vactNum') or '').strip()
+    if (str(method).strip().lower() in ('vbank', 'vacct')
+            or str(tid).startswith('StdpayVBNK') or vact_num):
+        vbank = (res.get('vactBankName') or res.get('VACT_BankName')
+                 or _vbank_bank_name(res.get('VACT_BankCode')) or '')
         vname = res.get('VACT_Name') or res.get('vactName') or ''
         vdate = (str(res.get('VACT_Date') or '') + str(res.get('VACT_Time') or '')).strip()
-        _pay_log(oid, 'VBANK_ISSUED', '%s %s · 입금대기' % (vbank, vnum))
-        try:
-            with db() as c:
-                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
-                       "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
-                       "WHERE order_id=? AND status<>'PAID'",
-                       (tid, 'VBank', vnum, vbank, vname, vdate, oid))
-        except Exception:
-            # 컬럼 마이그레이션이 아직 안 된 DB에서도 주문을 잃지 않는다.
-            # 계좌 상세는 못 남겨도 '입금대기' 상태는 반드시 기록되어야 한다.
-            with db() as c:
-                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
-                       "WHERE order_id=? AND status<>'PAID'", (tid, 'VBank', oid))
-        try:
-            import admin_v2 as _av; _av.order_notify_async(oid, 'deposit_wait')
-        except Exception:
-            pass
-        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+        return _vbank_finalize(oid, tid, vact_num, vbank, vname, vdate)
 
     _pay_log(oid, 'PAID', '%s · TID …%s' % (method or 'Card', str(tid)[-6:]))
     try:
@@ -697,6 +746,35 @@ async def inicis_mobile_return(req: Request):
     if status != '00':
         _pay_log(oid, 'AUTH_FAIL', '[%s] %s' % (status, rmesg or '인증 실패'))
         return _fail(rmesg or '인증 실패')
+
+    # ── 가상계좌: 모바일은 '인증결과 = 채번 완료'다 (별도 승인요청 없음) ──
+    #   이니시스 모바일 일반결제 규격상 VBANK 는 P_NEXT_URL 수신 시점에 이미
+    #   채번이 끝났고 P_REQ_URL 승인요청 대상이 아니다. 종전 코드는 모든 수단에
+    #   P_REQ_URL 을 요구해 가상계좌 건이 '인증 응답 파라미터 누락'으로 실패
+    #   페이지로 튕겼고, 이니시스 쪽에는 계좌가 발급됐는데 고객은 계좌를 안내받지
+    #   못했다(2026-07-27 무통장입금 CS 재발 방지). 인증결과 폼에서 곧바로 확정한다.
+    p_type_auth = str(form.get('P_TYPE', '') or '').strip()
+    m_vact_num  = str(form.get('P_VACT_NUM', '') or '').strip()
+    if oid and (p_type_auth.upper() in ('VBANK', 'VACCT') or m_vact_num):
+        with db() as c:
+            order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+        if not order:
+            return _fail('주문을 찾을 수 없습니다')
+        if order['status'] == 'PAID':                # 멱등: 입금통보가 먼저 도착한 경우
+            return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+        try:                                          # 채번 금액 확인 — 불일치는 기록만.
+            m_amt = int(str(form.get('P_AMT', '0')).replace(',', '') or 0)
+        except ValueError:                            # 돈이 움직이는 관문은 입금통보이며,
+            m_amt = 0                                 # 그쪽(P_AMT==주문금액)에서 최종 검증한다.
+        if m_amt and m_amt != int(order['amount']):
+            _pay_log(oid, 'AMOUNT_MISMATCH', '채번 %s원 ≠ 주문 %s원 — 입금통보에서 재검증'
+                     % (format(m_amt, ','), format(int(order['amount']), ',')))
+        vbank = (form.get('P_VACT_BANK_NAME') or form.get('P_FN_NM')
+                 or _vbank_bank_name(form.get('P_VACT_BANK_CODE')) or '')
+        vname = form.get('P_VACT_NAME') or ''
+        vdate = (str(form.get('P_VACT_DATE') or '') + str(form.get('P_VACT_TIME') or '')).strip()
+        return _vbank_finalize(oid, tid, m_vact_num, vbank, vname, vdate)
+
     if not (oid and tid and req_url):
         _pay_log(oid, 'AUTH_BAD', '인증 응답 파라미터 누락')
         return _fail('인증 응답 파라미터 누락')
@@ -749,28 +827,16 @@ async def inicis_mobile_return(req: Request):
     method  = res.get('P_TYPE', '')
 
     # 가상계좌는 채번(계좌발급)일 뿐 입금 완료가 아니다 → 입금대기로 둔다.
+    # (승인요청을 요구하는 연동 변형 대비 안전망 — 정상 규격은 위의 인증결과 분기가 처리)
     # 실제 입금은 P_NOTI_URL(/inicis/mobile-noti) 로 통보되며 그때 PAID 로 바꾼다.
-    if str(method).strip().lower() in ('vbank', 'vacct'):
-        vnum = res.get('P_VACT_NUM') or res.get('VACT_Num') or ''
-        vbank = res.get('P_VACT_BANK_NAME') or res.get('P_FN_NM') or ''
+    if (str(method).strip().lower() in ('vbank', 'vacct')
+            or str(res.get('P_VACT_NUM') or '').strip()):
+        vnum = str(res.get('P_VACT_NUM') or res.get('VACT_Num') or '').strip()
+        vbank = (res.get('P_VACT_BANK_NAME') or res.get('P_FN_NM')
+                 or _vbank_bank_name(res.get('P_VACT_BANK_CODE')) or '')
         vname = res.get('P_VACT_NAME') or ''
         vdate = (str(res.get('P_VACT_DATE') or '') + str(res.get('P_VACT_TIME') or '')).strip()
-        _pay_log(oid, 'VBANK_ISSUED', '%s %s · 입금대기' % (vbank, vnum))
-        try:
-            with db() as c:
-                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=?, "
-                       "vbank_num=?, vbank_name=?, vbank_holder=?, vbank_due=? "
-                       "WHERE order_id=? AND status<>'PAID'",
-                       (pay_tid, 'VBank', vnum, vbank, vname, vdate, oid))
-        except Exception:                             # 컬럼 미생성 DB 대비
-            with db() as c:
-                c.exec("UPDATE orders SET status='WAITING_DEPOSIT', payment_key=?, pay_method=? "
-                       "WHERE order_id=? AND status<>'PAID'", (pay_tid, 'VBank', oid))
-        try:
-            import admin_v2 as _av; _av.order_notify_async(oid, 'deposit_wait')
-        except Exception:
-            pass
-        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+        return _vbank_finalize(oid, pay_tid, vnum, vbank, vname, vdate)
 
     _pay_log(oid, 'PAID', '%s · TID …%s' % (method or 'Card', str(pay_tid)[-6:]))
     try:

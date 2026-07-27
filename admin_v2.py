@@ -6117,7 +6117,7 @@ def admin_oauth_status(request: Request):
     ap = _apple_conf()
     origin = _burl(request)
     out = []
-    for key, name, need, got, console in (
+    for key, name, req_envs, got, console in (
         ('kakao', '카카오',
          ['KAKAO_CLIENT_ID'],
          {'KAKAO_CLIENT_ID': _genv('KAKAO_CLIENT_ID'), 'KAKAO_CLIENT_SECRET': _genv('KAKAO_CLIENT_SECRET')},
@@ -6134,7 +6134,7 @@ def admin_oauth_status(request: Request):
          ['APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY'],
          ap, 'https://developer.apple.com/account/resources/identifiers/list/serviceId'),
     ):
-        missing = [k for k in need if not (got.get(k) or '').strip()]
+        missing = [k for k in req_envs if not (got.get(k) or '').strip()]
         try:
             cnt = num((one("SELECT COUNT(*) AS c FROM members WHERE provider=?", (key,)) or {}).get('c'))
         except Exception:

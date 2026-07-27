@@ -979,12 +979,14 @@ def api_kst_fix(request: Request, body: dict = Body(...)):
             'total_rows': total_rows, 'total_cells': total_cells, 'detail': report,
             'already_done': bool(mark)}
 
-@admin_router.post('/admin/api/orders/{oid}/cancel')
-def api_cancel(oid: str, request: Request, body: dict = Body(...)):
-    a = get_actor(request); need(a, 2, '결제취소(환불)')
-    r = one('SELECT * FROM orders WHERE order_id = ?', (oid,))
-    if not r: raise HTTPException(404, 'not found')
-    reason = (body.get('reason') or '관리자 취소').strip()[:200]
+def _order_cancel_core(a, r, reason):
+    """주문취소 공용 코어 — [주문] 상세의 취소 버튼과 [CS] 취소요청 원클릭이 함께 쓴다.
+
+    PAID(카드·계좌이체·휴대폰)면 이니시스 INIAPI 환불을 먼저 실행하고, 성공했을
+    때만 CANCELLED 로 바꾼다(재고 복원·적립 회수 포함). 실패는 전부 HTTPException
+    으로 중단되며 주문·요청 상태는 그대로 남는다(재시도 가능). 가상계좌 입금건은
+    환불 API 규격이 달라(고객 환불계좌 필요) 자동 대상에서 제외하고 수동 안내한다."""
+    oid = r['order_id']
     refunded = False
     if r.get('status') == 'PAID':
         tid = r.get(_state['paykey']) if _state['paykey'] else None
@@ -1062,6 +1064,14 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
                                           (' / 적립회수 %dP' % revoked) if revoked else ''))
     return {'ok': True, 'refunded': refunded, 'stock_restored_items': restored,
             'points_revoked': revoked}
+
+@admin_router.post('/admin/api/orders/{oid}/cancel')
+def api_cancel(oid: str, request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '결제취소(환불)')
+    r = one('SELECT * FROM orders WHERE order_id = ?', (oid,))
+    if not r: raise HTTPException(404, 'not found')
+    reason = (body.get('reason') or '관리자 취소').strip()[:200]
+    return _order_cancel_core(a, r, reason)
 
 @admin_router.get('/admin/api/products')
 def api_products(request: Request):
@@ -2862,7 +2872,7 @@ async function saveAccountMemo(cid){try{await api('/admin/api/accounts/'+encodeU
 async function accountAction(cid,action,id,msg,all){if(msg&&!confirm(msg))return;try{await api('/admin/api/accounts/'+encodeURIComponent(cid)+'/mypage-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,id,all:!!all})});toast('처리했습니다');openAccount(cid);loadAccounts(accountPage)}catch(e){toast(e.message)}}
 async function accountFav(cid,v){try{await api('/admin/api/accounts/'+encodeURIComponent(cid)+'/mypage-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'set_fav_store',value:v})});toast('관심매장을 반영했습니다');openAccount(cid)}catch(e){toast(e.message)}}
 async function accountAnswer(kind,qid,cid){const ans=prompt('고객에게 표시할 답변을 입력하세요');if(!ans)return;try{await api('/admin/api/cs/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id:qid,answer:ans})});toast('답변을 등록했습니다');openAccount(cid);loadAccounts(accountPage)}catch(e){toast(e.message)}}
-async function accountReq(qid,cid,cur){const st=prompt('상태: 접수 / 처리중 / 완료 / 거절',cur==='접수'?'처리중':'완료');if(!st)return;const memo=prompt('고객에게 표시할 메모 (선택)','')||'';try{await api('/admin/api/cs/req-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:qid,status:st,memo})});toast('요청을 처리했습니다');openAccount(cid);loadAccounts(accountPage)}catch(e){toast(e.message)}}
+async function accountReq(qid,cid,cur){csReq(qid,()=>{openAccount(cid);loadAccounts(accountPage)})}
 async function revealAccount(id){const reason=prompt('개인정보 원문 조회 사유를 입력하세요');if(!reason)return;try{const d=await api('/admin/api/accounts/'+encodeURIComponent(id)+'/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});alert(d.contacts.map(x=>x.kind+': '+x.value).join('\n')+'\n\n배송지\n'+d.addresses.map(x=>'['+x.zip+'] '+x.addr1+' '+x.addr2).join('\n'))}catch(e){toast(e.message)}}
 async function mergeAccount(source,sourceNo){const target=prompt('병합 후 남길 활성 고객번호를 입력하세요\n예: CUS-2026-XXXXXXXX');if(!target)return;const confirmNo=prompt('되돌릴 수 없습니다. 병합되어 사라질 고객번호를 다시 입력하세요',sourceNo);if(confirmNo!==sourceNo)return toast('고객번호가 일치하지 않습니다');try{await api('/admin/api/accounts/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:source,target_id:target,confirm:confirmNo})});toast('계정과 주문·동의·포인트 이력을 병합했습니다');closeM();loadAccounts(accountPage)}catch(e){toast(e.message)}}
 async function setAccountStatus(id,status){if(!confirm(status==='LOCKED'?'계정을 잠그고 모든 세션을 종료할까요?':'계정 잠금을 해제할까요?'))return;try{await api('/admin/api/accounts/'+encodeURIComponent(id)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});toast('계정 상태를 변경했습니다');closeM();loadAccounts(accountPage)}catch(e){toast(e.message)}}
@@ -3740,7 +3750,7 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
  ${d.reqs.map(r=>`<tr><td class="mono">${esc(r.created)}</td><td><b>${esc(r.rtype)}</b></td><td class="mono" style="font-size:11px">${esc(r.order_id)}</td>
  <td>${esc(r.mname)}<br><span class="mono" style="font-size:10.5px;color:#888">${esc(r.mphone)}</span></td>
  <td style="font-size:12px">${esc(r.reason)}${r.memo?'<br><span style="color:#888">메모: '+esc(r.memo)+'</span>':''}</td>
- <td>${stag(r.status)}</td><td>${can(1)?`<button class="btn sm ghost" onclick="csReq('${r.id}','${esc(r.status)}')">처리</button>`:''}</td></tr>`).join('')}</table>`:'<div class="loading">요청 없음</div>';
+ <td>${stag(r.status)}</td><td>${can(1)?`<button class="btn sm ghost" onclick="csReq('${r.id}')">처리</button>`:''}</td></tr>`).join('')}</table>`:'<div class="loading">요청 없음</div>';
  const block=(rows,kind)=>rows.length?rows.map(q=>`<div style="border-bottom:1px solid var(--line);padding:10px 4px">
  <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span>
  <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap">${esc(kind==='inq'?q.body:q.question)}</div>
@@ -3750,9 +3760,42 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
 }catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function csAnswer(kind,id){const ans=prompt('답변 내용을 입력하세요 (회원에게 표시됩니다)');if(!ans)return;
  try{await api('/admin/api/cs/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id,answer:ans})});toast('답변 등록');loadCS()}catch(e){toast(e.message)}}
-async function csReq(id,cur){const st=prompt('상태 입력: 접수 / 처리중 / 완료 / 거절',cur==='접수'?'처리중':'완료');if(!st)return;
- const memo=prompt('회원에게 표시할 메모 (선택)','')||'';
- try{await api('/admin/api/cs/req-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status:st,memo})});toast('처리되었습니다');loadCS()}catch(e){toast(e.message)}}
+let _csAfter=null;
+async function csReq(id,after){_csAfter=(typeof after==='function')?after:null;try{
+ const r=await api('/admin/api/cs/req/'+encodeURIComponent(id));
+ let o=null;if(r.order_id){try{o=await api('/admin/api/orders/'+encodeURIComponent(r.order_id))}catch(e){}}
+ const pmKr=v=>({card:'카드',directbank:'계좌이체',vbank:'가상계좌(무통장)',vacct:'가상계좌(무통장)',hpp:'휴대폰'})[String(v||'').toLowerCase()]||(v||'-');
+ const vbankPaid=o&&o.status==='PAID'&&String(o.pay_method||'').toLowerCase().indexOf('v')===0;
+ const oneClick=r.rtype_raw==='cancel'&&o&&o.status!=='CANCELLED'&&r.status!=='완료';
+ const stcls=r.status==='완료'?'PAID':r.status==='거절'?'CANCELLED':'PENDING';
+ $('#mbox').innerHTML=`<h3>${esc(r.rtype)} 요청 처리 <span class="st ${stcls}">${esc(r.status)}</span></h3>
+ <div class="kv"><b>회원</b><span>${esc(r.mname)||'-'} <span class="mono" style="font-size:11px;color:#888">${esc(r.mphone)}</span></span>
+ <b>요청일시</b><span class="mono">${esc(r.created)}</span>
+ <b>사유</b><span>${esc(r.reason)||'-'}</span>
+ ${r.memo?`<b>메모</b><span style="color:#888">${esc(r.memo)}</span>`:''}</div>
+ ${o?`<div class="kv" style="background:#faf9f5;padding:10px 12px;margin:10px 0"><b>주문</b><span><span class="mono">${esc(o.order_id)}</span> <span class="st ${esc(o.status)}">${esc(o.status)}</span> <button class="btn sm ghost" onclick="openOrder('${esc(o.order_id)}')">상세</button></span>
+ <b>금액</b><span class="mono">${won(o.amount)} · ${pmKr(o.pay_method)}</span></div>`
+ :(r.order_id?`<div class="hint">연결된 주문(${esc(r.order_id)})을 찾지 못했습니다 — 아래에서 요청만 종결하세요.</div>`
+ :'<div class="hint">연결된 주문번호가 없는 요청입니다 — 아래에서 요청만 종결하세요.</div>')}
+ ${oneClick&&can(2)?(vbankPaid
+ ?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>가상계좌 입금완료 건</b> — 자동 환불이 지원되지 않습니다. 고객 환불계좌 확인 후 이니시스 상점관리자에서 환불하고, 아래에서 요청을 종결하세요.</div>`
+ :`<button class="btn red" style="width:100%;margin:6px 0" onclick="this.disabled=1;csReqCancel('${esc(r.id)}',this)">${o.can_refund?'주문취소 + 이니시스 환불 실행 → 요청 완료':'주문취소 실행 → 요청 완료'}</button>
+ <div class="hint">버튼 하나로 처리됩니다: ${o.can_refund?'이니시스 환불 → ':''}주문 CANCELLED · 재고 복원 · 적립 회수 · 요청 완료 (감사로그 기록)</div>`):''}
+ ${oneClick&&!can(2)?'<div class="hint">주문취소·환불 실행은 MANAGER 이상 권한이 필요합니다 — 아래 종결만 가능합니다.</div>':''}
+ <div class="kv" style="margin-top:10px"><b>요청만 종결</b><span style="display:flex;gap:6px"><select id="rqst"><option>완료</option><option>거절</option><option>처리중</option></select>
+ <input id="rqmemo" placeholder="회원에게 표시할 메모 (선택)" style="flex:1"></span></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="csReqClose('${esc(r.id)}')">요청만 종결</button>
+ <button class="btn ghost" onclick="closeM()">닫기</button></div>`;
+ $('#mbg').style.display='flex';
+}catch(e){toast(e.message)}}
+async function csReqCancel(id,btn){
+ if(!confirm('주문취소를 실행할까요?\n\nPAID 건은 이니시스 환불이 즉시 실행되며 되돌릴 수 없습니다.')){if(btn)btn.disabled=0;return}
+ try{const r=await api('/admin/api/cs/req-cancel-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+ toast(r.already_cancelled?'이미 취소된 주문 — 요청을 종결했습니다':(r.refunded?'환불 및 주문취소 완료 — 요청 종결':'주문취소 완료 — 요청 종결'));
+ closeM();(_csAfter||loadCS)()}catch(e){if(btn)btn.disabled=0;alert(e.message)}}
+async function csReqClose(id){
+ try{await api('/admin/api/cs/req-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status:$('#rqst').value,memo:$('#rqmemo').value||''})});
+ toast('요청을 종결했습니다');closeM();(_csAfter||loadCS)()}catch(e){toast(e.message)}}
 async function grantPoints(id,email){const v=prompt(email+' 님에게 지급(+) / 차감(-)할 포인트','1000');if(!v)return;
  const reason=prompt('사유 (감사로그 기록)','CS 보상')||'';
  try{const r=await api('/admin/api/members/points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,delta:Number(v),reason})});
@@ -10763,6 +10806,61 @@ def api_cs_req(request: Request, body: dict = Body(...)):
     audit(a, '요청처리', body.get('id'), st)
     return {'ok': True}
 
+@admin_router.get('/admin/api/cs/req/{rid}')
+def api_cs_req_detail(rid: str, request: Request):
+    """취소/반품/교환 요청 단건 — 처리 모달용(회원 정보 포함)."""
+    a = get_actor(request); need(a, 0)
+    r = one('SELECT r.*, m.name AS mname, m.phone AS mphone FROM member_requests r '
+            'LEFT JOIN members m ON m.id=r.member_id WHERE r.id=?', (rid,))
+    if not r: raise HTTPException(404, '요청을 찾을 수 없습니다')
+    krt = {'cancel': '취소', 'return': '반품', 'exchange': '교환'}
+    return {'id': r['id'], 'order_id': (r.get('order_id') or '').strip(),
+            'rtype': krt.get(r.get('rtype'), r.get('rtype') or ''),
+            'rtype_raw': r.get('rtype') or '', 'reason': r.get('reason') or '',
+            'mname': r.get('mname') or '', 'mphone': r.get('mphone') or '',
+            'created': (r.get('created') or '')[:16].replace('T', ' '),
+            'status': r.get('status') or '', 'memo': r.get('admin_memo') or ''}
+
+@admin_router.post('/admin/api/cs/req-cancel-order')
+def api_cs_req_cancel_order(request: Request, body: dict = Body(...)):
+    """취소요청 원클릭 처리 — 주문취소(+PAID면 이니시스 환불)와 요청 종결을 한 번에.
+
+    종전 흐름은 ① [CS]에서 요청을 완료로 바꾸고 ② [주문] 탭에서 같은 주문번호를
+    다시 찾아 별도로 취소하는 2단계라, 화면을 오가는 사이 환불 누락·다른 주문
+    취소 같은 휴먼에러 여지가 있었다. 여기서는 주문취소 코어(_order_cancel_core)를
+    먼저 실행하고 성공했을 때만 요청을 '완료' 로 닫는다. 환불 실패 시에는
+    HTTPException 으로 중단되어 요청이 '접수' 로 남아 재시도할 수 있다.
+    원클릭은 '취소' 유형 전용 — 반품/교환을 여기서 처리하면 상품 회수 없이
+    발송된 주문이 전액 환불되는 사고가 나므로 유형을 강제한다."""
+    a = get_actor(request); need(a, 2, '취소요청 처리(환불)')
+    rq = one('SELECT * FROM member_requests WHERE id=?', (body.get('id'),))
+    if not rq: raise HTTPException(404, '요청을 찾을 수 없습니다')
+    if (rq.get('rtype') or '') != 'cancel':
+        raise HTTPException(400, '원클릭 취소는 [취소] 요청 전용입니다 — '
+                                 '반품/교환은 상품 회수 확인 후 [주문] 탭에서 처리하세요')
+    if (rq.get('status') or '') == '완료':
+        raise HTTPException(400, '이미 완료된 요청입니다')
+    oid = (rq.get('order_id') or '').strip()
+    if not oid:
+        raise HTTPException(400, '요청에 연결된 주문번호가 없습니다 — [요청만 종결]을 사용하세요')
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not r:
+        raise HTTPException(404, '연결된 주문(%s)을 찾을 수 없습니다' % oid)
+    reason = ('고객 취소요청 · ' + (rq.get('reason') or '').strip()).strip(' ·')[:200]
+    already = (r.get('status') == 'CANCELLED')
+    res = {'ok': True, 'refunded': False} if already else _order_cancel_core(a, r, reason)
+    memo = (body.get('memo') or '').strip()[:300] or (
+        '이미 취소된 주문 확인 — 요청 종결' if already else
+        ('주문 취소 및 환불이 완료되었습니다' if res.get('refunded') else '주문이 취소되었습니다'))
+    run("UPDATE member_requests SET status='완료', admin_memo=?, updated=? WHERE id=?",
+        (memo, now_iso(), rq['id']))
+    audit(a, '취소요청 원클릭', rq['id'],
+          '%s / %s%s' % (oid, memo, ' / 환불실행' if res.get('refunded') else ''))
+    return {'ok': True, 'order_id': oid, 'refunded': bool(res.get('refunded')),
+            'already_cancelled': already, 'memo': memo,
+            'stock_restored_items': num(res.get('stock_restored_items')),
+            'points_revoked': num(res.get('points_revoked'))}
+
 @admin_router.post('/admin/api/members/points')
 def api_member_points(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 2, '포인트 지급')
@@ -11245,7 +11343,8 @@ def api_m_order_detail(oid: str, request: Request):
                      + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
             'items': [{'name': it.get('n') or it.get('name') or it.get('id', ''), 'qty': num(it.get('q') or 1),
                        'price': num(it.get('p') or it.get('price') or 0)} for it in jload(r.get('items'), [])],
-            'can_cancel': (r.get('status') == 'PENDING') or (r.get('status') == 'PAID' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING')),
+            # WAITING_DEPOSIT(가상계좌 입금 전)은 돈이 움직이지 않아 취소 요청을 허용한다.
+            'can_cancel': (r.get('status') in ('PENDING', 'WAITING_DEPOSIT')) or (r.get('status') == 'PAID' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING')),
             'can_return': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE'),
             'open_request': dict(open_req) if open_req else None}
 
@@ -11259,7 +11358,7 @@ def api_m_order_request(oid: str, request: Request, body: dict = Body(...)):
     if not reason: raise HTTPException(400, '사유를 입력해 주세요')
     f = r.get('fulfill') or 'NEW'
     if rtype == 'cancel':
-        if not ((r.get('status') == 'PENDING') or (r.get('status') == 'PAID' and f in ('NEW', 'PREPARING'))):
+        if not ((r.get('status') in ('PENDING', 'WAITING_DEPOSIT')) or (r.get('status') == 'PAID' and f in ('NEW', 'PREPARING'))):
             raise HTTPException(400, '발송 전 주문만 취소 요청이 가능합니다')
     else:
         if not (r.get('status') == 'PAID' and f in ('SHIPPED', 'DONE')):

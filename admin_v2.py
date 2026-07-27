@@ -3346,6 +3346,7 @@ function drWinRow(g){g=g||{};return `<div class="drwin" style="border:1px solid 
   <input placeholder="그룹명 (예: 팬사인회 응모권)" class="dw-t" value="${esc(g.title||'')}">
   <input placeholder="유형 (예: 팬사인회)" class="dw-y" value="${esc(g.type||'')}">
   <button class="btn sm ghost" type="button" title="엑셀(.xlsx) 명단 파일로 자동 입력" onclick="this.closest('.drwin').querySelector('.dw-x').click()">📄 엑셀 업로드</button>
+  <button class="btn sm ghost" type="button" title="공개 화면 표기(마스킹) 기준 가나다 순 — 한글 먼저, 영문 뒤" onclick="drWinSortKo(this)">가나다 정렬</button>
   <button class="btn sm ghost" type="button" onclick="this.closest('.drwin').remove()">✕ 그룹 삭제</button></div>
  <input type="file" class="dw-x" accept=".xlsx,.xls,.csv" style="display:none" onchange="drWinXlsx(this)">
  <textarea class="dw-l" rows="5" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7" placeholder="한 줄에 한 명 — 주문번호,이름,휴대폰,뱃지 (뒤쪽 항목 생략 가능)&#10;예) MPD2607170001,홍길동,010-1234-5678,영통+포카&#10;사이트 표시: 주문번호 그대로 · 이름 홍*동 · 휴대폰 뒤 4자리">${esc(g.list||'')}</textarea>
@@ -3557,6 +3558,16 @@ async function delDrop(id){if(!confirm('#'+id+' 이벤트를 삭제할까요? �
 async function drUpMain(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);$('#dr_img').value=u;drImgPrev();toast('이미지 업로드 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
 async function drUpBenefit(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);const t=$('#dr_benefit');t.value=(t.value?t.value+'\n':'')+'<img src="'+u+'" alt="" style="max-width:100%;display:block;margin:0 auto">';toast('특전 본문에 이미지 삽입 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
 async function drUpAnnBody(inp){if(!inp.files||!inp.files[0])return;try{toast('업로드 중…');const u=await uploadFile(inp.files[0]);const t=$('#dr_annbody');t.value=(t.value?t.value+'\n':'')+'<img src="'+u+'" alt="" style="max-width:100%;display:block;margin:0 auto">';toast('공지문에 이미지 삽입 완료')}catch(e){toast('업로드 실패: '+e.message)}inp.value='';}
+function drWinMaskW(t){t=String(t||'');if(!t)return '';if(t.length<=2)return t[0]+'*';
+ return t[0]+'*'.repeat(Math.min(t.length-2,6))+t[t.length-1]}
+function drWinSortKey(line){var p=String(line||'').split(',');var nm=(p[1]!==undefined?p[1]:p[0]||'').trim()||(p[0]||'').trim();
+ var mk=nm.split(/\s+/).filter(Boolean).map(drWinMaskW).join(' ');
+ return [/^[가-힣]/.test(nm)?0:1, mk]}
+function drWinSortKo(btn){var ta=btn.closest('.drwin').querySelector('.dw-l');
+ var lines=ta.value.split('\n').map(function(s){return s.trim()}).filter(Boolean);
+ lines.sort(function(a,b){var A=drWinSortKey(a),B=drWinSortKey(b);
+  if(A[0]!==B[0])return A[0]-B[0];return A[1].localeCompare(B[1],'ko')});
+ ta.value=lines.join('\n');toast('가나다 순 정렬 완료 — 공개 화면 표기(마스킹) 기준, [저장]해야 반영됩니다')}
 function drWinGroupMeta(nm){nm=String(nm||'');
  if(/영통|영상/.test(nm))return{title:'영상통화 팬사인회 당첨자',type:'영상통화'};
  if(/대면|팬사인/.test(nm))return{title:'대면 팬사인회 당첨자',type:'팬사인회'};
@@ -3585,22 +3596,48 @@ function drAnnKD(iso){var d=new Date(iso);if(isNaN(d.getTime()))return null;
  return{k:d.getFullYear()+'년 '+t2(d.getMonth()+1)+'월 '+t2(d.getDate())+'일 ('+W[d.getDay()]+')',
   t:t2(d.getHours())+':'+t2(d.getMinutes()),md:t2(d.getMonth()+1)+t2(d.getDate()),
   off:function(min){var x=new Date(d.getTime()+min*60000);return t2(x.getHours())+':'+t2(x.getMinutes())}}}
+function drAnnT2(id,def){var el=document.getElementById(id);var v=el?String(el.value||'').trim():'';return /^\d{2}:\d{2}$/.test(v)?v:def}
+function drAnnBase(){var t=(document.getElementById('dr_title').value||'').trim();
+ var rx=/\s*[-–—·]*\s*(대면\s*팬사인회|단체\s*영상통화\s*팬사인회|영상통화\s*팬사인회|팬사인회|영상\s*통화|영상통화|EVENT|이벤트)\s*$/i;
+ var p;while((p=t.replace(rx,''))!==t)t=p;return p.trim()}
+function drAnnDerive(){var D=drAnnKD(document.getElementById('dr_tp_dt').value);if(!D)return;
+ var g=function(id,v){var el=document.getElementById(id);if(el)el.value=v};
+ g('dr_tp_ex1',D.off(-30));g('dr_tp_ex2',D.off(-5));g('dr_tp_en1',D.off(-30));g('dr_tp_en2',D.t);g('dr_tp_vt',D.t)}
+function drAnnTplSec(){var F=document.getElementById('dr_tp_f').checked,V=document.getElementById('dr_tp_v').checked;
+ document.getElementById('dr_tp_fbox').style.display=F?'grid':'none';
+ document.getElementById('dr_tp_vbox').style.display=V?'grid':'none';
+ var a=document.getElementById('dr_tp_vma');a.disabled=!F;
+ if(!F&&a.checked){a.checked=false;document.getElementById('dr_tp_vmt').checked=true}}
 function drAnnTplUI(){var p=document.getElementById('dr_anntpl');
  if(p.style.display!=='none'){p.style.display='none';return}
  var cats=[...document.querySelectorAll('#dr_cats input:checked')].map(x=>x.value);
  var F=cats.includes('FANSIGN'),V=cats.includes('VIDEOCALL');if(!F&&!V)F=true;
- p.innerHTML=`<div class="hint" style="margin-bottom:6px"><b>표준 당첨자 공지문 자동 생성</b> — 유형(${F?'대면 팬사인회':''}${F&&V?' + ':''}${V?'영상통화':''}) 기준 맵달SEOUL 표준 형식으로 만들어집니다. 번호표 교환(행사 30분 전~5분 전)·입장(30분 전~정시) 시간은 행사 일시에서 자동 계산되며, 생성 후 본문에서 자유롭게 수정하면 됩니다.</div>
+ p.innerHTML=`<div class="hint" style="margin-bottom:6px"><b>표준 당첨자 공지문 자동 생성</b> — 아래 값은 전부 수정할 수 있습니다. 행사 일시를 바꾸면 번호표 교환·입장·영상통화 시각이 자동 재계산되며(이후 자유 수정), 생성된 본문도 저장 전 얼마든지 고칠 수 있습니다.</div>
  <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center">
-  <b>행사 일시</b><input type="datetime-local" id="dr_tp_dt">
-  <b>개별 안내일</b><input type="date" id="dr_tp_nd">
+  <b>공지 제목</b><input id="dr_tp_title" placeholder="예) 브브걸 (BBGIRLS) - 싱글 3집 [BODY WAVE] (POCA)">
+  <b>포함 유형</b><span><label style="margin-right:12px"><input type="checkbox" id="dr_tp_f" ${F?'checked':''} onchange="drAnnTplSec()"> 대면 팬사인회</label><label><input type="checkbox" id="dr_tp_v" ${V?'checked':''} onchange="drAnnTplSec()"> 영상통화</label></span>
+  <b>행사 일시</b><input type="datetime-local" id="dr_tp_dt" onchange="drAnnDerive()"></div>
+ <div id="dr_tp_fbox" style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed #e0dccc">
+  <b>번호표 교환</b><span><input type="time" id="dr_tp_ex1"> ~ <input type="time" id="dr_tp_ex2"></span>
+  <b>입장</b><span><input type="time" id="dr_tp_en1"> ~ <input type="time" id="dr_tp_en2"></span>
+  <b>장소 안내</b><input id="dr_tp_loc" value="당첨자에 한하여 개별 문자 or E-Mail 안내 (비공개)"></div>
+ <div id="dr_tp_vbox" style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed #e0dccc">
+  <b>영상통화 시작</b><span><label style="margin-right:12px"><input type="radio" name="dr_tp_vm" value="after" id="dr_tp_vma"> 대면 팬사인회 종료 후</label><label><input type="radio" name="dr_tp_vm" value="at" id="dr_tp_vmt"> 시각 지정</label> <input type="time" id="dr_tp_vt" style="width:110px"></span></div>
+ <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed #e0dccc">
+  <b>개별 안내일</b><span><input type="date" id="dr_tp_nd"> · 미수신 문의 기준 <input type="time" id="dr_tp_nt" value="18:00" style="width:110px"></span>
   <b>문의 이메일</b><input id="dr_tp_mail" value="mapdal.seoul@gmail.com">
   <b>문의 전화</b><input id="dr_tp_tel" value="010-8176-8525"></div>
- <div style="margin-top:8px"><button class="btn sm" type="button" onclick="drAnnTplGo(${F?1:0},${V?1:0})">본문 생성</button></div>`;
+ <div style="margin-top:8px"><button class="btn sm" type="button" onclick="drAnnTplGo()">본문 생성</button></div>`;
  p.style.display='block';
+ document.getElementById('dr_tp_title').value=drAnnBase();
  var sc=document.querySelector('#dr_sched .ds-d');if(sc&&sc.value){var st=sc.closest('.drsched').querySelector('.ds-t');
   document.getElementById('dr_tp_dt').value=sc.value+'T'+((st&&/^\d{2}:\d{2}/.test(st.value))?st.value.slice(0,5):'18:00')}
- var an=document.getElementById('dr_ann').value;if(an)document.getElementById('dr_tp_nd').value=an.slice(0,10)}
-function drAnnTplGo(F,V){
+ var an=document.getElementById('dr_ann').value;if(an)document.getElementById('dr_tp_nd').value=an.slice(0,10);
+ (document.getElementById(F&&V?'dr_tp_vma':'dr_tp_vmt')||{}).checked=true;
+ drAnnDerive();drAnnTplSec()}
+function drAnnTplGo(){
+ var F=document.getElementById('dr_tp_f').checked,V=document.getElementById('dr_tp_v').checked;
+ if(!F&&!V){toast('포함 유형을 선택하세요 — 대면·영상통화 중 하나 이상');return}
  var D=drAnnKD(document.getElementById('dr_tp_dt').value);
  if(!D){toast('행사 일시를 선택하세요');return}
  var ndv=document.getElementById('dr_tp_nd').value;
@@ -3608,7 +3645,13 @@ function drAnnTplGo(F,V){
  if(!N){toast('개별 안내일을 선택하세요');return}
  var MAIL=document.getElementById('dr_tp_mail').value.trim()||'mapdal.seoul@gmail.com';
  var TEL=document.getElementById('dr_tp_tel').value.trim()||'010-8176-8525';
- var TITLE=document.getElementById('dr_title').value.trim()||'맵달SEOUL 이벤트';
+ var BASE=document.getElementById('dr_tp_title').value.trim()||'맵달SEOUL 이벤트';
+ var LOC=(document.getElementById('dr_tp_loc')&&document.getElementById('dr_tp_loc').value.trim())||'당첨자에 한하여 개별 문자 or E-Mail 안내 (비공개)';
+ var EX1=drAnnT2('dr_tp_ex1',D.off(-30)),EX2=drAnnT2('dr_tp_ex2',D.off(-5));
+ var EN1=drAnnT2('dr_tp_en1',D.off(-30)),EN2=drAnnT2('dr_tp_en2',D.t);
+ var VM=(F&&document.getElementById('dr_tp_vma')&&document.getElementById('dr_tp_vma').checked)?'after':'at';
+ var VT=drAnnT2('dr_tp_vt',D.t);
+ var NTv=drAnnT2('dr_tp_nt','18:00'),NTs=(NTv.slice(3)==='00'?String(parseInt(NTv.slice(0,2),10))+'시':NTv);
  var BAR='________________________________________',SEP='------------------------------------------------------------';
  var ID=['※ 본인 확인 가능한 신분증',
   '- 대한민국 국적 : 여권, 주민등록증, 운전면허증, 청소년증 (주민센터 발급), 모바일 신분증 (정부24, 행정안전부&경찰청, PASS 발급)',
@@ -3619,15 +3662,15 @@ function drAnnTplGo(F,V){
   '* 모든 신분증은 유효기간이 만료되지 않은 실물 신분증만 유효한 것으로 인정됩니다.',
   '* 발급 신청 확인서의 경우 반드시 기관장의 관인으로 간인하고 사진을 포함한 인적 사항, 발급 번호, 유효기간은 투명 스티커가 덧붙여진 상태여야 합니다. 위∙변조가 의심되는 경우, 인정되지 않습니다.',
   '* 이벤트 신청 시 영문 외로 제출하여 여권의 영문명으로 확인이 불가할 경우, 사진과 영문 외 이름이 기입된 신분증을 추가 확인 요청드릴 수 있습니다. 사전 준비 및 협조 부탁드립니다.'];
- var L=['당첨자 발표','','['+D.md+'] '+TITLE+' 당첨자 공지','','안녕하세요. 맵달SEOUL입니다.',''];
+ var L=['당첨자 발표','','['+D.md+'] '+BASE+' — '+(F?'대면 팬사인회':'단체 영상통화 팬사인회')+' 당첨자 공지','','안녕하세요. 맵달SEOUL입니다.',''];
  if(F){
-  L.push(TITLE+' 이벤트에 참여해 주셔서 감사합니다. 당첨자분들께서는 아래 안내사항 및 유의사항을 반드시 숙지하신 후 행사에 참여해 주시기 바랍니다.','',BAR,'행사 안내',
+  L.push(BASE+' 대면 팬사인회 이벤트에 참여해 주셔서 감사합니다. 당첨자분들께서는 아래 안내사항 및 유의사항을 반드시 숙지하신 후 행사에 참여해 주시기 바랍니다.','',BAR,'행사 안내',
    '1. 일시: '+D.k+' '+D.t+' (KST)',
-   '2. 팬사인회 장소: 당첨자에 한하여 개별 문자 or E-Mail 안내 (비공개)',
-   '3. 번호표 교환: 행사장 입구에서 '+D.off(-30)+'부터 '+D.off(-5)+'까지 당첨자 본인 확인 후 팬사인회 번호표를 랜덤 추첨 방식으로 배부합니다.',
+   '2. 팬사인회 장소: '+LOC,
+   '3. 번호표 교환: 행사장 입구에서 '+EX1+'부터 '+EX2+'까지 당첨자 본인 확인 후 팬사인회 번호표를 랜덤 추첨 방식으로 배부합니다.',
    '※ 번호표 교환 시 반드시 유효한 실물 신분증을 지참해 주세요.',
    '※ 번호표 교환 시간 외에는 입장 및 번호표 교환이 불가능합니다.',
-   '4. 입장: 번호표 교환 후 '+D.off(-30)+'부터 '+D.t+'까지 입장해 주세요. (시간엄수)',
+   '4. 입장: 번호표 교환 후 '+EN1+'부터 '+EN2+'까지 입장해 주세요. (시간엄수)',
    '하기의 이벤트 유의사항을 숙지하시고 이벤트에 참가해주시기 바라며, 현장 스태프들의 요청에 협조 부탁드립니다.',
    BAR,'[주의 및 안내]',
    '- 음식물(음료 포함)은 섭취가 불가합니다.',
@@ -3662,12 +3705,13 @@ function drAnnTplGo(F,V){
    '- 위의 안내 드린 내용 외에도 진행에 지나치게 방해가 된다고 판단되는 경우 STAFF의 제지가 있을 수 있습니다.',
    '','*당첨을 축하드립니다*')}
  if(V){
-  if(F)L.push('',SEP,'','['+D.md+'] '+TITLE+' — 단체 영상통화 팬사인회 당첨자 공지','');
+  if(F)L.push('',SEP,'','['+D.md+'] '+BASE+' — 단체 영상통화 팬사인회 당첨자 공지','');
+  else L.push(BASE+' 단체 영상통화 팬사인회 이벤트에 참여해 주셔서 감사합니다. 당첨자분들께서는 아래 안내사항 및 유의사항을 반드시 숙지하신 후 참여해 주시기 바랍니다.','');
   L.push(BAR,'진행 일시',
-   F?('단체 영상통화 팬사인회: '+D.k+' 대면 팬사인회 종료 후'):('단체 영상통화 팬사인회: '+D.k+' '+D.t+' (KST)'),
-   F?'※ 대면 팬사인회 종료 후 진행되며, 영상통화 시작 시간은 현장 진행 상황에 따라 변동될 수 있습니다.':'※ 영상통화 시작 시간은 진행 상황에 따라 변동될 수 있습니다.',
+   (VM==='after')?('단체 영상통화 팬사인회: '+D.k+' 대면 팬사인회 종료 후'):('단체 영상통화 팬사인회: '+D.k+' '+VT+' (KST)'),
+   (VM==='after')?'※ 대면 팬사인회 종료 후 진행되며, 영상통화 시작 시간은 현장 진행 상황에 따라 변동될 수 있습니다.':'※ 영상통화 시작 시간은 진행 상황에 따라 변동될 수 있습니다.',
    '당첨자에 한하여 '+N.k+' 개별 연락드릴 예정입니다. (카카오톡)',
-   N.k+' 18시까지 안내를 받지 못한 당첨자는 아래 연락처로 문의해 주세요.',
+   N.k+' '+NTs+'까지 안내를 받지 못한 당첨자는 아래 연락처로 문의해 주세요.',
    MAIL+' or '+TEL,
    '카카오톡 설정에서 ‘전화번호로 친구 추가 허용’을 반드시 활성화해 주세요.',
    BAR,
@@ -7863,11 +7907,14 @@ def _drop_dt(s):
     except Exception: return None
 
 def _drop_mask(s):
-    """이름 마스킹: 홍길동→홍*동 · 김수→김* · Jonathan→J******n (별표 최대 6개)."""
+    """이름 마스킹 — 공백 단위로 단어별 적용: 홍길동→홍*동 · 김수→김* ·
+    YANO RYUSEI→Y**O R****I · Lyu Hanxi→L*u H***i (단어당 별표 최대 6개)."""
     s = re.sub(r'\s+', ' ', str(s or '')).strip()
     if not s: return ''
-    if len(s) <= 2: return s[0] + '*'
-    return s[0] + '*' * min(len(s) - 2, 6) + s[-1]
+    def _w(t):
+        if len(t) <= 2: return t[0] + '*'
+        return t[0] + '*' * min(len(t) - 2, 6) + t[-1]
+    return ' '.join(_w(t) for t in s.split(' '))
 
 _DROP_PHONE_RX = re.compile(r'^\+?[0-9][0-9\-\s().]{5,}$')
 

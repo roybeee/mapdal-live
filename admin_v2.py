@@ -671,17 +671,39 @@ def api_me(request: Request):
     a = get_actor(request)
     return {'name': a['name'], 'role': a['role'], 'master': a['master']}
 
+# 대시보드 카드 상태별 분해 — 표기 순서(그 외 상태는 뒤에 알파벳순)
+_ST_ORDER = ('PAID', 'WAITING_DEPOSIT', 'PENDING', 'FAILED', 'CANCELLED')
+
+def _st_split(rs):
+    """GROUP BY status 결과 → (정렬된 [{k,c,s}], 합계 dict). 미지 상태도 누락 없이 포함."""
+    m = {}
+    for r in rs or []:
+        k = (r.get('status') or '(없음)')
+        e = m.setdefault(k, {'k': k, 'c': 0, 's': 0})
+        e['c'] += num(r.get('c')); e['s'] += num(r.get('s'))
+    lst = ([m[k] for k in _ST_ORDER if k in m]
+           + sorted((v for k, v in m.items() if k not in _ST_ORDER), key=lambda x: x['k']))
+    paid = m.get('PAID') or {'c': 0, 's': 0}
+    return lst, {'cnt': sum(x['c'] for x in lst), 'sum': sum(x['s'] for x in lst),
+                 'paid_cnt': num(paid['c']), 'paid_sum': num(paid['s'])}
+
+def _st_rows(where='', args=()):
+    return rows("SELECT status, COUNT(*) AS c, COALESCE(SUM(amount),0) AS s FROM orders %s GROUP BY status"
+                % (('WHERE ' + where) if where else ''), args)
+
 @admin_router.get('/admin/api/summary')
 def api_summary(request: Request):
     a = get_actor(request); need(a, 0)
     today = kst_today(); t = today.isoformat()
     d7 = (today - datetime.timedelta(days=6)).isoformat()
     d30 = (today - datetime.timedelta(days=29)).isoformat()
-    tot = one("SELECT COUNT(*) AS c, COALESCE(SUM(CASE WHEN status='PAID' THEN amount END),0) AS s FROM orders") or {}
-    st = rows("SELECT status, COUNT(*) AS c, COALESCE(SUM(amount),0) AS s FROM orders GROUP BY status")
-    day = one("SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS s FROM orders WHERE status='PAID' AND created >= ?", (t,)) or {}
-    w7 = one("SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS s FROM orders WHERE status='PAID' AND created >= ?", (d7,)) or {}
-    m30 = one("SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS s FROM orders WHERE status='PAID' AND created >= ?", (d30,)) or {}
+    st, ag_all = _st_split(_st_rows())
+    bd_day, day = _st_split(_st_rows('created >= ?', (t,)))
+    bd_w7, w7 = _st_split(_st_rows('created >= ?', (d7,)))
+    bd_m30, m30 = _st_split(_st_rows('created >= ?', (d30,)))
+    day = {'c': day['paid_cnt'], 's': day['paid_sum'], 'ac': day['cnt'], 'as': day['sum']}
+    w7 = {'c': w7['paid_cnt'], 's': w7['paid_sum'], 'ac': w7['cnt'], 'as': w7['sum']}
+    m30 = {'c': m30['paid_cnt'], 's': m30['paid_sum'], 'ac': m30['cnt'], 'as': m30['sum']}
     recent = rows("SELECT created, amount, items FROM orders WHERE status='PAID' AND created >= ? ORDER BY created DESC LIMIT 5000", (d30,))
     daily, top = {}, {}
     for r in recent:
@@ -716,12 +738,12 @@ def api_summary(request: Request):
               + num((one("SELECT COUNT(*) AS c FROM member_requests WHERE status IN ('접수','처리중')") or {}).get('c')))
     except Exception:
         cs = 0
-    return {'today': {'cnt': num(day.get('c')), 'sum': num(day.get('s'))},
-            'week': {'cnt': num(w7.get('c')), 'sum': num(w7.get('s'))},
-            'month': {'cnt': num(m30.get('c')), 'sum': num(m30.get('s'))},
-            'all': {'cnt': num(tot.get('c')), 'paid_sum': num(tot.get('s'))},
-            'aov': (num(m30.get('s')) // num(m30.get('c'))) if num(m30.get('c')) else 0,
-            'status': [{'k': r['status'], 'c': num(r['c']), 's': num(r['s'])} for r in st],
+    return {'today': {'cnt': day['c'], 'sum': day['s'], 'all_cnt': day['ac'], 'all_sum': day['as'], 'bd': bd_day},
+            'week': {'cnt': w7['c'], 'sum': w7['s'], 'all_cnt': w7['ac'], 'all_sum': w7['as'], 'bd': bd_w7},
+            'month': {'cnt': m30['c'], 'sum': m30['s'], 'all_cnt': m30['ac'], 'all_sum': m30['as'], 'bd': bd_m30},
+            'all': {'cnt': ag_all['cnt'], 'paid_sum': ag_all['paid_sum'], 'all_sum': ag_all['sum'], 'bd': st},
+            'aov': (m30['s'] // m30['c']) if m30['c'] else 0,
+            'status': st,
             'series': [{'d': d, 'v': daily.get(d, 0)} for d in days],
             'top': sorted(({'name': k, **v} for k, v in top.items()), key=lambda x: (x['rev'], x['qty']), reverse=True)[:10],
             'pending_ship': num(pend.get('c')), 'customers': num(cust.get('c')),
@@ -2620,6 +2642,12 @@ main{max-width:1180px;margin:0 auto;padding:22px 16px 80px}
 .card{background:#fff;border:1px solid var(--line);padding:14px 16px}
 .card .k{font-size:11px;color:#888;font-weight:700}.card .v{font-family:'IBM Plex Mono';font-size:21px;font-weight:600;margin-top:6px}
 .card .s{font-size:11.5px;color:#666;margin-top:3px}.card.alert{border-left:4px solid var(--red)}
+.cards.dash{grid-template-columns:repeat(auto-fit,minmax(198px,1fr))}
+.card .bd{margin-top:9px;border-top:1px solid var(--line);padding-top:7px;display:flex;flex-direction:column;gap:4px}
+.card .bd .r{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:11px;white-space:nowrap}
+.card .bd .r b{font-family:'IBM Plex Mono';font-size:11.5px;font-weight:600}
+.card .bd .r .c{color:#aaa;font-weight:500;margin-left:5px}
+.card .bd .r.tot{border-top:1px dashed var(--line);padding-top:5px;margin-top:1px;color:#555;font-weight:700}
 .grid2{display:grid;grid-template-columns:1.4fr 1fr;gap:14px}@media(max-width:860px){.grid2{grid-template-columns:1fr}}
 .panel{background:#fff;border:1px solid var(--line);padding:16px;margin-bottom:14px}
 .panel h3{font-size:13px;margin-bottom:12px;border-left:4px solid var(--red);padding-left:8px}
@@ -2849,13 +2877,20 @@ TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement
 if(!can(2)){['pnew','mergeBtn'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
 if(!can(1)){['csvbtn','optcsvbtn','tpladd','ccsv','catalogCsv','inventoryCsv'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'})}
 
+// ── 대시보드 카드: 결제상태별 금액 분해 ──
+const ST_KR={PAID:'결제완료',WAITING_DEPOSIT:'입금대기',PENDING:'결제대기',FAILED:'결제실패',CANCELLED:'취소',REFUNDED:'환불'};
+const stKr=k=>ST_KR[k]||k;
+function bdHtml(o){const bd=(o&&o.bd)||[];if(!bd.length)return '<div class="bd"><div class="r" style="color:#bbb">주문 없음</div></div>';
+ const rs=bd.map(x=>`<div class="r"><span class="st ${esc(x.k)}">${esc(stKr(x.k))}</span><b>${won(x.s)}<span class="c">${Number(x.c).toLocaleString('ko-KR')}건</span></b></div>`).join('');
+ const tot=bd.length>1?`<div class="r tot"><span>합계</span><b>${won(o.all_sum)}<span class="c">${Number(o.all_cnt||0).toLocaleString('ko-KR')}건</span></b></div>`:'';
+ return `<div class="bd">${rs}${tot}</div>`}
 async function loadDash(){try{const d=await api('/admin/api/summary');
  const mx=Math.max(1,...d.series.map(s=>s.v));
- $('#t-dash').innerHTML=`<div class="cards">
- <div class="card"><div class="k">오늘 매출</div><div class="v">${won(d.today.sum)}</div><div class="s">${d.today.cnt}건</div></div>
- <div class="card"><div class="k">최근 7일</div><div class="v">${won(d.week.sum)}</div><div class="s">${d.week.cnt}건</div></div>
- <div class="card"><div class="k">최근 30일</div><div class="v">${won(d.month.sum)}</div><div class="s">${d.month.cnt}건 · 객단가 ${won(d.aov)}</div></div>
- <div class="card"><div class="k">누적 결제액</div><div class="v">${won(d.all.paid_sum)}</div><div class="s">전체 ${d.all.cnt}건 · 고객 ${d.customers}명</div></div>
+ $('#t-dash').innerHTML=`<div class="cards dash">
+ <div class="card"><div class="k">오늘 매출</div><div class="v">${won(d.today.sum)}</div><div class="s">결제완료 ${d.today.cnt}건 · 주문 ${d.today.all_cnt}건</div>${bdHtml(d.today)}</div>
+ <div class="card"><div class="k">최근 7일</div><div class="v">${won(d.week.sum)}</div><div class="s">결제완료 ${d.week.cnt}건 · 주문 ${d.week.all_cnt}건</div>${bdHtml(d.week)}</div>
+ <div class="card"><div class="k">최근 30일</div><div class="v">${won(d.month.sum)}</div><div class="s">결제완료 ${d.month.cnt}건 · 객단가 ${won(d.aov)}</div>${bdHtml(d.month)}</div>
+ <div class="card"><div class="k">누적 결제액</div><div class="v">${won(d.all.paid_sum)}</div><div class="s">전체 ${d.all.cnt}건 · 고객 ${d.customers}명</div>${bdHtml({bd:d.all.bd,all_sum:d.all.all_sum,all_cnt:d.all.cnt})}</div>
  <div class="card ${d.pending_ship?'alert':''}"><div class="k">발송 대기</div><div class="v">${d.pending_ship}건</div><div class="s">결제완료 · 미발송</div></div>
  <div class="card ${d.pending_cs?'alert':''}"><div class="k">문의·요청 대기</div><div class="v">${d.pending_cs||0}건</div><div class="s">1:1 · Q&A · 취소/반품</div></div></div>
  <div class="panel"><h3>최근 30일 일별 매출 <span class="tag">PAID</span></h3>

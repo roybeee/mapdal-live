@@ -415,7 +415,7 @@ def ensure_ready():
                          .replace('주식회사 밀집(이하 "회사")이 운영하는', '맵달서울성수(이하 "회사")가 운영하는')
                          .replace('주식회사 밀집', '맵달서울성수')
                          .replace('황인범 (대표이사)', '황인범 (공동대표)')
-                         .replace('(문의 이메일 등록 후 표기)', 'ceo@mealzip.kr')
+                         .replace('(문의 이메일 등록 후 표기)', 'cx@mealzip.kr')
                          .replace('(대표번호 등록 후 표기)', '010-8176-8525')
                          .replace('(사업자등록번호 등록 후 표기)', '394-85-03267')
                          .replace('(통신판매업 신고 후 표기)', '제2026-서울성동-0426호'))
@@ -528,6 +528,8 @@ def ensure_ready():
     try: _migrate_new_drops_page_edits() # NEW/DROPS 편집본에 옵션 카드 UI 반영 (멱등)
     except Exception: pass
     try: _migrate_home_page_edits() # 홈 편집본을 배포 정적본과 동기화 — 백업 후 교체 (멱등)
+    except Exception: pass
+    try: _migrate_contact_mail_db() # 대표 문의 이메일 단일화 — DB 편집본·설정값 멱등 치환
     except Exception: pass
     try: _artists_migrate_ordinal() # 구버전이 만든 'N집' 서수 표기 팀 병합·정정 (멱등)
     except Exception: pass
@@ -4069,7 +4071,7 @@ function drAnnTplUI(){var p=document.getElementById('dr_anntpl');
   <b>영상통화 시작</b><span><label style="margin-right:12px"><input type="radio" name="dr_tp_vm" value="after" id="dr_tp_vma"> 대면 팬사인회 종료 후</label><label><input type="radio" name="dr_tp_vm" value="at" id="dr_tp_vmt"> 시각 지정</label> <input type="time" id="dr_tp_vt" style="width:110px"></span></div>
  <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed #e0dccc">
   <b>개별 안내일</b><span><input type="date" id="dr_tp_nd"> · 미수신 문의 기준 <input type="time" id="dr_tp_nt" value="18:00" style="width:110px"></span>
-  <b>문의 이메일</b><input id="dr_tp_mail" value="mapdal.seoul@gmail.com">
+  <b>문의 이메일</b><input id="dr_tp_mail" value="cx@mealzip.kr">
   <b>문의 전화</b><input id="dr_tp_tel" value="010-8176-8525"></div>
  <div style="margin-top:8px"><button class="btn sm" type="button" onclick="drAnnTplGo()">본문 생성</button></div>`;
  p.style.display='block';
@@ -4087,7 +4089,7 @@ function drAnnTplGo(){
  var ndv=document.getElementById('dr_tp_nd').value;
  var N=ndv?drAnnKD(ndv+'T09:00'):null;
  if(!N){toast('개별 안내일을 선택하세요');return}
- var MAIL=document.getElementById('dr_tp_mail').value.trim()||'mapdal.seoul@gmail.com';
+ var MAIL=document.getElementById('dr_tp_mail').value.trim()||'cx@mealzip.kr';
  var TEL=document.getElementById('dr_tp_tel').value.trim()||'010-8176-8525';
  var BASE=document.getElementById('dr_tp_title').value.trim()||'맵달SEOUL 이벤트';
  var LOC=(document.getElementById('dr_tp_loc')&&document.getElementById('dr_tp_loc').value.trim())||'당첨자에 한하여 개별 문자 or E-Mail 안내 (비공개)';
@@ -4566,6 +4568,43 @@ def _catalog_migrate_lifestyle():
     run("UPDATE product_groups SET department='LIFESTYLE', "
         "product_type=CASE WHEN product_type='LIVING' THEN 'LIFESTYLE' ELSE product_type END, "
         "updated_at=? WHERE department='LIVING'", (now_iso(),))
+
+def _migrate_contact_mail_db():
+    """DB에 남은 구 문의 이메일을 대표 주소로 멱등 치환한다.
+    page_edits 편집본은 배포 정적본보다 우선 서빙되므로 DB도 함께 정리해야 한다.
+    (LIKE 패턴은 반드시 파라미터로 넘긴다 — PG에서 SQL 내 '%'는 플레이스홀더와 충돌)"""
+    L = ('%@mealzip.kr%', '%mapdal.seoul@gmail.com%')
+    for row in rows("SELECT path,html FROM page_edits WHERE html LIKE ? OR html LIKE ?", L):
+        old = row.get('html') or ''
+        new = contact_mail_apply(old)
+        if new != old:
+            run('UPDATE page_edits SET html=?,updated=?,by_admin=? WHERE path=?',
+                (new, now_iso(), '\uc2dc\uc2a4\ud15c \ubb38\uc758\uc774\uba54\uc77c \ud1b5\ud569', row['path']))
+    try:
+        for row in rows("SELECT key,value FROM site_settings WHERE value LIKE ? OR value LIKE ?", L):
+            old = row.get('value') or ''
+            new = contact_mail_apply(old)
+            if new != old:
+                run('UPDATE site_settings SET value=?,updated=? WHERE key=?', (new, now_iso(), row['key']))
+    except Exception: pass
+    try:
+        pcx = _cols('products')
+        for col in ('detail_html', 'descr', 'info_rows', 'ship_rows'):
+            if col not in pcx: continue
+            sql = "SELECT id,%s AS v FROM products WHERE %s LIKE ? OR %s LIKE ?" % (col, col, col)
+            for row in rows(sql, L):
+                old = row.get('v') or ''
+                new = contact_mail_apply(old)
+                if new != old:
+                    run('UPDATE products SET %s=? WHERE id=?' % col, (new, row['id']))
+    except Exception: pass
+    try:
+        for row in rows("SELECT id,body FROM notify_templates WHERE body LIKE ? OR body LIKE ?", L):
+            old = row.get('body') or ''
+            new = contact_mail_apply(old)
+            if new != old:
+                run('UPDATE notify_templates SET body=? WHERE id=?', (new, row['id']))
+    except Exception: pass
 
 def _migrate_lifestyle_page_edits():
     """관리자에서 저장한 HTML 편집본에도 남은 구 명칭을 멱등 치환한다."""
@@ -5796,7 +5835,7 @@ max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
   <div class="foot-links"><a href="/shop">SHOP</a><a href="/kpop">KPOP</a><a href="/mapdal-seoul">MAPDAL SEOUL</a><a href="/support">SUPPORT</a><a href="/shipping">배송안내</a><a href="/returns">교환/반품</a></div>
 </div>
 <div class="foot-base"><a href="/terms" style="color:#fff">이용약관</a> · <a href="/privacy">개인정보처리방침</a> &nbsp;&nbsp; © 2026 MEAL ZIP INC. · MAPDAL SEOUL<br>
-맵달서울성수 · 대표: 황인범, 김동경 · 서울 성동구 성수이로16길 5 · 사업자등록번호: 394-85-03267 · 통신판매업신고: 제2026-서울성동-0426호 · 고객센터: ceo@mealzip.kr</div>
+맵달서울성수 · 대표: 황인범, 김동경 · 서울 성동구 성수이로16길 5 · 사업자등록번호: 394-85-03267 · 통신판매업신고: 제2026-서울성동-0426호 · 고객센터: cx@mealzip.kr</div>
 </footer>
 <script>
 var PID=%(pidjs)s, PRICE=%(pricejs)d, PNAME=%(namejs)s, PIMG=%(imgjs)s, SOLD=%(soldjs)s, STOCK=%(stockjs)d;
@@ -5953,7 +5992,7 @@ def pdp(pid: str):
         ('적립', '상품 금액의 1% 적립 (배송비 제외·원 단위 절사·로그인 회원) · '
                  'NEW/DROPS 상품은 적립 대상에서 제외됩니다.'),
         ('맵달드림', '서울 당일배송 · 성수 1F/4F 픽업'),
-        ('해외배송', 'DDP(관·부가세 포함) 지원 — global@mealzip.kr 문의'),
+        ('해외배송', 'DDP(관·부가세 포함) 지원 — cx@mealzip.kr 문의'),
         ('공급관련 정보',
          '고객센터 ' + MAPDAL_CS_TEL + '//'
          '배송안내: 전국 배송이 가능하며, 토요일과 공휴일을 제외하고 평균 2~5일 소요됩니다.//'
@@ -7503,7 +7542,7 @@ def biz_info():
     return {'reg': _genv('BIZ_REG_NO') or '394-85-03267',
             'mail_order': _genv('BIZ_ORDER_NO') or '제2026-서울성동-0426호',
             'phone': _genv('BIZ_PHONE') or '010-8176-8525',
-            'email': _genv('BIZ_EMAIL') or 'ceo@mealzip.kr'}
+            'email': _genv('BIZ_EMAIL') or 'cx@mealzip.kr'}
 
 _POLICY_CSS = '''<style>:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2}
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans KR','Malgun Gothic',sans-serif;background:var(--paper);color:var(--black);font-size:14px;line-height:1.8}
@@ -7566,7 +7605,7 @@ PRIVACY_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><me
 <h2>제10조 (개인정보 보호책임자)</h2>
 <table><tr><th>구분</th><th>내용</th></tr>
 <tr><td>개인정보 보호책임자</td><td>황인범 (공동대표)</td></tr>
-<tr><td>연락처</td><td>이메일: ceo@mealzip.kr / 전화: 010-8176-8525</td></tr></table>
+<tr><td>연락처</td><td>이메일: cx@mealzip.kr / 전화: 010-8176-8525</td></tr></table>
 <p>기타 개인정보 침해 신고·상담: 개인정보침해신고센터(privacy.kisa.or.kr, 국번없이 118), 개인정보분쟁조정위원회(kopico.go.kr, 1833-6972)</p>
 
 <h2>제11조 (개인정보처리방침의 변경)</h2>
@@ -11215,6 +11254,20 @@ def _ecom_snippet():
     ga = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('GA4_ID', ''))
     return _MP_ECOM_JS if ga else ''
 
+# ── 대표 문의 이메일 단일화 (구 주소 → CONTACT_MAIL) ──────────────────
+#   자사 노출 주소를 대표 1개로 모은다. 정적 파일·DB 편집본·상품 상세가
+#   섞여 있어 원본 수정만으로는 누락이 생기므로, 서빙 직전 한 번 더 정규화한다.
+#   제3자 A/S 주소(help@kihno.com 등 음반 제조사)는 도메인이 달라 영향 없음.
+CONTACT_MAIL = os.getenv('CONTACT_MAIL', 'cx@mealzip.kr')
+_LEGACY_MAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@mealzip\.kr|mapdal\.seoul@gmail\.com', re.I)
+
+def contact_mail_apply(text):
+    """구 문의 이메일을 대표 주소로 치환한다 (멱등 — 이미 대표 주소면 결과 동일)."""
+    if not text: return text
+    if '@mealzip.kr' not in text and 'mapdal.seoul@gmail.com' not in text: return text
+    return _LEGACY_MAIL_RE.sub(CONTACT_MAIL, text)
+
+
 def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html, path)
     html = _serve_det_emb(html, uid)
@@ -11247,9 +11300,9 @@ def _inject_auth(html, path='', uid=None):
     if 'mpKakaoCh' not in html: add += _kakao_channel_snippet()
     if 'mpReviews' not in html and (path == '/album-detail' or path.startswith('/product-') or 'qna-wrap' in html):
         add += _REVIEW_SNIPPET
-    if not add: return html
+    if not add: return contact_mail_apply(html)
     i = html.lower().rfind('</body>')
-    return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
+    return contact_mail_apply((html[:i] + add + html[i:]) if i >= 0 else (html + add))
 
 # ── 관리자: 문의/상품Q&A/취소·반품·교환 요청 처리 + 포인트 ──
 @admin_router.get('/admin/api/cs')
@@ -12958,7 +13011,7 @@ _ARTIST_HEADER_HTML = r"""<header>
         <div class="mega">
           <div><h5>GUIDE</h5><ul><li><a href="/shipping">배송 안내</a></li><li><a href="/returns">교환/반품</a></li></ul></div>
           <div><h5>COMPANY</h5><ul><li><a href="/partnership">파트너십 문의</a></li><li><a href="/ir">IR · 뉴스룸</a></li></ul></div>
-          <div class="visual" style="background:linear-gradient(160deg,#141414,#3A3A3A)"><b>NEED<br>HELP?</b><span>ceo@mealzip.kr · 11:00–21:00</span></div>
+          <div class="visual" style="background:linear-gradient(160deg,#141414,#3A3A3A)"><b>NEED<br>HELP?</b><span>cx@mealzip.kr · 11:00–21:00</span></div>
         </div>
       </div>
     </nav>

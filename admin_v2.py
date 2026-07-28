@@ -1738,6 +1738,179 @@ def api_orders_options_csv(request: Request):
                     headers={'Content-Disposition': 'attachment; filename="mapdal_entry_options_%s.csv"'
                              % kst_today().strftime('%Y%m%d')})
 
+# ═══════════ 매출 상세 분석 — 대시보드 상품별·기간별·행사별 조회 ═══════════
+#   스키마 변경 없음. 기간 내 orders(items JSON)를 스캔해 품목 라인 단위로 집계한다.
+#   매출 정의: 품목매출 = 옵션단가×수량(배송비 제외) · 결제액 = 매칭 주문 amount 합(참고 지표).
+#   행사 귀속: _drop_opt_index() 역인덱스 + mpd:: 상품명 '이벤트 — 옵션' 분해 폴백
+#   (orders-options CSV와 동일 규칙). 버킷: day | week(월요일 시작) | month, 빈 구간 0 채움.
+_STATS_STATUS_OK = ('PAID', 'PENDING', 'FAILED', 'CANCELLED', 'WAITING_DEPOSIT')
+
+def _stats_day(s, fb):
+    try:
+        return datetime.date.fromisoformat(str(s or '').strip()[:10])
+    except Exception:
+        return fb
+
+def _stats_bucket(day, unit):
+    """KST date → (정렬키, 축 라벨)."""
+    if unit == 'month':
+        k = day.strftime('%Y-%m'); return k, k
+    if unit == 'week':
+        mon = day - datetime.timedelta(days=day.weekday())
+        return mon.isoformat(), mon.strftime('%m/%d') + '주'
+    return day.isoformat(), day.strftime('%m-%d')
+
+def _stats_buckets(d0, d1, unit):
+    """기간 전체 버킷 나열(빈 구간 0 채움용) — (키, 라벨) 오름차순."""
+    out, seen, cur = [], set(), d0
+    while cur <= d1:
+        k, lb = _stats_bucket(cur, unit)
+        if k not in seen:
+            out.append((k, lb)); seen.add(k)
+        cur += datetime.timedelta(days=1)
+    return out
+
+def _stats_detail_compute(p):
+    today = kst_today()
+    all_range = str(p.get('from') or '').strip().lower() == 'all'
+    d_to = _stats_day(p.get('to'), today)
+    if all_range:
+        m = ((one('SELECT MIN(created) AS m FROM orders') or {}).get('m') or '')[:10]
+        d_from = _stats_day(m, d_to)
+    else:
+        d_from = _stats_day(p.get('from'), today - datetime.timedelta(days=29))
+    if d_from > d_to: d_from, d_to = d_to, d_from
+    span = (d_to - d_from).days + 1
+    unit = str(p.get('unit') or 'day').strip().lower()
+    if unit not in ('day', 'week', 'month'): unit = 'day'
+    if unit == 'day' and span > 190: unit = 'week'      # 축 과밀 방지 자동 전환
+    if unit == 'week' and span > 1100: unit = 'month'
+    status = str(p.get('status') or 'PAID').strip().upper()
+    if status not in _STATS_STATUS_OK:
+        status = '' if status == 'ALL' else 'PAID'
+    qk = re.sub(r'\s+', ' ', str(p.get('q') or '')).strip().casefold()
+    ev_raw = re.sub(r'\s+', ' ', str(p.get('event') or '')).strip()
+    only_general = (ev_raw == '__general__')             # 행사 미귀속 일반 상품만
+    ek = '' if only_general else ev_raw.casefold()
+    filtered = bool(qk or ek or only_general)
+
+    where, args = ['created >= ?', 'created <= ?'], [d_from.isoformat(), d_to.isoformat() + '~']
+    if status: where.append('status = ?'); args.append(status)
+    rs = rows('SELECT order_id, created, amount, items, buyer FROM orders WHERE %s ORDER BY created ASC LIMIT 50001'
+              % ' AND '.join(where), tuple(args))
+    truncated = len(rs) > 50000
+    if truncated: rs = rs[:50000]
+
+    idx = _drop_opt_index()
+    b_rev, b_ord = {}, {}                                # 버킷별 품목매출 · 주문번호 set
+    prod, evts, ord_amt, buyers = {}, {}, {}, set()
+    for r in rs:
+        try:
+            dd = datetime.date.fromisoformat(str(r.get('created') or '')[:10])
+        except Exception:
+            continue
+        bk, _lb = _stats_bucket(dd, unit)
+        oid = r.get('order_id') or ''
+        hit = False
+        for it in jload(r.get('items'), []):
+            if not isinstance(it, dict): continue
+            pid = str(it.get('id') or '')
+            nm = re.sub(r'\s+', ' ', str(it.get('n') or it.get('name') or pid)).strip() or '(무명)'
+            is_drop = (pid in idx) or pid.startswith('mpd::')
+            evt, opt = idx.get(pid) or (_split_drop_name(nm) if is_drop else ('', nm))
+            if qk and qk not in nm.casefold(): continue
+            if only_general and is_drop: continue
+            if ek and ek not in (evt or '').casefold(): continue
+            qty = num(it.get('q') or 1)
+            line = num(it.get('p') or it.get('price') or 0) * qty
+            hit = True
+            b_rev[bk] = b_rev.get(bk, 0) + line
+            b_ord.setdefault(bk, set()).add(oid)
+            pr = prod.setdefault(nm, {'qty': 0, 'rev': 0, 'ords': set(), 'event': evt or ''})
+            pr['qty'] += qty; pr['rev'] += line; pr['ords'].add(oid)
+            ekey = evt or '(일반 상품)'
+            eg = evts.setdefault(ekey, {'qty': 0, 'rev': 0, 'ords': set(), 'opts': {}, 'is_drop': bool(evt)})
+            eg['qty'] += qty; eg['rev'] += line; eg['ords'].add(oid)
+            if evt:
+                op = eg['opts'].setdefault(opt or nm, {'qty': 0, 'rev': 0})
+                op['qty'] += qty; op['rev'] += line
+        if hit:
+            ord_amt[oid] = num(r.get('amount'))
+            b = jload(r.get('buyer'), {}) or {}
+            buyers.add(_entry_phone_norm(b.get('phone')) or str(b.get('name') or oid))
+    total_rev = sum(x['rev'] for x in prod.values())
+    total_qty = sum(x['qty'] for x in prod.values())
+    n_ord, amt_sum = len(ord_amt), sum(ord_amt.values())
+    def share(v):
+        return round(v * 100.0 / total_rev, 1) if total_rev else 0.0
+    top = sorted(prod.items(), key=lambda kv: (kv[1]['rev'], kv[1]['qty']), reverse=True)[:50]
+    by_product = [{'rank': i + 1, 'name': k, 'event': v['event'], 'qty': v['qty'], 'rev': v['rev'],
+                   'orders': len(v['ords']), 'share': share(v['rev'])} for i, (k, v) in enumerate(top)]
+    by_event = [{'event': k, 'is_drop': v['is_drop'], 'qty': v['qty'], 'rev': v['rev'],
+                 'orders': len(v['ords']), 'share': share(v['rev']),
+                 'opts': [{'name': ok, 'qty': ov['qty'], 'rev': ov['rev']}
+                          for ok, ov in sorted(v['opts'].items(), key=lambda x: x[1]['rev'], reverse=True)]}
+                for k, v in sorted(evts.items(), key=lambda kv: kv[1]['rev'], reverse=True)]
+    ev_names = set()
+    for d in _drops_all():
+        if isinstance(d, dict):
+            t = re.sub(r'\s+', ' ', str(d.get('title') or '')).strip()
+            if t: ev_names.add(t)
+    for e in evts:
+        if e != '(일반 상품)': ev_names.add(e)
+    series = [{'k': k, 'label': lb, 'v': b_rev.get(k, 0), 'c': len(b_ord.get(k, ()))}
+              for k, lb in _stats_buckets(d_from, d_to, unit)]
+    return {'from': d_from.isoformat(), 'to': d_to.isoformat(), 'unit': unit,
+            'status': status or 'ALL', 'filtered': filtered, 'truncated': truncated,
+            'q': str(p.get('q') or '').strip(), 'event': ev_raw,
+            'summary': {'item_rev': total_rev, 'qty': total_qty, 'orders': n_ord,
+                        'buyers': len(buyers), 'order_amount': amt_sum,
+                        'aov': (amt_sum // n_ord) if n_ord else 0},
+            'series': series, 'by_product': by_product, 'by_event': by_event,
+            'events': sorted(ev_names)}
+
+@admin_router.get('/admin/api/stats/detail')
+def api_stats_detail(request: Request):
+    """대시보드 [매출 상세 분석] — 기간(from·to·unit)·상품(q 부분일치)·행사(event 부분일치,
+    '__general__'=일반 상품만)·상태(status, 'ALL'=전체) 조합 집계. from='all'은 최초 주문일부터.
+    일별 190일 초과 → 주별, 주별 1,100일 초과 → 월별 자동 전환(응답 unit에 반영)."""
+    a = get_actor(request); need(a, 0)
+    return _stats_detail_compute(request.query_params)
+
+@admin_router.get('/admin/api/stats/detail.csv')
+def api_stats_detail_csv(request: Request):
+    """매출 상세 분석 CSV — [요약]·[기간별]·[상품별]·[행사별(옵션)] 4개 섹션 한 파일."""
+    a = get_actor(request); need(a, 1, '매출 분석 CSV 다운로드')
+    d = _stats_detail_compute(request.query_params)
+    s, L = d['summary'], []
+    def row(*vals):
+        L.append(','.join(esc_csv(v) for v in vals))
+    row('[요약]', '%s ~ %s' % (d['from'], d['to']),
+        '단위 ' + {'day': '일별', 'week': '주별', 'month': '월별'}.get(d['unit'], d['unit']),
+        '상태 ' + d['status'],
+        ('상품검색 ' + d['q']) if d['q'] else '',
+        ('행사 ' + ('(일반 상품만)' if d['event'] == '__general__' else d['event'])) if d['event'] else '')
+    row('품목매출(배송비제외)', '판매수량', '주문수', '구매자수', '결제액합계(배송비포함)', '객단가')
+    row(s['item_rev'], s['qty'], s['orders'], s['buyers'], s['order_amount'], s['aov'])
+    row()
+    row('[기간별]'); row('구간', '품목매출', '주문수')
+    for x in d['series']: row(x['k'], x['v'], x['c'])
+    row()
+    row('[상품별 TOP %d]' % len(d['by_product']))
+    row('순위', '상품', '행사', '수량', '품목매출', '주문수', '비중%')
+    for x in d['by_product']:
+        row(x['rank'], x['name'], x['event'], x['qty'], x['rev'], x['orders'], x['share'])
+    row()
+    row('[행사별]'); row('행사', '응모옵션', '수량', '품목매출', '주문수', '비중%')
+    for x in d['by_event']:
+        row(x['event'], '(전체)', x['qty'], x['rev'], x['orders'], x['share'])
+        for o in x['opts']:
+            row('', o['name'], o['qty'], o['rev'], '', '')
+    audit(a, 'CSV다운로드', 'stats-detail', '%s~%s' % (d['from'], d['to']))
+    return Response('\ufeff' + '\n'.join(L), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="mapdal_stats_%s_%s.csv"'
+                             % (d['from'].replace('-', ''), d['to'].replace('-', ''))})
+
 # ═══════════ 응모 입력정보 회수 — 재입력 링크(서명 토큰) + 브라우저 잔존값 자동 백필 ═══════════
 #   배경: 결제 실행부의 동기 XHR 전환으로 buyer.selections 부착이 누락되던 기간의 주문은
 #   응모 입력값이 서버에 없다. 결제완료 페이지가 mapdal_drop_sel 을 지우므로 PAID 건은
@@ -2693,8 +2866,78 @@ async function loadDash(){try{const d=await api('/admin/api/summary');
  <div class="panel"><h3>재고 경고 <span class="tag">품절 · ≤5</span></h3><table><tr><th>상품</th><th class="right">재고</th></tr>
  ${d.low_stock.map(l=>`<tr><td>${esc(l.name)}</td><td class="right mono" style="color:${l.soldout?'#c0392b':'#9a6b00'}">${l.soldout?'품절':l.stock}</td></tr>`).join('')||'<tr><td colspan=2 class="loading">없음</td></tr>'}</table></div></div>
  <div class="panel"><h3>최근 주문</h3><table><tr><th>주문번호</th><th>일시</th><th>상태</th><th class="right">금액</th><th>주문자</th></tr>
- ${d.latest.map(o=>`<tr onclick="openOrder('${esc(o.order_id)}')" style="cursor:pointer"><td class="mono">${esc(o.order_id)}</td><td class="mono">${esc((o.created||'').slice(5,16).replace('T',' '))}</td><td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td class="right mono">${won(o.amount)}</td><td>${esc(o.buyer_name)}</td></tr>`).join('')}</table></div>`;
+ ${d.latest.map(o=>`<tr onclick="openOrder('${esc(o.order_id)}')" style="cursor:pointer"><td class="mono">${esc(o.order_id)}</td><td class="mono">${esc((o.created||'').slice(5,16).replace('T',' '))}</td><td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td class="right mono">${won(o.amount)}</td><td>${esc(o.buyer_name)}</td></tr>`).join('')}</table></div>
+ <div class="panel"><h3>매출 상세 분석 <span class="tag">상품별 · 기간별 · 행사별</span></h3>
+ <div class="toolbar" id="dxBar"></div><div id="dxOut" class="loading">불러오는 중…</div></div>`;
+ dxInit();
 }catch(e){$('#t-dash').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+
+// ── 매출 상세 분석: 상품별·기간별·행사별 (dx*) ──
+let dxQ={from:'',to:'',unit:'day',q:'',event:'',status:'PAID'},dxEvents=[],dxBusy=false;
+const dxKst=off=>{const d=new Date(Date.now()+9*3600*1000);d.setUTCDate(d.getUTCDate()-(off||0));return d.toISOString().slice(0,10)};
+function dxPreset(k){const t=dxKst(0);
+ if(k==='today'){dxQ.from=t;dxQ.to=t;dxQ.unit='day'}
+ else if(k==='7d'){dxQ.from=dxKst(6);dxQ.to=t;dxQ.unit='day'}
+ else if(k==='30d'){dxQ.from=dxKst(29);dxQ.to=t;dxQ.unit='day'}
+ else if(k==='90d'){dxQ.from=dxKst(89);dxQ.to=t;dxQ.unit='week'}
+ else if(k==='tm'){dxQ.from=t.slice(0,8)+'01';dxQ.to=t;dxQ.unit='day'}
+ else if(k==='lm'){const d=new Date(Date.now()+9*3600*1000);d.setUTCDate(0);const e=d.toISOString().slice(0,10);dxQ.from=e.slice(0,8)+'01';dxQ.to=e;dxQ.unit='day'}
+ else if(k==='all'){dxQ.from='all';dxQ.to=t;dxQ.unit='month'}
+ dxRun()}
+function dxSel(id,opts,cur){return '<select id="'+id+'" onchange="dxApply()" style="font-size:12px">'+opts.map(o=>`<option value="${esc(o[0])}"${String(o[0])===String(cur)?' selected':''}>${esc(o[1])}</option>`).join('')+'</select>'}
+function dxBarHtml(){const P=[['today','오늘'],['7d','7일'],['30d','30일'],['90d','90일'],['tm','이번달'],['lm','지난달'],['all','전체']];
+ const ev=[['','전체 행사'],['__general__','(일반 상품만)']].concat(dxEvents.map(t=>[t,t]));
+ return P.map(x=>`<button class="btn sm ghost" onclick="dxPreset('${x[0]}')">${x[1]}</button>`).join('')
+ +`<input type="date" id="dxFrom" value="${dxQ.from==='all'?'':esc(dxQ.from)}" style="padding:5px 7px;font-size:12px"><span style="color:#999">~</span><input type="date" id="dxTo" value="${esc(dxQ.to)}" style="padding:5px 7px;font-size:12px">`
+ +dxSel('dxUnit',[['day','일별'],['week','주별'],['month','월별']],dxQ.unit)
+ +dxSel('dxEvent',ev,dxQ.event)
+ +`<input id="dxProd" type="text" placeholder="상품명 검색" value="${esc(dxQ.q)}" style="min-width:140px;font-size:12px" onkeydown="if(event.key==='Enter')dxApply()">`
+ +dxSel('dxStatus',[['PAID','PAID(결제완료)'],['ALL','전체 상태'],['WAITING_DEPOSIT','입금대기'],['PENDING','PENDING'],['FAILED','FAILED'],['CANCELLED','취소']],dxQ.status)
+ +`<button class="btn sm" onclick="dxApply()">조회</button><button class="btn sm ghost" onclick="dxCsv()">CSV</button>`}
+function dxApply(){const f=$('#dxFrom'),t=$('#dxTo');
+ if(f&&f.value)dxQ.from=f.value;if(t&&t.value)dxQ.to=t.value;
+ dxQ.unit=$('#dxUnit').value;dxQ.event=$('#dxEvent').value;dxQ.q=$('#dxProd').value.trim();dxQ.status=$('#dxStatus').value;dxRun()}
+async function dxRun(){if(dxBusy)return;dxBusy=true;const o=$('#dxOut');if(o)o.innerHTML='<div class="loading">집계 중…</div>';
+ try{const qs=new URLSearchParams({from:dxQ.from,to:dxQ.to,unit:dxQ.unit,status:dxQ.status});
+  if(dxQ.q)qs.set('q',dxQ.q);if(dxQ.event)qs.set('event',dxQ.event);
+  const d=await api('/admin/api/stats/detail?'+qs);
+  dxEvents=d.events||[];dxQ.from=d.from;dxQ.to=d.to;dxQ.unit=d.unit;
+  const bar=$('#dxBar');if(bar)bar.innerHTML=dxBarHtml();
+  dxRender(d)}
+ catch(e){if(o)o.innerHTML='<div class="loading">'+esc(e.message)+'</div>'}
+ finally{dxBusy=false}}
+function dxInit(){dxQ={from:dxKst(29),to:dxKst(0),unit:'day',q:'',event:'',status:'PAID'};const b=$('#dxBar');if(b)b.innerHTML=dxBarHtml();dxRun()}
+function dxRender(d){const s=d.summary,S=d.series,mx=Math.max(1,...S.map(x=>x.v)),n=S.length;
+ const lb=i=>esc(((S[i]||{}).label)||'');
+ const U={day:'일별',week:'주별',month:'월별'}[d.unit]||d.unit;
+ const fl=[];if(d.q)fl.push('상품 "'+esc(d.q)+'"');if(d.event)fl.push('행사 "'+esc(d.event==='__general__'?'(일반 상품만)':d.event)+'"');
+ $('#dxOut').innerHTML=`
+ ${d.truncated?'<div class="hint" style="color:#c0392b;margin-bottom:8px">주문 50,000건 초과 — 앞쪽 50,000건만 집계했습니다. 기간을 좁혀 조회하세요.</div>':''}
+ ${fl.length?`<div class="hint" style="margin:0 0 10px">필터: ${fl.join(' · ')} <button class="btn sm ghost" onclick="dxReset()">해제</button></div>`:''}
+ <div class="cards" style="margin-bottom:14px">
+ <div class="card"><div class="k">품목 매출</div><div class="v">${won(s.item_rev)}</div><div class="s">단가×수량 · 배송비 제외</div></div>
+ <div class="card"><div class="k">판매 수량</div><div class="v">${Number(s.qty).toLocaleString('ko-KR')}</div><div class="s">품목 라인 기준</div></div>
+ <div class="card"><div class="k">주문 수</div><div class="v">${Number(s.orders).toLocaleString('ko-KR')}건</div><div class="s">구매자 ${Number(s.buyers).toLocaleString('ko-KR')}명</div></div>
+ <div class="card"><div class="k">결제액 합계</div><div class="v">${won(s.order_amount)}</div><div class="s">${d.filtered?'해당 품목 포함 주문 총액':'배송비 포함'} · 객단가 ${won(s.aov)}</div></div></div>
+ <h3>${U} 추이 <span class="tag">${esc(d.from)} ~ ${esc(d.to)} · ${esc(d.status)}</span></h3>
+ <div class="chart">${S.map(x=>`<div class="bar" style="height:${Math.round(x.v/mx*100)}%" title="${esc(x.k)} · ${won(x.v)} · ${x.c}건"></div>`).join('')}</div>
+ <div class="chart-x"><span>${lb(0)}</span><span>${lb(Math.floor((n-1)/2))}</span><span>${lb(n-1)}</span></div>
+ <div class="grid2" style="margin-top:14px"><div>
+ <h3>상품별 <span class="tag">TOP ${d.by_product.length}</span></h3>
+ <table><tr><th class="right">#</th><th>상품 (클릭=필터)</th><th class="right">수량</th><th class="right">품목매출</th><th class="right">주문</th><th class="right">비중</th></tr>
+ ${d.by_product.map(r=>`<tr style="cursor:pointer" data-n="${esc(r.name)}" onclick="dxProd(this)" title="${r.event?esc(r.event):'일반 상품'}"><td class="right mono">${r.rank}</td><td>${esc(r.name)}</td><td class="right mono">${Number(r.qty).toLocaleString('ko-KR')}</td><td class="right mono">${won(r.rev)}</td><td class="right mono">${r.orders}</td><td class="right mono">${r.share}%</td></tr>`).join('')||'<tr><td colspan="6" class="loading">데이터 없음</td></tr>'}</table></div>
+ <div><h3>행사별 <span class="tag">클릭=옵션 펼침</span></h3>
+ <table><tr><th>행사</th><th class="right">수량</th><th class="right">품목매출</th><th class="right">주문</th><th class="right">비중</th><th></th></tr>
+ ${d.by_event.map((r,i)=>{const has=r.opts&&r.opts.length;
+  return `<tr${has?' style="cursor:pointer" onclick="dxTgl('+i+')"':''}><td>${has?'▸ ':''}${esc(r.event)}</td><td class="right mono">${Number(r.qty).toLocaleString('ko-KR')}</td><td class="right mono">${won(r.rev)}</td><td class="right mono">${r.orders}</td><td class="right mono">${r.share}%</td><td><button class="btn sm ghost" data-e="${esc(r.is_drop?r.event:'__general__')}" onclick="event.stopPropagation();dxEvt(this)">필터</button></td></tr>`
+  +(has?r.opts.map(o=>`<tr class="dxo${i}" style="display:none;background:#faf9f5"><td style="padding-left:22px;color:#555">└ ${esc(o.name)}</td><td class="right mono">${Number(o.qty).toLocaleString('ko-KR')}</td><td class="right mono">${won(o.rev)}</td><td></td><td></td><td></td></tr>`).join(''):'')
+ }).join('')||'<tr><td colspan="6" class="loading">데이터 없음</td></tr>'}</table></div></div>`}
+function dxProd(el){dxQ.q=el.dataset.n||'';const i=$('#dxProd');if(i)i.value=dxQ.q;dxRun()}
+function dxEvt(el){dxQ.event=el.dataset.e||'';dxQ.q='';dxRun()}
+function dxTgl(i){document.querySelectorAll('.dxo'+i).forEach(x=>{x.style.display=x.style.display==='none'?'':'none'})}
+function dxReset(){dxQ.q='';dxQ.event='';dxRun()}
+function dxCsv(){const qs=new URLSearchParams({from:dxQ.from,to:dxQ.to,unit:dxQ.unit,status:dxQ.status});if(dxQ.q)qs.set('q',dxQ.q);if(dxQ.event)qs.set('event',dxQ.event);location.href='/admin/api/stats/detail.csv?'+qs}
+// ── /매출 상세 분석 ──
 
 let opage=1;
 async function loadOrders(p){opage=p;const q=new URLSearchParams({page:p});

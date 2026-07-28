@@ -1792,6 +1792,74 @@ def _stats_buckets(d0, d1, unit):
         cur += datetime.timedelta(days=1)
     return out
 
+def _norm_t(s):
+    """제목 비교용 정규화 — 공백·기호·대소문자 무시."""
+    return re.sub(r'[^0-9a-z가-힣]', '', str(s or '').casefold())
+
+def _drop_alias():
+    """등록된 행사 제목 목록을 (정규화키, 원제목) 긴 것 우선으로 반환."""
+    out = []
+    try:
+        for d in _drops_all():
+            if isinstance(d, dict):
+                t = re.sub(r'\s+', ' ', str(d.get('title') or '')).strip()
+                if t and _norm_t(t):
+                    out.append((_norm_t(t), t))
+    except Exception:
+        pass
+    return sorted(set(out), key=lambda x: -len(x[0]))
+
+def _drop_reg(s, alias, tol=8):
+    """문자열이 등록 행사 제목과 일치/포함하면 그 제목 반환 (아니면 '')."""
+    n = _norm_t(s)
+    if not n: return ''
+    for k, t in alias:
+        if n == k: return t
+    for k, t in alias:
+        if len(k) >= tol and k in n: return t
+    return ''
+
+def _drop_canon(title, alias):
+    """주문 스냅샷에서 뽑은 제목을 현재 등록 제목으로 흡수(제목 변경 이력 병합)."""
+    n = _norm_t(title)
+    if not n: return ''
+    for k, t in alias:
+        if n == k: return t
+    for k, t in alias:
+        if len(k) >= 8 and len(n) >= 8 and (k in n or n in k): return t
+    return re.sub(r'\s+', ' ', str(title or '')).strip()
+
+def _mpd_names():
+    """mpd:: 옵션상품 id→상품명. 옵션 교체·삭제로 현재 인덱스에서 빠진 과거 pid 복구용."""
+    nmc = _state.get('pname')
+    if not nmc: return {}
+    try:
+        return {r['id']: re.sub(r'\s+', ' ', str(r.get('nm') or '')).strip()
+                for r in rows('SELECT id, %s AS nm FROM products WHERE id LIKE ?' % nmc, ('mpd::%',))}
+    except Exception:
+        return {}
+
+def _evt_attr(pid, nm, idx, mpdn, alias):
+    """품목 라인 → (행사, 옵션, 드롭여부). 귀속 4단 폴백:
+       ① 현재 옵션 인덱스 ② mpd:: 상품 테이블 이름 ③ 주문 스냅샷 이름 분해
+       ④ 이름이 등록 행사 제목을 포함(옵션 구분자 없는 단일상품 행사).
+       ①~④ 모두 제목은 _drop_canon 으로 현재 제목에 병합해 별칭 분산을 막는다."""
+    hit = idx.get(pid)
+    if hit:
+        return (_drop_canon(hit[0], alias) or hit[0]), (hit[1] or nm), True
+    is_drop = str(pid or '').startswith('mpd::')
+    for src in ((mpdn.get(pid) or '') if is_drop else '', nm):
+        if not src: continue
+        e, o = _split_drop_name(src)
+        if e:
+            reg = _drop_reg(e, alias) or _drop_reg(src, alias)
+            if reg or is_drop:
+                return (reg or _drop_canon(e, alias)), (o or nm), True
+    reg = _drop_reg(nm, alias)
+    if reg:
+        return reg, nm, True
+    return ('', nm, True) if is_drop else ('', nm, False)
+
 def _stats_detail_compute(p):
     today = kst_today()
     all_range = str(p.get('from') or '').strip().lower() == 'all'
@@ -1817,13 +1885,15 @@ def _stats_detail_compute(p):
     filtered = bool(qk or ek or only_general)
 
     where, args = ['created >= ?', 'created <= ?'], [d_from.isoformat(), d_to.isoformat() + '~']
-    if status: where.append('status = ?'); args.append(status)
-    rs = rows('SELECT order_id, created, amount, items, buyer FROM orders WHERE %s ORDER BY created ASC LIMIT 50001'
+    rs = rows('SELECT order_id, created, status, amount, items, buyer FROM orders WHERE %s ORDER BY created ASC LIMIT 50001'
               % ' AND '.join(where), tuple(args))
     truncated = len(rs) > 50000
     if truncated: rs = rs[:50000]
 
     idx = _drop_opt_index()
+    mpdn = _mpd_names()
+    alias = _drop_alias()
+    sacc = {}                                            # 같은 필터 조건의 상태별 금액(제외분 노출용)
     b_rev, b_ord = {}, {}                                # 버킷별 품목매출 · 주문번호 set
     prod, evts, ord_amt, buyers = {}, {}, {}, set()
     for r in rs:
@@ -1833,19 +1903,23 @@ def _stats_detail_compute(p):
             continue
         bk, _lb = _stats_bucket(dd, unit)
         oid = r.get('order_id') or ''
+        ost = str(r.get('status') or '') or '(없음)'
+        keep = (not status) or (ost == status)
         hit = False
         for it in jload(r.get('items'), []):
             if not isinstance(it, dict): continue
             pid = str(it.get('id') or '')
             nm = re.sub(r'\s+', ' ', str(it.get('n') or it.get('name') or pid)).strip() or '(무명)'
-            is_drop = (pid in idx) or pid.startswith('mpd::')
-            evt, opt = idx.get(pid) or (_split_drop_name(nm) if is_drop else ('', nm))
+            evt, opt, is_drop = _evt_attr(pid, nm, idx, mpdn, alias)
             if qk and qk not in nm.casefold(): continue
             if only_general and is_drop: continue
             if ek and ek not in (evt or '').casefold(): continue
             qty = num(it.get('q') or 1)
             line = num(it.get('p') or it.get('price') or 0) * qty
             hit = True
+            sa = sacc.setdefault(ost, {'rev': 0, 'qty': 0, 'ords': set(), 'amt': 0})
+            sa['rev'] += line; sa['qty'] += qty
+            if not keep: continue
             b_rev[bk] = b_rev.get(bk, 0) + line
             b_ord.setdefault(bk, set()).add(oid)
             pr = prod.setdefault(nm, {'qty': 0, 'rev': 0, 'ords': set(), 'event': evt or ''})
@@ -1853,13 +1927,16 @@ def _stats_detail_compute(p):
             ekey = evt or '(일반 상품)'
             eg = evts.setdefault(ekey, {'qty': 0, 'rev': 0, 'ords': set(), 'opts': {}, 'is_drop': bool(evt)})
             eg['qty'] += qty; eg['rev'] += line; eg['ords'].add(oid)
-            if evt:
-                op = eg['opts'].setdefault(opt or nm, {'qty': 0, 'rev': 0})
-                op['qty'] += qty; op['rev'] += line
+            op = eg['opts'].setdefault((opt or nm) if evt else nm, {'qty': 0, 'rev': 0})
+            op['qty'] += qty; op['rev'] += line
         if hit:
-            ord_amt[oid] = num(r.get('amount'))
-            b = jload(r.get('buyer'), {}) or {}
-            buyers.add(_entry_phone_norm(b.get('phone')) or str(b.get('name') or oid))
+            sa = sacc[ost]
+            if oid not in sa['ords']:
+                sa['ords'].add(oid); sa['amt'] += num(r.get('amount'))
+            if keep:
+                ord_amt[oid] = num(r.get('amount'))
+                b = jload(r.get('buyer'), {}) or {}
+                buyers.add(_entry_phone_norm(b.get('phone')) or str(b.get('name') or oid))
     total_rev = sum(x['rev'] for x in prod.values())
     total_qty = sum(x['qty'] for x in prod.values())
     n_ord, amt_sum = len(ord_amt), sum(ord_amt.values())
@@ -1871,8 +1948,12 @@ def _stats_detail_compute(p):
     by_event = [{'event': k, 'is_drop': v['is_drop'], 'qty': v['qty'], 'rev': v['rev'],
                  'orders': len(v['ords']), 'share': share(v['rev']),
                  'opts': [{'name': ok, 'qty': ov['qty'], 'rev': ov['rev']}
-                          for ok, ov in sorted(v['opts'].items(), key=lambda x: x[1]['rev'], reverse=True)]}
+                          for ok, ov in sorted(v['opts'].items(), key=lambda x: x[1]['rev'], reverse=True)][:30]}
                 for k, v in sorted(evts.items(), key=lambda kv: kv[1]['rev'], reverse=True)]
+    by_status = [{'k': k, 'c': len(v['ords']), 's': v['amt'], 'rev': v['rev'], 'qty': v['qty'],
+                  'on': (not status) or (k == status)}
+                 for k, v in sorted(sacc.items(),
+                                    key=lambda kv: (_ST_ORDER.index(kv[0]) if kv[0] in _ST_ORDER else 99, kv[0]))]
     ev_names = set()
     for d in _drops_all():
         if isinstance(d, dict):
@@ -1889,6 +1970,10 @@ def _stats_detail_compute(p):
                         'buyers': len(buyers), 'order_amount': amt_sum,
                         'aov': (amt_sum // n_ord) if n_ord else 0},
             'series': series, 'by_product': by_product, 'by_event': by_event,
+            'by_status': by_status,
+            'all_status': {'rev': sum(x['rev'] for x in by_status),
+                           'amt': sum(x['s'] for x in by_status),
+                           'cnt': sum(x['c'] for x in by_status)},
             'events': sorted(ev_names)}
 
 @admin_router.get('/admin/api/stats/detail')
@@ -1917,6 +2002,13 @@ def api_stats_detail_csv(request: Request):
     row()
     row('[기간별]'); row('구간', '품목매출', '주문수')
     for x in d['series']: row(x['k'], x['v'], x['c'])
+    row()
+    row('[결제상태별]', '동일 필터 · 상태 제외분 포함')
+    row('상태', '집계포함', '주문수', '결제액', '품목매출', '수량')
+    for x in d.get('by_status', []):
+        row(x['k'], 'O' if x['on'] else '-', x['c'], x['s'], x['rev'], x['qty'])
+    A = d.get('all_status') or {}
+    row('전체 상태 합계', '', A.get('cnt', 0), A.get('amt', 0), A.get('rev', 0), '')
     row()
     row('[상품별 TOP %d]' % len(d['by_product']))
     row('순위', '상품', '행사', '수량', '품목매출', '주문수', '비중%')
@@ -2954,6 +3046,7 @@ function dxRender(d){const s=d.summary,S=d.series,mx=Math.max(1,...S.map(x=>x.v)
  <div class="card"><div class="k">판매 수량</div><div class="v">${Number(s.qty).toLocaleString('ko-KR')}</div><div class="s">품목 라인 기준</div></div>
  <div class="card"><div class="k">주문 수</div><div class="v">${Number(s.orders).toLocaleString('ko-KR')}건</div><div class="s">구매자 ${Number(s.buyers).toLocaleString('ko-KR')}명</div></div>
  <div class="card"><div class="k">결제액 합계</div><div class="v">${won(s.order_amount)}</div><div class="s">${d.filtered?'해당 품목 포함 주문 총액':'배송비 포함'} · 객단가 ${won(s.aov)}</div></div></div>
+ ${dxStatusHtml(d)}
  <h3>${U} 추이 <span class="tag">${esc(d.from)} ~ ${esc(d.to)} · ${esc(d.status)}</span></h3>
  <div class="chart">${S.map(x=>`<div class="bar" style="height:${Math.round(x.v/mx*100)}%" title="${esc(x.k)} · ${won(x.v)} · ${x.c}건"></div>`).join('')}</div>
  <div class="chart-x"><span>${lb(0)}</span><span>${lb(Math.floor((n-1)/2))}</span><span>${lb(n-1)}</span></div>
@@ -2967,6 +3060,18 @@ function dxRender(d){const s=d.summary,S=d.series,mx=Math.max(1,...S.map(x=>x.v)
   return `<tr${has?' style="cursor:pointer" onclick="dxTgl('+i+')"':''}><td>${has?'▸ ':''}${esc(r.event)}</td><td class="right mono">${Number(r.qty).toLocaleString('ko-KR')}</td><td class="right mono">${won(r.rev)}</td><td class="right mono">${r.orders}</td><td class="right mono">${r.share}%</td><td><button class="btn sm ghost" data-e="${esc(r.is_drop?r.event:'__general__')}" onclick="event.stopPropagation();dxEvt(this)">필터</button></td></tr>`
   +(has?r.opts.map(o=>`<tr class="dxo${i}" style="display:none;background:#faf9f5"><td style="padding-left:22px;color:#555">└ ${esc(o.name)}</td><td class="right mono">${Number(o.qty).toLocaleString('ko-KR')}</td><td class="right mono">${won(o.rev)}</td><td></td><td></td><td></td></tr>`).join(''):'')
  }).join('')||'<tr><td colspan="6" class="loading">데이터 없음</td></tr>'}</table></div></div>`}
+function dxStatusHtml(d){const B=d.by_status||[],A=d.all_status||{};if(!B.length)return '';
+ const cur=d.status||'ALL',excl=B.filter(x=>!x.on),ex=excl.reduce((a,x)=>a+x.s,0);
+ const chip=(k,lb,amt,cnt,on)=>`<button class="btn sm ${on?'':'ghost'}" data-s="${esc(k)}" onclick="dxSt(this)" style="font-size:11px">${esc(lb)} ${won(amt)}<span style="color:${on?'#ffd9d6':'#aaa'};margin-left:5px">${Number(cnt||0).toLocaleString('ko-KR')}건</span></button>`;
+ return `<div class="toolbar" style="margin:0 0 12px;gap:6px;flex-wrap:wrap;align-items:center">
+ <span class="hint" style="margin:0">결제상태별</span>
+ ${chip('ALL','전체',A.amt||0,A.cnt||0,cur==='ALL')}
+ ${B.map(x=>chip(x.k,stKr(x.k),x.s,x.c,x.on&&cur!=='ALL')).join('')}
+ </div>
+ ${(cur!=='ALL'&&ex>0)?`<div class="hint" style="margin:-4px 0 12px;background:#fff8e1;border-left:3px solid var(--amber);padding:8px 10px;color:#7a5c00">
+ 현재 <b>${esc(cur)}</b>만 집계 중 — 제외된 주문 ${won(ex)} (${excl.map(x=>esc(stKr(x.k))+' '+Number(x.c).toLocaleString('ko-KR')+'건').join(' · ')}).
+ <button class="btn sm ghost" data-s="ALL" onclick="dxSt(this)">전체 상태로 보기</button></div>`:''}`}
+function dxSt(el){dxQ.status=el.dataset.s||'PAID';const s=$('#dxStatus');if(s)s.value=dxQ.status;dxRun()}
 function dxProd(el){dxQ.q=el.dataset.n||'';const i=$('#dxProd');if(i)i.value=dxQ.q;dxRun()}
 function dxEvt(el){dxQ.event=el.dataset.e||'';dxQ.q='';dxRun()}
 function dxTgl(i){document.querySelectorAll('.dxo'+i).forEach(x=>{x.style.display=x.style.display==='none'?'':'none'})}

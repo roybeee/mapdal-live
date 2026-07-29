@@ -7957,8 +7957,52 @@ TICKER_DEFAULT = {
               'NEW **ONLINE NOW** — 맵달 KIMBAP 6종 · 맵달 BOWL 6종'],
     'speed': 'normal'}
 
+# ── site_settings 안전장치 (2026-07-29 NEW/DROPS 소실 사고 대응) ──────
+#   drops 는 전 이벤트가 site_settings 단일 행 JSON 이라 쓰기 1회로 전량이
+#   바뀐다. 덮어쓰기 직전 원문을 '__bak::{key}::{ts}' 로 남겨 되돌릴 수 있게 한다.
+_SETTING_BAK_KEYS = ('drops',)
+_SETTING_BAK_KEEP = 10
+_SETTING_BAK_MAX = 4000000
+
+
+def _setting_backup(key):
+    """덮어쓰기 직전 스냅샷 — 키당 최근 N개 유지. 실패해도 본 저장은 진행한다."""
+    try:
+        if key not in _SETTING_BAK_KEYS:
+            return
+        r = one('SELECT value, updated, by_admin FROM site_settings WHERE key=?', (key,))
+        v = (r or {}).get('value')
+        if not isinstance(v, str) or not v.strip() or len(v) > _SETTING_BAK_MAX:
+            return
+        bk = '__bak::%s::%s-%s' % (key, re.sub(r'\D', '', now_iso())[:14], secrets.token_hex(2))
+        last = one('SELECT value FROM site_settings WHERE key LIKE ? ORDER BY key DESC LIMIT 1',
+                   ('__bak::%s::%%' % key,))
+        if last and (last.get('value') or '') == v:      # 직전 백업과 동일하면 생략
+            return
+        run('INSERT INTO site_settings VALUES(?,?,?,?)',
+            (bk, v, (r or {}).get('updated') or now_iso(), (r or {}).get('by_admin') or ''))
+        olds = rows('SELECT key FROM site_settings WHERE key LIKE ? ORDER BY key DESC',
+                    ('__bak::%s::%%' % key,))
+        for o in olds[_SETTING_BAK_KEEP:]:
+            run('DELETE FROM site_settings WHERE key=?', (o['key'],))
+    except Exception:
+        pass
+
+
+def _setting_baks(key):
+    try:
+        return [{'key': r['key'], 'len': len(r.get('value') or ''),
+                 'updated': r.get('updated') or '', 'by_admin': r.get('by_admin') or '',
+                 'count': (len(jload(r.get('value'), [])) if isinstance(jload(r.get('value'), None), list) else -1)}
+                for r in rows('SELECT key, value, updated, by_admin FROM site_settings '
+                              'WHERE key LIKE ? ORDER BY key DESC', ('__bak::%s::%%' % key,))]
+    except Exception:
+        return []
+
+
 def _setting_put(key, value, by=''):
     v = json.dumps(value, ensure_ascii=False)
+    _setting_backup(key)
     if run('UPDATE site_settings SET value=?, updated=?, by_admin=? WHERE key=?',
            (v, now_iso(), by, key)) == 0:
         run('INSERT INTO site_settings VALUES(?,?,?,?)', (key, v, now_iso(), by))
@@ -8374,13 +8418,39 @@ def _drop_cats(d):
             out.append(cid); seen.add(cid)
     return out[:4]
 
+# 마지막 드롭 읽기 결과 — /admin/api/drops/diag 로 노출한다.
+#   '행 없음'·'JSON 파싱 실패'·'리스트 아님'·'DB 예외'를 구분하기 위한 계측이며
+#   반환값 규약(항상 list)은 기존과 동일하다.
+_DROPS_READ = {'ts': '', 'row': False, 'raw_len': -1, 'parsed': '', 'err': ''}
+
+
 def _drops_all():
+    st = {'ts': now_iso(), 'row': False, 'raw_len': -1, 'parsed': '', 'err': ''}
     try:
         r = one("SELECT value FROM site_settings WHERE key='drops'")
-        d = jload(r.get('value'), []) if r else []
+        st['row'] = bool(r)
+        raw = (r or {}).get('value')
+        st['raw_len'] = len(raw) if isinstance(raw, str) else -1
+        d = jload(raw, None) if r else []
+        st['parsed'] = type(d).__name__
+        _DROPS_READ.update(st)
         return d if isinstance(d, list) else []
-    except Exception:
+    except Exception as e:
+        st['err'] = '%s: %s' % (type(e).__name__, str(e)[:200])
+        _DROPS_READ.update(st)
         return []
+
+
+def _drops_trash_put(d, by=''):
+    """삭제된 이벤트 원본을 휴지통(site_settings key='drops_trash')에 보관 — 최근 30건."""
+    try:
+        cur = jload((one("SELECT value FROM site_settings WHERE key='drops_trash'") or {}).get('value'), [])
+        if not isinstance(cur, list):
+            cur = []
+        cur.append({'at': now_iso(), 'by': by, 'drop': d})
+        _setting_put('drops_trash', cur[-30:], by)
+    except Exception:
+        pass
 
 def _drop_dt(s):
     """'YYYY-MM-DDTHH:MM'(KST 벽시계) → naive datetime. 실패 시 None."""
@@ -9239,10 +9309,125 @@ def api_drops_delete(request: Request, body: dict = Body(...)):
         if po.get('managed') and po.get('product_id'):
             try: run('UPDATE products SET soldout=1 WHERE id=?', (po['product_id'],))
             except Exception: pass
+    _drops_trash_put(gone, a['name'])          # 하드 삭제 금지 — 휴지통 보관 후 제거
     _setting_put('drops', nd, a['name'])
     _HOME_DROPS_CACHE['body'] = None
-    audit(a, 'NEW/DROPS삭제', '#%d' % did, '')
+    audit(a, 'NEW/DROPS삭제', '#%d' % did, str(gone.get('title') or '')[:60])
     return {'ok': True}
+
+
+# ── 사고 대응 라우트 (대표 전용) ────────────────────────────────────────
+#   diag  : 왜 안 보이는지 (행 유무 · 원문 길이 · 파싱 결과 · 마지막 수정자/시각)
+#   raw   : 원문 그대로 내려받기 (파싱 실패 시 복구 원본)
+#   restore: 백업/휴지통/원문에서 되돌리기
+@admin_router.get('/admin/api/drops/diag')
+def api_drops_diag(request: Request):
+    a = get_actor(request); need(a, 3, '드롭 진단')
+    r = one("SELECT value, updated, by_admin FROM site_settings WHERE key='drops'")
+    raw = (r or {}).get('value')
+    parsed = jload(raw, None)
+    out = {'now': now_iso(), 'last_read': dict(_DROPS_READ),
+           'drops_row': {'exists': bool(r),
+                         'updated': (r or {}).get('updated') or '',
+                         'by_admin': (r or {}).get('by_admin') or '',
+                         'length': len(raw) if isinstance(raw, str) else -1,
+                         'json_ok': isinstance(parsed, list),
+                         'count': len(parsed) if isinstance(parsed, list) else -1,
+                         'head': (raw or '')[:300], 'tail': (raw or '')[-300:]},
+           'backups': _setting_baks('drops')}
+    try:
+        out['settings'] = [{'key': x['key'], 'len': len(x.get('value') or ''),
+                            'updated': x.get('updated') or '', 'by_admin': x.get('by_admin') or ''}
+                           for x in rows('SELECT key, value, updated, by_admin FROM site_settings ORDER BY key')]
+    except Exception as e:
+        out['settings'] = ['ERR %s' % e]
+    try:
+        tr = jload((one("SELECT value FROM site_settings WHERE key='drops_trash'") or {}).get('value'), [])
+        out['trash'] = [{'at': t.get('at'), 'by': t.get('by'),
+                         'id': (t.get('drop') or {}).get('id'),
+                         'title': (t.get('drop') or {}).get('title')}
+                        for t in (tr if isinstance(tr, list) else []) if isinstance(t, dict)]
+    except Exception as e:
+        out['trash'] = ['ERR %s' % e]
+    try:
+        ensure_ready()
+        pn, pp = _state.get('pname') or 'name', _state.get('pprice') or 'price'
+        out['mpd_products'] = [{'id': x.get('id'), 'name': x.get(pn), 'price': x.get(pp),
+                                'soldout': x.get('soldout')}
+                               for x in rows('SELECT * FROM products WHERE id LIKE ? ORDER BY id',
+                                             ('mpd::%',))]
+    except Exception as e:
+        out['mpd_products'] = ['ERR %s' % e]
+    try:
+        out['audit'] = rows('SELECT created, actor, action, target, detail FROM audit_log '
+                            'WHERE action LIKE ? ORDER BY created DESC LIMIT 50', ('NEW/DROPS%',))
+    except Exception as e:
+        out['audit'] = ['ERR %s' % e]
+    return JSONResponse(out, headers={'Cache-Control': 'no-store'})
+
+
+@admin_router.get('/admin/api/drops/raw')
+def api_drops_raw(request: Request):
+    """site_settings 원문을 그대로 내려준다 (?key= 로 백업본 지정 가능)."""
+    a = get_actor(request); need(a, 3, '드롭 원문 조회')
+    key = (request.query_params.get('key') or 'drops').strip()
+    if key != 'drops' and not key.startswith('__bak::drops::') and key != 'drops_trash':
+        raise HTTPException(400, 'drops · drops_trash · __bak::drops::* 만 조회할 수 있습니다')
+    r = one('SELECT value FROM site_settings WHERE key=?', (key,))
+    if not r:
+        raise HTTPException(404, '해당 키가 없습니다: %s' % key)
+    audit(a, 'NEW/DROPS원문조회', key, '')
+    return Response(content=(r.get('value') or ''),
+                    media_type='application/json; charset=utf-8',
+                    headers={'Cache-Control': 'no-store',
+                             'Content-Disposition': 'inline; filename="drops.json"'})
+
+
+@admin_router.post('/admin/api/drops/restore')
+def api_drops_restore(request: Request, body: dict = Body(...)):
+    """복원: from=bak(key) · trash(id 또는 전체) · raw(value 문자열).
+    현재 값은 _setting_put 의 자동 백업으로 보존되므로 되돌리기가 가능하다."""
+    a = get_actor(request); need(a, 3, '드롭 복원')
+    frm = str(body.get('from') or '').strip().lower()
+    cur = [d for d in _drops_all() if isinstance(d, dict)]
+    if frm == 'bak':
+        key = str(body.get('key') or '').strip()
+        if not key.startswith('__bak::drops::'):
+            raise HTTPException(400, '백업 키 형식이 아닙니다')
+        r = one('SELECT value FROM site_settings WHERE key=?', (key,))
+        if not r:
+            raise HTTPException(404, '백업을 찾을 수 없습니다')
+        nd = jload(r.get('value'), None)
+        if not isinstance(nd, list):
+            raise HTTPException(400, '백업 JSON 파싱 실패 — 원문(/admin/api/drops/raw?key=…)을 확인하세요')
+    elif frm == 'raw':
+        nd = jload(str(body.get('value') or ''), None)
+        if not isinstance(nd, list):
+            raise HTTPException(400, 'value 는 JSON 배열이어야 합니다')
+    elif frm == 'trash':
+        tr = jload((one("SELECT value FROM site_settings WHERE key='drops_trash'") or {}).get('value'), [])
+        tr = [t for t in (tr if isinstance(tr, list) else []) if isinstance(t, dict)]
+        want = body.get('id')
+        pick = [t['drop'] for t in tr if isinstance(t.get('drop'), dict)
+                and (want is None or num((t.get('drop') or {}).get('id')) == num(want))]
+        if not pick:
+            raise HTTPException(404, '휴지통에 해당 이벤트가 없습니다')
+        have = {num(d.get('id')) for d in cur}
+        nd = cur + [d for d in pick if num(d.get('id')) not in have]
+    else:
+        raise HTTPException(400, "from 은 bak · trash · raw 중 하나여야 합니다")
+    nd = [d for d in nd if isinstance(d, dict)]
+    for d in nd:                                   # 연동 상품 판매 재개
+        for po in _drop_opts_norm(d.get('options')):
+            if po.get('managed') and po.get('product_id'):
+                try:
+                    run('UPDATE products SET soldout=0 WHERE id=?', (po['product_id'],))
+                except Exception:
+                    pass
+    _setting_put('drops', nd, a['name'])
+    _HOME_DROPS_CACHE['body'] = None
+    audit(a, 'NEW/DROPS복원', frm, '%d건 (이전 %d건)' % (len(nd), len(cur)))
+    return {'ok': True, 'count': len(nd), 'ids': [num(d.get('id')) for d in nd]}
 
 # 전 페이지 주입 스크립트: .ticker-track을 /api/ticker 내용으로 교체.
 # **문구** → <b>흰색 강조</b> · 항목 0개면 티커 숨김 · API 이상 시 기존 문구 유지(fail-open)

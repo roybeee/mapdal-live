@@ -885,19 +885,107 @@ async def inicis_mobile_return(req: Request):
         pass
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
+def _noti_client_ip(req) -> str:
+    """노티 발신 IP — Cloudflare 프록시 뒤라 CF-Connecting-IP 를 우선한다.
+       이니시스 공지 IP: 203.238.37.15 / 183.109.71.153 (기록용 — 차단하지 않는다.
+       IP 로 막다가 이니시스 대역 변경 시 입금통보가 전멸하는 쪽이 훨씬 위험하고,
+       위조 방어는 주문존재·금액일치·상태가드가 이미 수행한다)."""
+    try:
+        return (req.headers.get('cf-connecting-ip')
+                or req.headers.get('x-forwarded-for', '').split(',')[0].strip()
+                or (req.client.host if req.client else '') or '-')
+    except Exception:
+        return '-'
+
+def _vbank_deposit_apply(oid: str, amt: int, tid: str, via: str, extra: str = ''):
+    """가상계좌 입금통보 공통 적용 — PC(no_*)·모바일/PRO(P_STATUS=02) 양쪽에서 호출.
+
+    반환 (code, note):
+      'paid'      전환 성공 (포인트·GA·알림까지 완료)
+      'dup'       이미 PAID — 재수신 무시 (멱등)
+      'cancelled' 취소된 주문의 뒤늦은 입금 — 되살리지 않고 환불 필요 알림
+      'mismatch'  금액 불일치 — 전환하지 않고 관리자 경고
+      'missing'   주문 없음
+    응답(OK/FAIL) 판단은 호출부가 한다."""
+    with db() as c:
+        order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not order:
+        return 'missing', '주문 없음'
+    st = str(order['status'] or '')
+    if st == 'CANCELLED':
+        # 취소된 주문의 뒤늦은 입금 — PAID 로 되살리지 않는다(재고 이미 복원됨).
+        _pay_log(oid, 'DEPOSIT_AFTER_CANCEL',
+                 '취소된 주문에 가상계좌 입금 %s원 · %s — 수동 환불 필요' % (format(amt, ','), extra or via))
+        try:
+            import admin_v2 as _av
+            _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '취소후입금', oid,
+                      '가상계좌 %s원 입금(%s) — 이니시스 상점관리자에서 환불 처리 필요' % (format(amt, ','), via))
+        except Exception:
+            pass
+        return 'cancelled', '취소후입금'
+    if st == 'PAID':
+        _pay_log(oid, 'VBANK_NOTI', '입금통보 재수신(%s) — 이미 결제완료 · 무시' % via)
+        return 'dup', '이미 PAID'
+    if amt != int(order['amount']):
+        _pay_log(oid, 'AMOUNT_MISMATCH',
+                 '입금통보 %s원 ≠ 주문 %s원 (%s) — 전환 보류, 관리자 확인 필요'
+                 % (format(amt, ','), format(int(order['amount']), ','), via))
+        try:
+            import admin_v2 as _av
+            _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '입금금액불일치', oid,
+                      '통보 %s원 ≠ 주문 %s원 — 이니시스 입금내역 대조 필요'
+                      % (format(amt, ','), format(int(order['amount']), ',')))
+        except Exception:
+            pass
+        return 'mismatch', '금액 불일치'
+    # 채번TID(payment_key)는 환불 API 의 기준값 — 입금TID(no_tid)로 덮지 않는다.
+    # 비어 있을 때만 통보 TID 로 보충한다.
+    with db() as c:
+        try:
+            c.exec("UPDATE orders SET status='PAID', pay_method='VBank', paid_at=?, "
+                   "payment_key=CASE WHEN COALESCE(payment_key,'')='' THEN ? ELSE payment_key END "
+                   "WHERE order_id=? AND status<>'PAID'", (kst_iso(), tid or '', oid))
+        except Exception:                             # paid_at 컬럼 미생성 DB 대비
+            c.exec("UPDATE orders SET status='PAID', pay_method='VBank', "
+                   "payment_key=CASE WHEN COALESCE(payment_key,'')='' THEN ? ELSE payment_key END "
+                   "WHERE order_id=? AND status<>'PAID'", (tid or '', oid))
+    _pay_log(oid, 'PAID', '가상계좌 입금 확인 · %s원%s' % (format(amt, ','), (' · ' + extra) if extra else ''))
+    _award_purchase_points(oid)                       # 멱등: 내부에서 중복 방지
+    _ga4_mp_purchase(oid)                             # 서버사이드 purchase 백업
+    try:
+        import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
+    except Exception:
+        pass
+    return 'paid', '입금 확인'
+
+def _noti_unparsed_audit(via: str, req, form: dict):
+    """주문번호를 못 찾은 노티 — 원문을 감사로그에 남겨 사람이 추적할 수 있게 한다.
+       (2026-07-29 사고 교훈: 무처리 + 'OK' 응답은 입금을 소리 없이 유실시킨다)"""
+    try:
+        raw = '&'.join('%s=%s' % (k, v) for k, v in list(form.items())[:25])[:300]
+        import admin_v2 as _av
+        _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '노티파싱실패', via,
+                  'IP %s · %s' % (_noti_client_ip(req), raw or '(빈 본문)'))
+    except Exception:
+        pass
+
 @app.api_route('/inicis/vbank-noti', methods=['GET', 'POST'])
 async def inicis_vbank_noti(req: Request):
-    """PC 가상계좌 입금통보 수신.
+    """가상계좌 입금통보 수신 (PC NOTIPC · PRO/모바일 겸용).
 
-    이니시스는 고객이 채번된 계좌에 실제 입금했을 때만 이 URL 로 통보를 보낸다.
-    (채번 시점의 승인 응답은 '계좌 발급'일 뿐이므로 PAID 로 보면 안 된다.)
-
-    · 상점관리자 > 거래내역 > 가상계좌 > 입금통보방식선택 에서
-      'URL 수신사용' 으로 설정하고 이 주소를 등록해야 통보가 온다.
-    · 처리 성공 시 반드시 평문 "OK" 만 응답해야 한다.
-      다른 응답이면 이니시스가 최대 10회 재전송한다.
-    · 통보는 euc-kr 로 올 수 있어 인코딩을 관대하게 처리한다.
+    이니시스 공식 규격(manual.inicis.com/pay/etc-noti.html) 두 계열을 모두 처리한다:
+      ① PC(NOTIPC)  : no_oid(주문번호) · no_tid(입금TID, 채번TID와 다름) ·
+                       amt_input(입금액) · type_msg(0200=정상) · nm_input(입금자)
+                       — euc-kr POST. 상점관리자 > 거래내역 > 가상계좌 >
+                       입금통보방식선택 'URL 수신사용' 에 이 주소를 등록해야 온다.
+                       ※ MID 를 바꾸면 새 MID 상점관리자에 다시 등록해야 한다.
+      ② PRO/모바일   : P_STATUS '00'=채번통보(입금 아님!) / '02'=입금통보 ·
+                       P_OID · P_AMT · P_TID(채번TID)
+    처리 성공/멱등 시 평문 "OK" — 그 외 응답이면 이니시스가 24시간 동안
+    약 10분 주기(최대 10회) 재전송하므로, 내부 오류·파싱 실패 시에는 일부러
+    OK 를 주지 않아 재시도 기회를 남긴다.
     """
+    form = {}
     try:
         if req.method == 'POST':
             raw = await req.body()
@@ -912,120 +1000,145 @@ async def inicis_vbank_noti(req: Request):
             form = dict(req.query_params)
         for k, v in req.query_params.items():
             form.setdefault(k, v)
+        if not form:                                  # 파라미터 없는 접근(모니터링 핑 등)
+            return PlainTextResponse('OK')
 
-        # 필드명은 연동 API 에 따라 편차가 있어 후보를 모두 본다.
-        oid = (form.get('P_OID') or form.get('oid') or form.get('MOID')
-               or form.get('P_NOTI') or '')
-        tid = (form.get('P_TID') or form.get('tid') or '')
-        st  = str(form.get('P_STATUS') or form.get('resultCode') or '').strip()
-        amt_raw = (form.get('P_AMT') or form.get('price') or form.get('TotPrice') or '0')
+        def _amt(*keys):
+            for k in keys:
+                v = str(form.get(k) or '').replace(',', '').strip()
+                if v:
+                    try: return int(v)
+                    except ValueError: pass
+            return 0
+
+        # ── ① PC(NOTIPC) 계열: no_* 필드 ─────────────────────────────
+        if form.get('no_oid') or form.get('no_tid') or form.get('amt_input'):
+            oid = str(form.get('no_oid') or '').strip()
+            tid = str(form.get('no_tid') or '').strip()
+            tmsg = str(form.get('type_msg') or '').strip()
+            amt = _amt('amt_input')
+            extra = ('입금자 %s · %s %s' % (form.get('nm_input') or '-',
+                                            form.get('nm_inputbank') or '', form.get('no_vacct') or '')).strip()
+            if not oid:
+                _noti_unparsed_audit('PC가상계좌노티', req, form)
+                return PlainTextResponse('FAIL')
+            if tmsg and tmsg != '0200':               # 정상(0200) 외 구분 — 기록만
+                _pay_log(oid, 'VBANK_NOTI', 'PC 노티 수신 · 거래구분 %s (미처리) · %s원' % (tmsg, format(amt, ',')))
+                return PlainTextResponse('OK')
+            code, _note = _vbank_deposit_apply(oid, amt, tid, 'PC노티', extra)
+            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+
+        # ── ② PRO/모바일 계열: P_STATUS ──────────────────────────────
+        oid = str(form.get('P_OID') or form.get('oid') or form.get('MOID')
+                  or form.get('P_NOTI') or '').strip()
+        tid = str(form.get('P_TID') or form.get('tid') or '').strip()
+        st = str(form.get('P_STATUS') or '').strip()
+        amt = _amt('P_AMT', 'price', 'TotPrice')
+        if not oid:
+            _noti_unparsed_audit('가상계좌노티', req, form)
+            return PlainTextResponse('FAIL')
+        if st == '02':                                # 입금통보 — 유일한 PAID 전환 신호
+            extra = ('입금자 %s · %s' % (form.get('P_UNAME') or '-', form.get('P_FN_NM') or '')).strip(' ·')
+            code, _note = _vbank_deposit_apply(oid, amt, tid, 'P노티(02)', extra)
+            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+        if st == '00':                                # 채번통보 — 입금 아님. 기록만.
+            _pay_log(oid, 'VBANK_ISSUED', '채번통보 수신(P_STATUS=00) · %s원 — 입금 아님, 대기 유지' % format(amt, ','))
+            return PlainTextResponse('OK')
+        _pay_log(oid, 'VBANK_NOTI', '미상 노티 수신 · P_STATUS=%s · %s원 (미처리)' % (st or '-', format(amt, ',')))
+        return PlainTextResponse('OK')
+    except Exception as e:
+        # OK 를 돌려주면 재전송이 끊겨 입금이 유실된다 — 실패를 알리고 재시도를 받는다.
         try:
-            amt = int(str(amt_raw).replace(',', '').strip() or 0)
-        except ValueError:
-            amt = 0
-
-        # 입금 성공 코드만 처리. (00/0000 이외는 입금취소·오류 통보)
-        if oid and st in ('00', '0000'):
-            with db() as c:
-                order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
-                do_award = False
-                # 취소된 주문의 뒤늦은 입금 — PAID 로 되살리지 않는다(재고 이미 복원됨).
-                #   기록(_pay_log·audit)은 자체 커넥션을 여는 함수라 with db() 안에서
-                #   호출하면 SQLite BEGIN IMMEDIATE 중첩 잠금으로 유실된다 → 블록 밖에서.
-                late_deposit = bool(order and order['status'] == 'CANCELLED')
-                if late_deposit:
-                    pass
-                elif order and order['status'] != 'PAID':
-                    if amt == int(order['amount']):        # 금액 위변조 검증
-                        try:
-                            c.exec("UPDATE orders SET status='PAID', payment_key=?, "
-                                   "pay_method='VBank', paid_at=? "
-                                   "WHERE order_id=? AND status<>'PAID'",
-                                   (tid or (order.get('payment_key') or ''), kst_iso(), oid))
-                        except Exception:             # paid_at 미생성 DB 대비
-                            c.exec("UPDATE orders SET status='PAID', payment_key=?, "
-                                   "pay_method='VBank' WHERE order_id=? AND status<>'PAID'",
-                                   (tid or (order.get('payment_key') or ''), oid))
-                        do_award = True
-            if late_deposit:
-                _pay_log(oid, 'DEPOSIT_AFTER_CANCEL',
-                         '취소된 주문에 가상계좌 입금 %s원 · TID …%s — 수동 환불 필요'
-                         % (format(amt, ','), str(tid)[-6:]))
-                try:
-                    import admin_v2 as _av
-                    _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '취소후입금', oid,
-                              '가상계좌 %s원 입금 — 이니시스 상점관리자에서 환불 처리 필요' % format(amt, ','))
-                except Exception:
-                    pass
-            if do_award:
-                _pay_log(oid, 'PAID', '가상계좌 입금 확인 · %s원' % format(amt, ','))
-                _award_purchase_points(oid)                # 멱등: 내부에서 중복 방지
-                _ga4_mp_purchase(oid)                      # 서버사이드 purchase 백업
-                try:
-                    import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
-                except Exception:
-                    pass
-    except Exception:
-        # 예외가 나도 OK 를 돌려주지 않으면 10회 재전송된다.
-        # 통보 자체는 수신했으므로 OK 로 응답하고 로그로 남긴다.
-        pass
-    return PlainTextResponse('OK')
+            import admin_v2 as _av
+            _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '노티처리오류', '/inicis/vbank-noti',
+                      (str(e)[:120] or 'unknown'))
+        except Exception:
+            pass
+        return PlainTextResponse('FAIL', status_code=500)
 
 @app.api_route('/inicis/mobile-noti', methods=['GET', 'POST'])
 async def inicis_mobile_noti(req: Request):
-    """모바일 백단 결과통보(P_NOTI_URL). 1trs 방식·가상계좌 입금통보가 여기로 온다.
-       화면 이동 없이 서버 간 통신이므로 평문 'OK' 를 반환해야 한다."""
-    if req.method == 'POST':
-        form = dict(await req.form())
-    else:
-        form = dict(req.query_params)
-    status = str(form.get('P_STATUS', ''))
-    oid    = form.get('P_OID', '') or form.get('P_NOTI', '')
-    tid    = form.get('P_TID', '')
-    if status == '00' and oid:
+    """모바일 백단 결과통보(P_NOTI_URL).
+
+    P_STATUS 규격: '00' = 승인/채번 성공, '02' = 가상계좌 입금통보.
+    · 가상계좌 + '00' 은 '계좌 발급'일 뿐이다 — PAID 로 만들면 미입금 발송 사고.
+      (2026-07-29 이전 코드가 이 오인을 갖고 있었다)
+    · 실제 입금은 '02' 에서만 PAID 전환한다.
+    · 가상계좌가 아닌 수단의 '00'(1trs 승인통보)은 종전대로 금액검증 후 PAID.
+    """
+    form = {}
+    try:
+        if req.method == 'POST':
+            form = dict(await req.form())
+        else:
+            form = dict(req.query_params)
+        for k, v in req.query_params.items():
+            form.setdefault(k, v)
+        if not form:
+            return PlainTextResponse('OK')
+
+        status = str(form.get('P_STATUS', '')).strip()
+        oid    = str(form.get('P_OID', '') or form.get('P_NOTI', '')).strip()
+        tid    = str(form.get('P_TID', '')).strip()
+        ptype  = str(form.get('P_TYPE', '') or '').strip()
         try:
+            amt = int(str(form.get('P_AMT', '0')).replace(',', '').strip() or 0)
+        except ValueError:
+            amt = 0
+        vbankish = ptype.upper() in ('VBANK', 'VACCT') or bool(str(form.get('P_VACT_NUM') or '').strip())
+
+        if not oid:
+            _noti_unparsed_audit('모바일노티', req, form)
+            return PlainTextResponse('FAIL')
+
+        if status == '02':                            # 가상계좌 입금통보 → PAID
+            extra = ('입금자 %s · %s' % (form.get('P_UNAME') or '-', form.get('P_FN_NM') or '')).strip(' ·')
+            code, _note = _vbank_deposit_apply(oid, amt, tid, '모바일노티(02)', extra)
+            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+
+        if status == '00' and vbankish:               # 채번통보 — 입금 아님. 기록만.
+            _pay_log(oid, 'VBANK_ISSUED', '모바일 채번통보 수신(00) · %s원 — 입금 아님, 대기 유지' % format(amt, ','))
+            return PlainTextResponse('OK')
+
+        if status == '00':                            # 1trs 승인통보(카드 등) — 종전 동작 유지
             with db() as c:
                 order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
-                # 취소된 주문의 뒤늦은 입금통보 — PAID 로 되살리지 않는다(재고 이미 복원됨).
-                #   기록은 with db() 밖에서 수행한다(중첩 잠금 방지 — PC 노티와 동일).
                 _late = bool(order and order['status'] == 'CANCELLED')
-                if _late:
-                    _paid = False
-                elif order and order['status'] != 'PAID':
-                    try:
-                        paid = int(str(form.get('P_AMT', '0')).replace(',', '') or 0)
-                    except ValueError:
-                        paid = 0
-                    if paid == int(order['amount']):
-                        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, paid_at=? "
-                               "WHERE order_id=? AND status<>'PAID'",
-                               (tid, form.get('P_TYPE', ''), kst_iso(), oid))
-                        _paid = True
-                    else:
-                        _paid = False
-                else:
-                    _paid = False
+                _paid = False
+                if (not _late) and order and order['status'] != 'PAID' and amt == int(order['amount']):
+                    c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, paid_at=? "
+                           "WHERE order_id=? AND status<>'PAID'",
+                           (tid, ptype, kst_iso(), oid))
+                    _paid = True
             if _late:
-                _amt_disp = str(form.get('P_AMT', '0')).replace(',', '').strip() or '0'
                 _pay_log(oid, 'DEPOSIT_AFTER_CANCEL',
-                         '취소된 주문에 입금통보 %s원 · TID …%s — 수동 환불 필요'
-                         % (_amt_disp, str(tid)[-6:]))
+                         '취소된 주문에 승인통보 %s원 · TID …%s — 수동 환불 필요' % (format(amt, ','), tid[-6:]))
                 try:
                     import admin_v2 as _av
                     _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '취소후입금', oid,
-                              '모바일 노티 %s원 — 이니시스 상점관리자에서 환불 처리 필요' % _amt_disp)
+                              '모바일 노티 %s원 — 이니시스 상점관리자에서 환불 처리 필요' % format(amt, ','))
                 except Exception:
                     pass
             if _paid:
+                _pay_log(oid, 'PAID', '%s · 모바일 승인통보 · TID …%s' % (ptype or 'Card', tid[-6:]))
                 _award_purchase_points(oid)
-                _ga4_mp_purchase(oid)                      # 서버사이드 purchase 백업
+                _ga4_mp_purchase(oid)                 # 서버사이드 purchase 백업
                 try:
                     import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
                 except Exception:
                     pass
+            return PlainTextResponse('OK')
+
+        _pay_log(oid, 'VBANK_NOTI', '모바일 노티 수신 · P_STATUS=%s (미처리)' % (status or '-'))
+        return PlainTextResponse('OK')
+    except Exception as e:
+        try:
+            import admin_v2 as _av
+            _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, '노티처리오류', '/inicis/mobile-noti',
+                      (str(e)[:120] or 'unknown'))
         except Exception:
             pass
-    return PlainTextResponse('OK')
+        return PlainTextResponse('FAIL', status_code=500)
 
 def _ga_cookie_ids(req):
     """요청 쿠키에서 GA4 client_id / session_id 추출 (없으면 빈 문자열 2개).

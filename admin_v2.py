@@ -950,9 +950,11 @@ def api_order_mark_paid(oid: str, request: Request):
             (now_iso(), oid))
     except Exception:                                 # paid_at 컬럼 미생성 DB 대비
         run("UPDATE orders SET status='PAID' WHERE order_id=? AND status<>'PAID'", (oid,))
-    try:                                                  # 적립은 app 쪽 멱등 함수 재사용
+    try:                                                  # 적립·결제이력·계측은 app 쪽 함수 재사용
         import app as _app
-        _app._award_purchase_points(oid)
+        _app._pay_log(oid, 'PAID', '입금 확인 — 관리자 수동 처리 (%s)' % (a.get('name') or ''))
+        _app._award_purchase_points(oid)                  # 멱등: 내부에서 중복 방지
+        _app._ga4_mp_purchase(oid)                        # 서버사이드 purchase 백업
     except Exception:
         pass
     order_notify_async(oid, 'paid')                       # 결제완료 문자 (이중 가드 내장)

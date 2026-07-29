@@ -7962,7 +7962,9 @@ TICKER_DEFAULT = {
 #   바뀐다. 덮어쓰기 직전 원문을 '__bak::{key}::{ts}' 로 남겨 되돌릴 수 있게 한다.
 _SETTING_BAK_KEYS = ('drops',)
 _SETTING_BAK_KEEP = 10
-_SETTING_BAK_MAX = 4000000
+_SETTING_BAK_KEEP_BIG = 3          # 500KB 초과 블롭은 3개만 (스토리지 상한 방어)
+_SETTING_BAK_BIG = 500000
+_SETTING_BAK_MAX = 8000000         # 저장 라우트 상한과 동일 — 저장 가능한 값은 전부 백업
 
 
 def _setting_backup(key):
@@ -7981,9 +7983,10 @@ def _setting_backup(key):
             return
         run('INSERT INTO site_settings VALUES(?,?,?,?)',
             (bk, v, (r or {}).get('updated') or now_iso(), (r or {}).get('by_admin') or ''))
+        keep = _SETTING_BAK_KEEP if len(v) < _SETTING_BAK_BIG else _SETTING_BAK_KEEP_BIG
         olds = rows('SELECT key FROM site_settings WHERE key LIKE ? ORDER BY key DESC',
                     ('__bak::%s::%%' % key,))
-        for o in olds[_SETTING_BAK_KEEP:]:
+        for o in olds[keep:]:
             run('DELETE FROM site_settings WHERE key=?', (o['key'],))
     except Exception:
         pass
@@ -8439,6 +8442,34 @@ def _drops_all():
         st['err'] = '%s: %s' % (type(e).__name__, str(e)[:200])
         _DROPS_READ.update(st)
         return []
+
+
+def _drops_guard():
+    """드롭 쓰기 직전 안전장치 — 목록 전체를 통째로 교체하는 구조이므로,
+    '원문은 있는데 목록이 비어 보이는' 상태에서는 절대 쓰지 않는다.
+
+    배경(2026-07-29 전량 소실 사고): _drops_all() 은 DB 순단·JSON 파싱 실패를
+    모두 조용히 삼키고 [] 를 반환한다. 그 상태로 저장이 들어오면 '기존 이벤트 편집'이
+    '신규 등록'으로 바뀌면서(id 채번이 max+1) 나머지 이벤트가 한 번에 사라지고,
+    감사 로그에는 평범한 저장 한 줄만 남는다. 조용한 전량 소실을 구조적으로 막는다.
+
+    반환: 정상 파싱된 이벤트 목록 (진짜로 비어 있으면 빈 목록)
+    예외: 503 = DB 조회 실패 · 409 = 원문 해석 실패"""
+    try:
+        r = one("SELECT value FROM site_settings WHERE key='drops'")
+    except Exception as e:
+        raise HTTPException(503, 'DB 조회에 실패해 쓰기를 중단했습니다 (%s) — '
+                                 '잠시 후 다시 시도하세요. 기존 이벤트는 그대로입니다.'
+                            % type(e).__name__)
+    raw = (r or {}).get('value')
+    if not r or not isinstance(raw, str) or len(raw.strip()) <= 2:
+        return []                                  # 첫 등록 · 정상적으로 빈 상태
+    parsed = jload(raw, None)
+    if not isinstance(parsed, list):
+        raise HTTPException(409, '드롭 원문(%d자)을 해석하지 못해 덮어쓰기를 중단했습니다. '
+                                 '기존 데이터는 보존돼 있습니다 — /admin/api/drops/diag 로 '
+                                 '확인한 뒤 복원하세요.' % len(raw))
+    return [d for d in parsed if isinstance(d, dict)]
 
 
 def _drops_trash_put(d, by=''):
@@ -9246,7 +9277,8 @@ def api_drops_save(request: Request, body: dict = Body(...)):
         if not any(str(s.get(k) or '').strip() for k in ('name', 'date', 'time', 'desc')): continue
         sched.append({'name': str(s.get('name') or '')[:40], 'date': str(s.get('date') or '')[:20],
                       'time': str(s.get('time') or '')[:20], 'desc': str(s.get('desc') or '')[:80]})
-    ds = [d for d in _drops_all() if isinstance(d, dict)]
+    ds = _drops_guard()                    # 읽기 실패 시 여기서 중단 — 덮어쓰기 금지
+    _base_n = len(ds)
     did = num(body.get('id'))
     cur = next((d for d in ds if num(d.get('id')) == did), None) if did else None
     cats_in = body.get('categories')
@@ -9292,6 +9324,9 @@ def api_drops_save(request: Request, body: dict = Body(...)):
         ds.append(rec)
     if len(json.dumps(ds, ensure_ascii=False)) > 8000000:
         raise HTTPException(400, '저장 용량 초과 — 오래된 이벤트를 삭제해 주세요')
+    if len(ds) not in (_base_n, _base_n + 1):     # 편집=동수 · 신규=+1 외에는 이상
+        raise HTTPException(409, '이벤트 건수가 예상과 다릅니다 (%d → %d) — 저장을 중단했습니다.'
+                            % (_base_n, len(ds)))
     _setting_put('drops', ds, a['name'])
     _HOME_DROPS_CACHE['body'] = None          # 홈 NEW/DROPS 코너 즉시 갱신
     audit(a, 'NEW/DROPS저장', '#%s' % rec['id'], title[:60])
@@ -9301,9 +9336,12 @@ def api_drops_save(request: Request, body: dict = Body(...)):
 def api_drops_delete(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 2, 'NEW/DROPS 관리')
     did = num(body.get('id'))
-    ds = [d for d in _drops_all() if isinstance(d, dict)]
+    ds = _drops_guard()                    # 읽기 실패 시 여기서 중단 — 덮어쓰기 금지
     nd = [d for d in ds if num(d.get('id')) != did]
     if len(nd) == len(ds): raise HTTPException(404, '이벤트를 찾을 수 없습니다')
+    if len(nd) != len(ds) - 1:              # 동일 id 중복 등 이상 상태 — 전량 손실 방어
+        raise HTTPException(409, '삭제 대상이 %d건입니다 (1건이어야 함) — 중단했습니다.'
+                            % (len(ds) - len(nd)))
     gone = next((d for d in ds if num(d.get('id')) == did), None) or {}
     for po in _drop_opts_norm(gone.get('options')):   # 연동 상품 판매중지 — 잔여 링크 구매 차단
         if po.get('managed') and po.get('product_id'):
@@ -9335,6 +9373,10 @@ def api_drops_diag(request: Request):
                          'count': len(parsed) if isinstance(parsed, list) else -1,
                          'head': (raw or '')[:300], 'tail': (raw or '')[-300:]},
            'backups': _setting_baks('drops')}
+    try:
+        out['write_guard'] = {'ok': True, 'count': len(_drops_guard())}
+    except HTTPException as e:
+        out['write_guard'] = {'ok': False, 'status': e.status_code, 'detail': e.detail}
     try:
         out['settings'] = [{'key': x['key'], 'len': len(x.get('value') or ''),
                             'updated': x.get('updated') or '', 'by_admin': x.get('by_admin') or ''}

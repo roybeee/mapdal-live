@@ -32,6 +32,49 @@ def toss_secret():  return os.environ.get('TOSS_SECRET_KEY') or _from_app('TOSS_
 # KG이니시스 설정 (app.py와 동일 소스 — 환경변수 우선, 없으면 app 모듈 기본값=테스트값)
 def inicis_mid():    return os.environ.get('INICIS_MID') or _from_app('INICIS_MID', 'INIpayTest')
 def inicis_iniapi(): return os.environ.get('INICIS_INIAPI') or _from_app('INICIS_INIAPI', 'ItEQKi3rY7uvDS8l')
+
+# ── 이니시스 MID 교체 대응 ────────────────────────────────────────────────
+#   상점아이디(MID)를 교체하면 교체 이전 결제건의 TID 는 '구 MID' 소속이라,
+#   현재 MID·INIAPI key 로 환불을 호출하면 해시 불일치/거래없음으로 전부 실패한다.
+#   이니시스 TID 에는 결제를 처리한 MID(10자)가 그대로 박혀 있으므로,
+#   ① 알고 있는 MID 들을 TID 부분문자열로 대조해 결제 당시 자격증명을 자동 선택하고
+#   ② 구 MID 는 Render 환경변수 INICIS_MID_OLD / INICIS_INIAPI_OLD 로 등록한다
+#      (콤마 구분 복수 지원 · 순서 1:1 짝 · 코드 재배포 불필요, 저장 시 자동 재시작).
+def _inicis_creds():
+    """환불용 자격증명 목록 [(mid, iniapi_key, label)] — 현재 MID 우선, 구 MID 후순위.
+    key 짝이 없는 구 MID 는 제외한다(빈 key 로 호출해도 해시 불일치 오류만 난다)."""
+    creds = []
+    cur_mid, cur_key = inicis_mid(), inicis_iniapi()
+    if cur_mid and cur_key:
+        creds.append((cur_mid, cur_key, ''))
+    olds = [s.strip() for s in (os.environ.get('INICIS_MID_OLD') or '').split(',') if s.strip()]
+    keys = [s.strip() for s in (os.environ.get('INICIS_INIAPI_OLD') or '').split(',') if s.strip()]
+    for i, m in enumerate(olds):
+        if i < len(keys) and m != cur_mid:
+            creds.append((m, keys[i], '구MID'))
+    return creds
+
+# 표준 TID 형식: (Stdpay|INIMX_|INILITE_) + 결제수단토큰 + MID(10자) + yyyymmddHHMMSS + 일련번호
+#   ※ 라우팅은 아래 정규식이 아니라 '설정된 MID 부분문자열 대조'로 한다(형식 변형에 안전).
+#     정규식은 미설정 MID 를 오류 안내문에 보여주기 위한 추출 전용.
+_INICIS_TID_RE = re.compile(r'(?:Stdpay|INIMX_|INILITE_?)(?:CARD|VBNK|BANK|MOBL|VCRD|HPP)([A-Za-z0-9]{10})\d{14}')
+
+def _inicis_mid_of_tid(tid):
+    """TID 에 박힌 결제 당시 MID 판별 — 설정된 MID 대조 우선, 실패 시 형식 추출, 그래도 없으면 ''."""
+    t = str(tid or '')
+    for m, _k, _lbl in _inicis_creds():
+        if m and m in t:
+            return m
+    mt = _INICIS_TID_RE.search(t)
+    return mt.group(1) if mt else ''
+
+def _inicis_cred_for_tid(tid):
+    """TID 소유 MID 의 (mid, iniapi_key, label) 반환 — 등록된 MID 가 아니면 None."""
+    t = str(tid or '')
+    for m, k, lbl in _inicis_creds():
+        if m and m in t:
+            return (m, k, lbl)
+    return None
 def _genv(k):
     return (os.environ.get(k) or '').strip()
 
@@ -850,7 +893,11 @@ def api_order_detail(oid: str, request: Request):
                       'holder': r.get('vbank_holder') or '', 'due': r.get('vbank_due') or ''},
             # 입금대기 건은 관리자가 통장 확인 후 수동으로 입금완료 처리할 수 있다.
             'can_mark_paid': (r.get('status') == 'WAITING_DEPOSIT'),
-            'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID')}
+            'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID'),
+            # 결제 당시 MID(TID 판별) — MID 교체 시 어느 상점관리자 소속 거래인지 즉시 식별.
+            'pay_mid': _inicis_mid_of_tid(r.get(_state['paykey']) if _state['paykey'] else ''),
+            'pay_mid_current': inicis_mid(),
+            'pay_mid_known': bool(_inicis_cred_for_tid(r.get(_state['paykey']) if _state['paykey'] else ''))}
 
 @admin_router.post('/admin/api/orders/{oid}/mark-paid')
 def api_order_mark_paid(oid: str, request: Request):
@@ -1006,23 +1053,42 @@ def api_kst_fix(request: Request, body: dict = Body(...)):
             'total_rows': total_rows, 'total_cells': total_cells, 'detail': report,
             'already_done': bool(mark)}
 
-def _order_cancel_core(a, r, reason):
+def _order_cancel_core(a, r, reason, manual=False):
     """주문취소 공용 코어 — [주문] 상세의 취소 버튼과 [CS] 취소요청 원클릭이 함께 쓴다.
 
     PAID(카드·계좌이체·휴대폰)면 이니시스 INIAPI 환불을 먼저 실행하고, 성공했을
     때만 CANCELLED 로 바꾼다(재고 복원·적립 회수 포함). 실패는 전부 HTTPException
     으로 중단되며 주문·요청 상태는 그대로 남는다(재시도 가능). 가상계좌 입금건은
-    환불 API 규격이 달라(고객 환불계좌 필요) 자동 대상에서 제외하고 수동 안내한다."""
+    환불 API 규격이 달라(고객 환불계좌 필요) 자동 대상에서 제외하고 수동 안내한다.
+
+    환불 자격증명은 현재 MID 고정이 아니라 TID 에 박힌 결제 당시 MID 로 라우팅한다
+    (_inicis_cred_for_tid) — MID 교체 이후에도 구 MID 결제건을 환불할 수 있다.
+
+    manual=True: '수동환불 완료처리' — 이니시스 API 를 호출하지 않고 취소 상태만
+    반영한다(재고 복원·적립 회수·감사로그 포함). 상점관리자에서 이미 환불했거나
+    (가상계좌·구MID 건) 법인계좌로 직접 송금환불한 경우 전용. 돈이 움직이지 않으므로
+    프런트에서 "수동환불" 타이핑 확인을 거친 요청만 들어온다."""
     oid = r['order_id']
     prev_status = r.get('status') or ''
     if prev_status == 'CANCELLED':                    # 이중취소 방지 — 재고 이중복원 차단
         raise HTTPException(400, '이미 취소된 주문입니다')
     refunded = False
-    if r.get('status') == 'PAID':
+    refund_mid_note = ''                              # 구 MID 환불 시 감사로그에 남길 표기
+    if r.get('status') == 'PAID' and not manual:
         tid = r.get(_state['paykey']) if _state['paykey'] else None
         if not tid: raise HTTPException(400, '거래번호(TID)가 없어 자동 환불 불가 — 이니시스 상점관리자에서 직접 취소하세요.')
-        mid = inicis_mid(); iniapi = inicis_iniapi()
-        if not (mid and iniapi): raise HTTPException(400, 'INICIS_MID / INICIS_INIAPI 미설정')
+        if not _inicis_creds(): raise HTTPException(400, 'INICIS_MID / INICIS_INIAPI 미설정')
+        cred = _inicis_cred_for_tid(tid)
+        if not cred:
+            unknown = _inicis_mid_of_tid(tid)
+            raise HTTPException(400,
+                '이 주문은 현재 설정에 없는 상점아이디(%s)로 결제되었습니다 — '
+                'Render 환경변수 INICIS_MID_OLD / INICIS_INIAPI_OLD 에 해당 MID 와 INIAPI key 를 '
+                '추가한 뒤 다시 실행하세요(콤마로 복수 등록 가능 · 코드 재배포 불필요). '
+                '구 계약 해지 등으로 key 확보가 불가하면 이니시스(1588-4954)를 통해 환불한 뒤 '
+                '[수동환불 완료처리]로 주문을 정리하세요.'
+                % (unknown or ('판별 불가 · TID ' + str(tid)[:24])))
+        mid, iniapi, mid_label = cred
         ts = kst_naive().strftime('%Y%m%d%H%M%S')
         try: client_ip = socket.gethostbyname(socket.gethostname())
         except Exception: client_ip = '127.0.0.1'
@@ -1046,7 +1112,9 @@ def _order_cancel_core(a, r, reason):
         if paymethod == 'VBank':
             raise HTTPException(400,
                 '가상계좌 결제건은 자동 환불이 지원되지 않습니다 — '
-                '고객 환불계좌 확인 후 이니시스 상점관리자에서 직접 처리하세요.')
+                '결제 상점아이디 %s%s 의 이니시스 상점관리자(iniweb)에서 고객 환불계좌로 '
+                '직접 환불한 뒤, 주문 상세의 [수동환불 완료처리]로 주문을 정리하세요.'
+                % (mid, ' (구 MID — 현재 설정과 다름)' if mid_label else ''))
         if paymethod not in _PM_OK:
             raise HTTPException(400,
                 '지원하지 않는 결제수단(%s) — 이니시스 상점관리자에서 직접 취소하세요.' % paymethod)
@@ -1069,8 +1137,10 @@ def _order_cancel_core(a, r, reason):
         except Exception:
             raise HTTPException(400, '이니시스 취소 통신 오류')
         if str(res.get('resultCode')) != '00':
-            raise HTTPException(400, '이니시스 취소 실패: ' + str(res.get('resultMsg', '알 수 없는 오류')))
+            raise HTTPException(400, '이니시스 취소 실패: ' + str(res.get('resultMsg', '알 수 없는 오류'))
+                                     + (' (MID %s·구)' % mid if mid_label else ''))
         refunded = True
+        refund_mid_note = (' / MID %s(구)' % mid) if mid_label else ''
     sets, args = ["status='CANCELLED'"], []
     if 'fulfill' in _state['ocols']: sets.append("fulfill='CANCELLED'")
     if 'admin_memo' in _state['ocols']: sets.append('admin_memo=?'); args.append(('[취소] ' + reason)[:300])
@@ -1089,16 +1159,21 @@ def _order_cancel_core(a, r, reason):
         revoked = point_revoke_purchase(oid, by_admin=(a.get('name') if isinstance(a, dict) else '') or 'ADMIN')
     except Exception:
         revoked = 0
-    audit(a, '환불' if refunded else '주문취소', oid,
-          '%s / 금액 %s / 재고복원 %d%s' % (reason, num(r.get('amount')), restored,
-                                          (' / 적립회수 %dP' % revoked) if revoked else ''))
+    manual_paid = bool(manual and prev_status == 'PAID')   # 수동환불 완료처리(외부에서 이미 환불)
+    audit(a, '환불' if refunded else ('수동환불처리' if manual_paid else '주문취소'), oid,
+          '%s / 금액 %s / 재고복원 %d%s%s' % (reason, num(r.get('amount')), restored,
+                                          (' / 적립회수 %dP' % revoked) if revoked else '',
+                                          refund_mid_note if refunded
+                                          else (' / 이니시스 API 미호출(외부 환불 완료 전제)' if manual_paid else '')))
     try:                                              # 결제 진행 이력에도 남긴다 — 실패해도 취소는 유지
         import app as _app
         _app._pay_log(oid, 'CANCELLED', '%s · 이전상태 %s%s'
-                      % (reason[:80], prev_status or '?', ' · 환불완료' if refunded else ''))
+                      % (reason[:80], prev_status or '?',
+                         ' · 환불완료' if refunded else (' · 수동환불(외부 처리)' if manual_paid else '')))
     except Exception:
         pass
-    return {'ok': True, 'refunded': refunded, 'stock_restored_items': restored,
+    return {'ok': True, 'refunded': refunded, 'manual': manual_paid,
+            'stock_restored_items': restored,
             'points_revoked': revoked, 'prev_status': prev_status}
 
 @admin_router.post('/admin/api/orders/{oid}/cancel')
@@ -1107,7 +1182,7 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
     r = one('SELECT * FROM orders WHERE order_id = ?', (oid,))
     if not r: raise HTTPException(404, 'not found')
     reason = (body.get('reason') or '관리자 취소').strip()[:200]
-    return _order_cancel_core(a, r, reason)
+    return _order_cancel_core(a, r, reason, manual=bool(body.get('manual')))
 
 @admin_router.post('/admin/api/orders/{oid}/link-member')
 def api_order_link_member(oid: str, request: Request, body: dict = Body(...)):
@@ -3098,9 +3173,13 @@ function optcsv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|stat
 let TPLCACHE=[];
 async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeURIComponent(oid));
  if(!TPLCACHE.length){try{TPLCACHE=(await api('/admin/api/notify/templates')).rows}catch(e){}}
+ const pmName=({card:'카드',directbank:'계좌이체',vbank:'가상계좌(무통장)',vacct:'가상계좌(무통장)',hpp:'휴대폰'})[String(o.pay_method||'').toLowerCase()]||o.pay_method||'';
+ const midOld=o.pay_mid&&o.pay_mid_current&&o.pay_mid!==o.pay_mid_current;
+ const vbPaid=o.can_refund&&String(o.pay_method||'').toLowerCase().indexOf('v')===0;
+ const midStuck=o.can_refund&&!vbPaid&&o.pay_mid_known===false;
  $('#mbox').innerHTML=`<h3>주문 ${esc(o.order_id)} <span class="st ${esc(o.status)}">${esc(o.status)}</span></h3>
  <div class="kv"><b>일시</b><span class="mono">${esc((o.created||'').slice(0,19).replace('T',' '))}</span>
- <b>금액</b><span class="mono">${won(o.amount)} ${o.method?'· '+esc(o.method):''}</span>
+ <b>금액</b><span class="mono">${won(o.amount)}${o.method?' · '+esc(o.method):(pmName?' · '+esc(pmName):'')}${o.pay_mid?' · MID '+esc(o.pay_mid)+(midOld?'<b style="color:#b5443c">(구)</b>':''):''}</span>
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
  <b>회원 연결</b><span>${o.member_id?('연결됨 · '+esc(o.member_email||o.member_id)):(can(2)?`미연결(비회원) <button class="btn sm" onclick="linkMember('${esc(o.order_id)}')">회원 연결</button>`:'미연결(비회원)')}</span>
  <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}</span>
@@ -3125,10 +3204,14 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <button class="btn sm" onclick="sendNotify('${esc(o.order_id)}')">발송</button></span></div>`:''}
  <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
  ${o.can_mark_paid&&can(2)?`<button class="btn" style="background:#1565c0;color:#fff" onclick="markPaid('${esc(o.order_id)}')">입금 확인 → 결제완료</button>`:''}
- ${can(2)&&o.status!=='CANCELLED'?`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund},'${esc(o.status)}')">${o.can_refund?'결제취소(환불)':(o.status==='WAITING_DEPOSIT'?'입금대기 취소':'주문취소 표시')}</button>`:''}
+ ${can(2)&&o.status!=='CANCELLED'?(vbPaid
+  ?`<button class="btn red" onclick="manualRefundDone('${esc(o.order_id)}')">수동환불 완료처리</button>`
+  :`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund},'${esc(o.status)}')">${o.can_refund?'결제취소(환불)':(o.status==='WAITING_DEPOSIT'?'입금대기 취소':'주문취소 표시')}</button>${midStuck?`<button class="btn ghost" onclick="manualRefundDone('${esc(o.order_id)}')">수동환불 완료처리</button>`:''}`):''}
  ${can(1)?`<button class="btn" onclick="saveFulfill('${esc(o.order_id)}')">저장</button>`:''}
  <button class="btn ghost" onclick="closeM()">닫기</button></div>
- ${o.can_refund&&can(2)?'<div class="hint">결제취소 시 이니시스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
+ ${vbPaid&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>가상계좌 입금완료 건</b> — 자동 환불이 지원되지 않습니다. 결제 상점아이디 <b class="mono">${esc(o.pay_mid||'?')}</b>${midOld?' <b>(구 MID — 현재 설정과 다름)</b>':''} 의 이니시스 상점관리자에서 고객 환불계좌로 직접 환불한 뒤 [수동환불 완료처리]를 누르세요. 재고 복원·적립 회수·감사로그가 함께 처리됩니다.</div>`:''}
+ ${midStuck&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>구 상점아이디 결제 건</b> — MID <b class="mono">${esc(o.pay_mid||'판별 불가')}</b> 로 결제되어 현재 설정으로는 자동 환불이 실패합니다. Render 환경변수 <b class="mono">INICIS_MID_OLD / INICIS_INIAPI_OLD</b> 에 해당 MID·key 를 추가하면 [결제취소(환불)]이 그대로 동작합니다. key 확보가 불가하면 이니시스에서 환불 후 [수동환불 완료처리]를 사용하세요.</div>`:''}
+ ${o.can_refund&&can(2)&&!vbPaid&&!midStuck?'<div class="hint">결제취소 시 이니시스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
  $('#mbg').style.display='flex';}catch(e){toast(e.message)}}
 function closeM(){$('#mbg').style.display='none';$('#mbox').classList.remove('wide')}
 $('#mbg').addEventListener('click',e=>{if(e.target.id==='mbg')closeM()});
@@ -3145,6 +3228,11 @@ async function markPaid(oid){
  if(!confirm('통장에 입금이 확인되었습니까?\n\n결제완료로 변경하면 구매 적립이 지급되고 발송 가능 상태가 됩니다.'))return;
  try{await post('/admin/api/orders/'+encodeURIComponent(oid)+'/mark-paid',{});
   toast('입금 확인 처리되었습니다');closeM();loadOrders(opage||1)}catch(e){toast(e.message)}}
+async function manualRefundDone(oid){
+ if(prompt('이니시스 환불 API를 호출하지 않고 주문만 취소 상태로 정리합니다.\n상점관리자(또는 계좌이체)로 고객에게 이미 환불을 마친 경우에만 진행하세요.\n\n확인을 위해 "수동환불" 을 입력하세요')!=='수동환불')return;
+ const reason=prompt('취소 사유 (감사로그·결제이력에 기록)','수동환불(외부 처리)')||'수동환불(외부 처리)';
+ try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason,manual:true})});
+ toast('수동환불 완료처리 · 재고 복원');closeM();loadOrders(opage)}catch(e){alert(e.message)}}
 async function cancelOrder(oid,refund,st){
  const msg=refund?'이니시스 결제취소(환불)를 실행합니다. 계속할까요?'
   :(st==='WAITING_DEPOSIT'
@@ -4268,7 +4356,7 @@ async function csReq(id,after){_csAfter=(typeof after==='function')?after:null;t
  :(r.order_id?`<div class="hint">연결된 주문(${esc(r.order_id)})을 찾지 못했습니다 — 아래에서 요청만 종결하세요.</div>`
  :'<div class="hint">연결된 주문번호가 없는 요청입니다 — 아래에서 요청만 종결하세요.</div>')}
  ${oneClick&&can(2)?(vbankPaid
- ?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>가상계좌 입금완료 건</b> — 자동 환불이 지원되지 않습니다. 고객 환불계좌 확인 후 이니시스 상점관리자에서 환불하고, 아래에서 요청을 종결하세요.</div>`
+ ?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>가상계좌 입금완료 건</b> — 자동 환불이 지원되지 않습니다. 결제 상점아이디 <b class="mono">${esc(o.pay_mid||'?')}</b>${o.pay_mid&&o.pay_mid_current&&o.pay_mid!==o.pay_mid_current?' <b>(구 MID)</b>':''} 의 이니시스 상점관리자에서 고객 환불계좌로 환불한 뒤, [상세]를 열어 [수동환불 완료처리]로 주문을 정리하고 아래에서 요청을 종결하세요.</div>`
  :`<button class="btn red" style="width:100%;margin:6px 0" onclick="this.disabled=1;csReqCancel('${esc(r.id)}',this)">${o.can_refund?'주문취소 + 이니시스 환불 실행 → 요청 완료':'주문취소 실행 → 요청 완료'}</button>
  <div class="hint">버튼 하나로 처리됩니다: ${o.can_refund?'이니시스 환불 → ':''}주문 CANCELLED · 재고 복원 · 적립 회수 · 요청 완료 (감사로그 기록)</div>`):''}
  ${oneClick&&!can(2)?'<div class="hint">주문취소·환불 실행은 MANAGER 이상 권한이 필요합니다 — 아래 종결만 가능합니다.</div>':''}

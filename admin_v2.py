@@ -308,12 +308,40 @@ SEED_TPL = [
     ('배송완료 안내', 'sms', '', '[맵달SEOUL] #{이름}님, 주문 #{주문번호} 배송이 완료되었습니다. 맛있게 즐겨주세요!'),
 ]
 
+#  ── 택배사 코드 → 이름·배송조회 URL ──────────────────────────────────
+#  조회 딥링크가 확실히 검증된 4사만 공식 페이지로 직결하고, 나머지는
+#  네이버 통합 배송조회(택배사명+운송장 검색)로 폴백한다. 틀린 딥링크로
+#  고객을 404에 보내는 것보다 확실한 폴백이 낫다.
+_COURIERS = (
+    ('cj',     'CJ대한통운',   'https://trace.cjlogistics.com/next/tracking.html?wblNo=%s'),
+    ('post',   '우체국택배',   'https://service.epost.go.kr/trace.RetrieveDomRigiTraceList.comm?sid1=%s'),
+    ('lotte',  '롯데택배',     'https://www.lotteglogis.com/home/reservation/tracking/linkView?InvNo=%s'),
+    ('logen',  '로젠택배',     'https://www.ilogen.com/web/personal/trace/%s'),
+    ('hanjin', '한진택배',     ''),
+    ('cvsnet', 'GS편의점택배', ''),
+    ('cupost', 'CU편의점택배', ''),
+    ('etc',    '기타',         ''),
+)
+
+def courier_name(code):
+    return next((n for c, n, _u in _COURIERS if c == (code or '')), (code or ''))
+
+def track_url(code, tracking):
+    """운송장 배송조회 URL — 검증된 택배사는 공식 조회 페이지, 그 외는 네이버 검색."""
+    t = re.sub(r'[^0-9A-Za-z]', '', str(tracking or ''))
+    if not t: return ''
+    row = next((x for x in _COURIERS if x[0] == (code or '')), None)
+    if row and row[2]: return row[2] % t
+    nm = courier_name(code)
+    q = (((nm + ' ') if nm and nm != '기타' else '') + t).strip()
+    return 'https://search.naver.com/search.naver?query=' + urllib.parse.quote(q)
+
 def ensure_ready():
     if _state['ready']: return
     oc = _cols('orders')
     if oc:
         for col, typ in (('fulfill', "TEXT DEFAULT 'NEW'"), ('tracking', 'TEXT'), ('admin_memo', 'TEXT'),
-                         ('pay_log', 'TEXT')):
+                         ('pay_log', 'TEXT'), ('courier', 'TEXT')):
             if col not in oc:
                 try: run("ALTER TABLE orders ADD COLUMN %s %s" % (col, typ))
                 except Exception: pass
@@ -811,7 +839,7 @@ def api_orders(request: Request):
     page = max(1, int(p.get('page', 1) or 1)); size = 20
     total = num((one('SELECT COUNT(*) AS c FROM orders' + w, tuple(args)) or {}).get('c'))
     sel = ['order_id', 'created', 'status', 'amount', 'items', 'buyer', 'ship_method']
-    sel += [c for c in ('fulfill', 'tracking', 'receipt_url') if c in _state['ocols']]
+    sel += [c for c in ('fulfill', 'tracking', 'courier', 'receipt_url') if c in _state['ocols']]
     rs = rows('SELECT %s FROM orders%s ORDER BY created DESC LIMIT %d OFFSET %d' % (', '.join(sel), w, size, (page - 1) * size), tuple(args))
     out = []
     for r in rs:
@@ -821,7 +849,8 @@ def api_orders(request: Request):
                     'status': r.get('status'), 'fulfill': r.get('fulfill') or 'NEW', 'amount': num(r.get('amount')),
                     'items_label': first[:24] + (' 외 %d' % (len(its) - 1) if len(its) > 1 else ''),
                     'buyer_name': b.get('name', ''), 'phone': b.get('phone', ''),
-                    'ship': r.get('ship_method', ''), 'tracking': r.get('tracking') or ''})
+                    'ship': r.get('ship_method', ''), 'tracking': r.get('tracking') or '',
+                    'courier': r.get('courier') or ''})
     return {'total': total, 'page': page, 'size': size, 'rows': out}
 
 _PAY_LOG_LABELS = {
@@ -882,6 +911,7 @@ def api_order_detail(oid: str, request: Request):
                                + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
                       'selections': (b.get('selections') or [])[:40]},
             'items': items, 'ship_method': r.get('ship_method', ''), 'tracking': r.get('tracking') or '',
+            'courier': r.get('courier') or '',
             'admin_memo': r.get('admin_memo') or '', 'receipt': r.get('receipt_url') or '',
             'method': r.get('method') or '',
             'pay_method': r.get('pay_method') or '',
@@ -949,13 +979,17 @@ def api_fulfill(oid: str, request: Request, body: dict = Body(...)):
     if 'fulfill' not in _state['ocols']: raise HTTPException(400, '컬럼 준비 중 — 새로고침 후 재시도')
     f = body.get('fulfill')
     if f not in ('NEW', 'PREPARING', 'SHIPPED', 'DONE', 'CANCELLED'): raise HTTPException(400, 'bad fulfill')
+    co = (body.get('courier') or '').strip()
+    if co and co not in {c for c, _n, _u in _COURIERS}: raise HTTPException(400, 'bad courier')
     prev = one('SELECT fulfill FROM orders WHERE order_id=?', (oid,))
-    n = run('UPDATE orders SET fulfill=?, tracking=?, admin_memo=? WHERE order_id=?',
-            (f, (body.get('tracking') or '').strip(), (body.get('memo') or '').strip(), oid))
+    extra_c, extra_a = ('', ())
+    if 'courier' in _state['ocols']: extra_c, extra_a = ', courier=?', (co,)
+    n = run('UPDATE orders SET fulfill=?, tracking=?, admin_memo=?%s WHERE order_id=?' % extra_c,
+            (f, (body.get('tracking') or '').strip(), (body.get('memo') or '').strip()) + extra_a + (oid,))
     if not n: raise HTTPException(404, 'not found')
     if f == 'SHIPPED' and (not prev or (prev.get('fulfill') or '') != 'SHIPPED'):
         order_notify_async(oid, 'shipped')            # 배송시작 문자 — 최초 전환 시 1회
-    audit(a, '주문처리변경', oid, '%s / 송장 %s' % (f, body.get('tracking') or '-'))
+    audit(a, '주문처리변경', oid, '%s / %s송장 %s' % (f, (courier_name(co) + ' ') if co else '', body.get('tracking') or '-'))
     return {'ok': True}
 
 #  ── 과거 데이터 시각 보정 (UTC → KST) ────────────────────────────────
@@ -1697,7 +1731,7 @@ def api_orders_csv(request: Request):
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
-    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '우편번호', '주소', '품목', '총수량', '배송방식', '송장번호', '관리자메모', '영수증URL', '응모정보']
+    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '우편번호', '주소', '품목', '총수량', '배송방식', '택배사', '송장번호', '관리자메모', '영수증URL', '응모정보']
     lines = [','.join(head)]
     for r in rs:
         b = jload(r.get('buyer'), {}); its = jload(r.get('items'), [])
@@ -1707,7 +1741,8 @@ def api_orders_csv(request: Request):
             num(r.get('amount')), b.get('name', ''), b.get('phone', ''), b.get('zip', ''),
             ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
              + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')), names,
-            sum(num(it.get('q') or 1) for it in its), r.get('ship_method', ''), r.get('tracking') or '',
+            sum(num(it.get('q') or 1) for it in its), r.get('ship_method', ''),
+            courier_name(r.get('courier') or '') if (r.get('courier') or '') else '', r.get('tracking') or '',
             r.get('admin_memo') or '', r.get('receipt_url') or '',
             _sel_text(b.get('selections'))]))
     audit(a, 'CSV다운로드', 'orders', '%d건' % len(rs))
@@ -2534,7 +2569,8 @@ def order_vars(oid):
     first = (its[0].get('n') or its[0].get('name') or '') if its else ''
     label = first[:20] + (' 외 %d건' % (len(its) - 1) if len(its) > 1 else '')
     return r, {'#{이름}': b.get('name', '고객'), '#{주문번호}': r['order_id'],
-               '#{송장}': r.get('tracking') or '-', '#{금액}': format(num(r.get('amount')), ','),
+               '#{송장}': r.get('tracking') or '-', '#{택배사}': courier_name(r.get('courier') or '') or '-',
+               '#{금액}': format(num(r.get('amount')), ','),
                '#{상품}': label, '_phone': b.get('phone', '')}
 
 def solapi_send(msg):
@@ -3020,6 +3056,7 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const won=n=>'₩'+Number(n||0).toLocaleString('ko-KR');
 const FF={NEW:'신규',PREPARING:'상품준비중',SHIPPED:'발송완료',DONE:'배송완료',CANCELLED:'취소'};
+const CO={cj:'CJ대한통운',post:'우체국택배',lotte:'롯데택배',logen:'로젠택배',hanjin:'한진택배',cvsnet:'GS편의점택배',cupost:'CU편의점택배',etc:'기타'};
 const RN={OWNER:'대표(전체)',MANAGER:'매니저',STAFF:'스태프',VIEWER:'조회전용'};
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2400)}
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
@@ -3163,7 +3200,7 @@ async function loadOrders(p){opage=p;const q=new URLSearchParams({page:p});
  $('#olist').innerHTML=`<table><tr><th>주문번호</th><th>일시</th><th>결제</th><th>처리</th><th class="right">금액</th><th>품목</th><th>주문자</th><th>송장</th><th></th></tr>
  ${d.rows.map(o=>`<tr><td class="mono">${esc(o.order_id)}</td><td class="mono">${esc(o.created)}</td>
  <td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td><span class="ff ${esc(o.fulfill)}">${FF[o.fulfill]||esc(o.fulfill)}</span></td>
- <td class="right mono">${won(o.amount)}</td><td>${esc(o.items_label)}</td><td>${esc(o.buyer_name)}</td><td class="mono">${esc(o.tracking)}</td>
+ <td class="right mono">${won(o.amount)}</td><td>${esc(o.items_label)}</td><td>${esc(o.buyer_name)}</td><td class="mono" style="font-size:11.5px">${o.courier?'<span style="color:#888">'+esc(CO[o.courier]||o.courier)+'</span><br>':''}${esc(o.tracking)}</td>
  <td><button class="btn sm ghost" onclick="openOrder('${esc(o.order_id)}')">상세</button></td></tr>`).join('')||'<tr><td colspan=9 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadOrders')}`;}catch(e){$('#olist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 const pager=(p,d,fn)=>`<div class="pager"><button class="btn sm ghost" ${p<=1?'disabled':''} onclick="${fn}(${p-1})">이전</button><span>${p} / ${Math.max(1,Math.ceil(d.total/d.size))} · 총 ${d.total}</span><button class="btn sm ghost" ${p*d.size>=d.total?'disabled':''} onclick="${fn}(${p+1})">다음</button></div>`;
@@ -3198,6 +3235,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
  ${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
  ${can(1)?`<div class="kv"><b>처리상태</b><span><select id="mff">${Object.entries(FF).map(([k,v])=>`<option value="${k}" ${o.fulfill===k?'selected':''}>${v}</option>`).join('')}</select></span>
+ <b>택배사</b><span><select id="mco" style="width:100%"><option value="">— 선택 —</option>${Object.entries(CO).map(([k,v])=>`<option value="${k}" ${o.courier===k?'selected':''}>${v}</option>`).join('')}</select></span>
  <b>송장번호</b><span><input id="mtr" value="${esc(o.tracking)}" style="width:100%"></span>
  <b>메모</b><span><input id="mmemo" value="${esc(o.admin_memo)}" style="width:100%"></span>
  <b>알림 발송</b><span style="display:flex;gap:6px"><select id="mtpl" style="flex:1">${TPLCACHE.map(t=>`<option value="${t.id}">${esc(t.name)} (${t.kind==='alimtalk'?'알림톡':'SMS'})</option>`).join('')}</select>
@@ -3217,7 +3255,7 @@ function closeM(){$('#mbg').style.display='none';$('#mbox').classList.remove('wi
 $('#mbg').addEventListener('click',e=>{if(e.target.id==='mbg')closeM()});
 async function saveFulfill(oid){try{const f=$('#mff').value;
  await api('/admin/api/orders/'+encodeURIComponent(oid)+'/fulfill',{method:'POST',headers:{'Content-Type':'application/json'},
- body:JSON.stringify({fulfill:f,tracking:$('#mtr').value,memo:$('#mmemo').value})});
+ body:JSON.stringify({fulfill:f,courier:$('#mco').value,tracking:$('#mtr').value,memo:$('#mmemo').value})});
  toast('저장되었습니다');
  if(f==='SHIPPED'&&$('#mtr').value&&TPLCACHE.length&&confirm('발송완료 알림을 고객에게 보낼까요?')){await sendNotify(oid,true)}
  closeM();loadOrders(opage)}catch(e){toast(e.message)}}
@@ -6933,6 +6971,11 @@ td{border-bottom:1px solid var(--line);padding:9px 8px;vertical-align:middle}
 .tagst.s1{background:#fff6e0;color:#9a6b00}.tagst.s2{background:#e9f7ee;color:#0a7d38}
 .tagst.s3{background:#fff2f1;color:var(--red)}.tagst.s4{background:#e8f3ff;color:#1a5fb4}
 .tagst.s5{background:#141414;color:#FFB000}.tagst.s0{background:#f0f0f0;color:#999}
+.oship{margin:12px 0;padding:12px 14px;background:#fafafa;border:1px solid var(--line)}
+.steps{display:flex;flex-wrap:wrap;margin-bottom:9px}
+.steps b{font-size:11px;font-weight:800;color:#c2c2c2;display:flex;align-items:center}
+.steps b:not(:last-child):after{content:'›';margin:0 7px;color:#ddd;font-weight:400}
+.steps b.on{color:#141414}.steps b.cur{color:var(--red)}
 button.b,a.b{font:inherit;font-weight:700;font-size:12px;border:0;padding:7px 12px;cursor:pointer;background:var(--black);color:#fff;text-decoration:none;display:inline-block}
 button.b.ghost,a.b.ghost{background:#fff;color:var(--black);border:1px solid #999}
 button.b.red{background:var(--red)}
@@ -7024,7 +7067,7 @@ async function orders(){
  (d.rows.length?'<table><tr><th>주문번호/일시</th><th>상품</th><th class="r">금액</th><th>상태</th><th></th></tr>'+
  d.rows.map(o=>'<tr><td class="mono" style="font-size:11.5px">'+esc(o.order_id)+'<br><span style="color:#999">'+esc(o.created)+'</span></td>'+
  '<td>'+esc(o.label)+'</td><td class="r mono">'+won(o.amount)+'</td>'+
- '<td><span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span>'+(o.tracking?'<br><span class="mono" style="font-size:11px;color:#1a5fb4">'+esc(o.tracking)+'</span>':'')+'</td>'+
+ '<td><span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span>'+(o.tracking?'<br><a class="mono" target="_blank" rel="noopener" style="font-size:11px;color:#1a5fb4;text-decoration:underline" href="'+esc(o.track_url||'#')+'">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+' ↗</a>':'')+'</td>'+
  '<td><button class="b ghost" onclick="orderDetail(\''+esc(o.order_id)+'\')">상세</button></td></tr>').join('')+'</table>':'<div class="empty">연결된 최근 주문이 없습니다</div>')+'</div>'+
  '<div class="panel"><h3>기존·비회원 주문 연결</h3><div class="hint">주문번호와 주문 당시 휴대폰으로 받은 인증번호를 확인한 후에만 이 계정으로 연결됩니다.</div><div class="row2"><div><label>주문번호</label><input id="coid" placeholder="MD-2026..."></div><div><label>주문 당시 휴대폰</label><input id="cph" placeholder="010-0000-0000"></div></div><div style="margin-top:10px"><button class="b" onclick="claimSend()">인증번호 받기</button></div><div id="claimVerify" style="display:none"><label>인증번호 6자리</label><div style="display:flex;gap:8px"><input id="ccode" maxlength="6"><button class="b red" onclick="claimVerify()" style="white-space:nowrap">주문 연결</button></div></div></div><div id="odetail"></div>'}
 let CLAIM_ID='';async function claimSend(){try{const d=await post('/api/member/orders/claim/send',{order_id:$('#coid').value,phone:$('#cph').value});CLAIM_ID=d.claim_id;$('#claimVerify').style.display='block';toast(d.dry?'테스트 모드: 관리자 알림 로그에서 인증번호를 확인하세요':'인증번호를 발송했습니다')}catch(e){toast(e.message)}}
@@ -7033,7 +7076,11 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
  $('#odetail').innerHTML='<div class="panel"><h3>주문 상세 — '+esc(oid)+' <span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span></h3>'+
  '<table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th></tr>'+
  o.items.map(i=>'<tr><td>'+esc(i.name)+'</td><td class="r mono">'+won(i.price)+'</td><td class="r mono">'+i.qty+'</td></tr>').join('')+'</table>'+
- '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+(o.tracking?' · 송장 '+esc(o.tracking):'')+'</div>'+
+ '<div class="oship"><b style="font-size:12.5px;display:block;margin-bottom:8px">배송 진행</b><div class="steps">'+['주문접수','결제완료','배송준비중','배송중','배송완료'].map((s,i)=>'<b class="'+(o.step===0?'':(i+1<o.step?'on':(i+1===o.step?'on cur':'')))+'">'+s+'</b>').join('')+'</div>'+
+ (o.step===0?'<div class="hint" style="margin:0">'+esc(o.status_kr)+' 처리된 주문입니다.</div>'
+  :o.tracking?'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="font-size:12.5px">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+'</span>'+(o.track_url?'<a class="b" target="_blank" rel="noopener" href="'+esc(o.track_url)+'">배송조회</a>':'')+'</div>'
+  :'<div class="hint" style="margin:0">'+(o.step>=4?'상품이 출고되어 배송 중입니다. 운송장 번호가 등록되면 이곳에서 바로 조회할 수 있습니다.':o.step===3?'상품을 준비하고 있습니다. 발송과 함께 운송장 번호가 등록됩니다.':o.step===2?'결제가 확인되었습니다. 곧 상품 준비를 시작합니다.':'결제(입금) 확인 전 주문입니다. 확인 후 상품 준비가 시작됩니다.')+'</div>')+'</div>'+
+ '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+'</div>'+
  (o.open_request?'<div class="hint" style="color:var(--red)">'+({cancel:'취소',return:'반품',exchange:'교환'}[o.open_request.rtype]||'')+' 요청이 '+esc(o.open_request.status)+' 상태입니다.</div>':'')+
  '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
  (o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a>':'')+
@@ -11757,6 +11804,7 @@ def order_step(status, fulfill):
     if status == 'CANCELLED' or (fulfill or '') == 'CANCELLED': return 0, '취소됨'
     if status == 'FAILED': return 0, '결제실패'
     if status == 'PENDING': return 1, '주문접수'
+    if status == 'WAITING_DEPOSIT': return 1, '입금대기'
     return {'NEW': (2, '결제완료'), 'PREPARING': (3, '배송준비중'),
             'SHIPPED': (4, '배송중'), 'DONE': (5, '배송완료')}.get(fulfill or 'NEW', (2, '결제완료'))
 
@@ -11853,9 +11901,11 @@ def _order_notify(oid, event):
                   '#{입금액}': format(amt, ','), '#{입금기한}': _vdue_fmt(due) or '-'}
         else:
             trk = (r.get('tracking') or '').strip()
+            co = courier_name(r.get('courier') or '') if (r.get('courier') or '') else ''
+            trk_full = (((co + ' ') if co else '') + trk).strip()
             text = ('[맵달SEOUL] 상품이 발송되었습니다.\n주문번호: %s%s\n배송조회: mapdal.kr/account'
-                    % (oid, ('\n운송장번호: %s' % trk) if trk else ''))
-            kv = {'#{주문번호}': oid, '#{운송장번호}': trk}
+                    % (oid, ('\n운송장번호: %s' % trk_full) if trk else ''))
+            kv = {'#{주문번호}': oid, '#{운송장번호}': trk_full or trk}
         # ── 알림톡 우선 발송 (환경변수 완비 시) → 실패하면 SMS 폴백 ──
         cf = solapi_conf(); tpl = _alimtalk_tpl(event)
         if event == 'shipped' and not (r.get('tracking') or '').strip():
@@ -12174,7 +12224,7 @@ def api_m_orders(request: Request):
     if rng in ('1m', '3m'):
         d = (kst_today() - datetime.timedelta(days=30 if rng == '1m' else 90)).isoformat()
         extra, eargs = ' AND created>=?', (d,)
-    rs = rows('SELECT order_id, created, status, fulfill, amount, items, tracking, receipt_url FROM orders WHERE '
+    rs = rows('SELECT order_id, created, status, fulfill, amount, items, tracking, courier, receipt_url FROM orders WHERE '
               + w + extra + ' ORDER BY created DESC LIMIT 100', args + eargs)
     out = []
     for r in rs:
@@ -12184,7 +12234,10 @@ def api_m_orders(request: Request):
         out.append({'order_id': r['order_id'], 'created': (r.get('created') or '')[:16].replace('T', ' '),
                     'step': st, 'status_kr': kr, 'amount': num(r.get('amount')),
                     'label': first[:24] + (' 외 %d' % (len(its) - 1) if len(its) > 1 else ''),
-                    'tracking': r.get('tracking') or '', 'receipt': r.get('receipt_url') or '',
+                    'tracking': r.get('tracking') or '',
+                    'courier_kr': courier_name(r.get('courier') or '') if (r.get('courier') or '') else '',
+                    'track_url': track_url(r.get('courier') or '', r.get('tracking') or ''),
+                    'receipt': r.get('receipt_url') or '',
                     'paid': r.get('status') == 'PAID'})
     return {'linked': True, 'rows': out}
 
@@ -12197,7 +12250,10 @@ def api_m_order_detail(oid: str, request: Request):
     open_req = one("SELECT rtype, status FROM member_requests WHERE order_id=? AND customer_id=? AND status IN ('접수','처리중')", (oid, m.get('customer_id') or ''))
     return {'order_id': oid, 'created': (r.get('created') or '')[:19].replace('T', ' '), 'step': st, 'status_kr': kr,
             'amount': num(r.get('amount')), 'ship_method': r.get('ship_method') or '',
-            'tracking': r.get('tracking') or '', 'receipt': r.get('receipt_url') or '',
+            'tracking': r.get('tracking') or '',
+            'courier_kr': courier_name(r.get('courier') or '') if (r.get('courier') or '') else '',
+            'track_url': track_url(r.get('courier') or '', r.get('tracking') or ''),
+            'receipt': r.get('receipt_url') or '',
             'addr': ('[%s] %s %s' % (b.get('zip', ''), b.get('addr1', ''), b.get('addr2', ''))
                      + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
             'items': [{'name': it.get('n') or it.get('name') or it.get('id', ''), 'qty': num(it.get('q') or 1),

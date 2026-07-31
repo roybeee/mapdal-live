@@ -3266,7 +3266,7 @@ async function sendNotify(oid,auto){try{const tid=auto?(TPLCACHE.find(t=>t.name.
  toast(r.dry?'기록 모드: 발송사 미설정 (로그 저장됨)':'발송 완료');}catch(e){alert(e.message)}}
 async function markPaid(oid){
  if(!confirm('통장에 입금이 확인되었습니까?\n\n결제완료로 변경하면 구매 적립이 지급되고 발송 가능 상태가 됩니다.'))return;
- try{await post('/admin/api/orders/'+encodeURIComponent(oid)+'/mark-paid',{});
+ try{await api('/admin/api/orders/'+encodeURIComponent(oid)+'/mark-paid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
   toast('입금 확인 처리되었습니다');closeM();loadOrders(opage||1)}catch(e){toast(e.message)}}
 async function manualRefundDone(oid){
  if(prompt('이니시스 환불 API를 호출하지 않고 주문만 취소 상태로 정리합니다.\n상점관리자(또는 계좌이체)로 고객에게 이미 환불을 마친 경우에만 진행하세요.\n\n확인을 위해 "수동환불" 을 입력하세요')!=='수동환불')return;

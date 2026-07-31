@@ -782,7 +782,9 @@ def api_summary(request: Request):
     for r in recent:
         daily[(r.get('created') or '')[:10]] = daily.get((r.get('created') or '')[:10], 0) + num(r.get('amount'))
         for it in jload(r.get('items'), []):
-            nm = it.get('n') or it.get('name') or it.get('id') or '(무명)'
+            if not isinstance(it, dict): continue
+            # 상품명 공백 정규화 — [매출 상세 분석]과 동일 그룹핑(같은 품목이 갈라지지 않게)
+            nm = re.sub(r'\s+', ' ', str(it.get('n') or it.get('name') or it.get('id') or '')).strip() or '(무명)'
             rec = top.setdefault(nm, {'qty': 0, 'rev': 0})
             rec['qty'] += num(it.get('q') or 1)
             rec['rev'] += num(it.get('p') or it.get('price') or 0) * num(it.get('q') or 1)
@@ -1916,7 +1918,9 @@ def _split_drop_name(name):
 def api_orders_options_csv(request: Request):
     """주문 1건 × 응모옵션 1종 = 1행 CSV (당첨자 명단 제작용).
     기본은 NEW/DROPS 응모옵션 라인만, scope=all 이면 일반 상품 라인까지 전체 품목.
-    필터: from·to·status(기존 CSV와 동일) + event(이벤트 제목 부분일치)."""
+    필터: from·to·status(기존 CSV와 동일) + event(이벤트 제목 부분일치).
+    행사 귀속: [매출 상세 분석]과 동일한 _evt_attr 4단 폴백 + 제목 병합(_drop_canon)을
+    사용한다 — CSV 합산 수량과 대시보드 행사별 수량이 항상 일치하는 것이 확정 기준."""
     a = get_actor(request); need(a, 1, '응모옵션 CSV 다운로드')
     p = request.query_params
     where, args = [], []
@@ -1928,6 +1932,8 @@ def api_orders_options_csv(request: Request):
     scope_all = (p.get('scope') == 'all')
     evt_q = re.sub(r'\s+', ' ', str(p.get('event') or '')).strip()
     idx = _drop_opt_index()
+    mpdn = _mpd_names()                  # 매출 상세 분석과 동일한 귀속 재료
+    alias = _drop_alias()
     head = ['주문번호', '주문일시', '결제상태', '처리상태', '이벤트', '구매상품(응모옵션)', '수량',
             '옵션단가', '라인금액',
             '응모자 이름', '응모자 전화번호', '응모자 생년월일', '이메일', '국적',
@@ -1942,11 +1948,10 @@ def api_orders_options_csv(request: Request):
         for it in jload(r.get('items'), []):
             if not isinstance(it, dict): continue
             pid = str(it.get('id') or '')
-            nm = it.get('n') or it.get('name') or pid
-            is_drop = (pid in idx) or pid.startswith('mpd::')
+            nm = re.sub(r'\s+', ' ', str(it.get('n') or it.get('name') or pid)).strip() or '(무명)'
+            evt, opt, is_drop = _evt_attr(pid, nm, idx, mpdn, alias)
             if not scope_all and not is_drop: continue
-            evt, opt = idx.get(pid) or (_split_drop_name(nm) if is_drop else ('', str(nm)))
-            if evt_q and evt_q not in (evt or str(nm)): continue
+            if evt_q and evt_q.casefold() not in (evt or nm).casefold(): continue
             qty = num(it.get('q') or 1); unit = num(it.get('p') or it.get('price') or 0)
             ef, rest = _entry_split(sels, evt or '') if is_drop else (dict(_ENTRY_EMPTY), '')
             lines.append(','.join(esc_csv(v) for v in [

@@ -909,6 +909,9 @@ def api_order_detail(oid: str, request: Request):
             'buyer': {'name': b.get('name', ''), 'phone': b.get('phone', ''), 'zip': b.get('zip', ''),
                       'addr': ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
                                + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
+                      # 배송지 변경 모달(mpShipAddrEdit)용 원본 필드 — addr 는 합쳐진 표시용이라 분리 제공
+                      'addr1': b.get('addr1', '') or '', 'addr2': b.get('addr2', '') or '',
+                      'ship_memo': b.get('memo', '') or '',
                       'selections': (b.get('selections') or [])[:40]},
             'items': items, 'ship_method': r.get('ship_method', ''), 'tracking': r.get('tracking') or '',
             'courier': r.get('courier') or '',
@@ -993,6 +996,89 @@ def api_fulfill(oid: str, request: Request, body: dict = Body(...)):
         order_notify_async(oid, 'shipped')            # 배송시작 문자 — 최초 전환 시 1회
     audit(a, '주문처리변경', oid, '%s / %s송장 %s' % (f, (courier_name(co) + ' ') if co else '', body.get('tracking') or '-'))
     return {'ok': True}
+
+@admin_router.post('/admin/api/orders/{oid}/ship-addr')
+def api_order_ship_addr(oid: str, request: Request, body: dict = Body(...)):
+    """배송지 변경 원클릭 처리 (mpShipAddrEdit) — CS [1:1 문의]의 '배송지 변경' 요청을
+    문의 화면에서 그대로 처리한다. 저장 한 번으로 ① 주문 배송지 갱신(이전 주소는
+    buyer.addr_history 최근 10건으로 보존) ② 문의 답변완료 종결(변경 주소 답변 자동 등록)
+    ③ 변경 안내 SMS 발송까지 순서대로 실행하며, 주소 갱신이 성공한 뒤에만 ②③이 실행된다.
+
+    가드
+    · CANCELLED 주문은 변경 불가.
+    · 발송완료/배송완료(fulfill SHIPPED·DONE)는 기본 거부 — force=true + MANAGER 이상만
+      허용(택배사 측 배송지 변경이 확인된 예외 상황용, 감사로그에 '강제' 표기).
+    · 문의 종결은 문의의 order_id 가 비어 있거나 이 주문과 일치할 때만 — 다른 주문에
+      걸린 문의를 잘못 닫는 휴먼에러를 차단한다.
+    · contact_phone_norm(주문 조회·본인확인 키)은 건드리지 않는다 — 수령 연락처만 갱신.
+    · SMS 는 국내 휴대폰(01x)만 발송, 해외 번호는 SKIP 기록(문의 답변으로 안내됨).
+    """
+    a = get_actor(request); need(a, 1, '배송지 변경')
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not r: raise HTTPException(404, '주문을 찾을 수 없습니다')
+    if (r.get('status') or '') == 'CANCELLED':
+        raise HTTPException(400, '취소된 주문은 배송지를 변경할 수 없습니다')
+    ful = (r.get('fulfill') or 'NEW')
+    forced = False
+    if ful in ('SHIPPED', 'DONE'):
+        if not body.get('force'):
+            raise HTTPException(400, '이미 발송된 주문입니다 (%s) — 택배사 배송지 변경 가능 여부를 '
+                                     '먼저 확인하세요. MANAGER 이상은 강제 변경할 수 있습니다.' % ful)
+        need(a, 2, '발송 후 배송지 강제 변경'); forced = True
+    name = str(body.get('name') or '').strip()[:40]
+    phone = re.sub(r'[^0-9+\-]', '', str(body.get('phone') or ''))[:20]
+    zipc = str(body.get('zip') or '').strip()[:10]
+    addr1 = str(body.get('addr1') or '').strip()[:120]
+    addr2 = str(body.get('addr2') or '').strip()[:80]
+    memo = str(body.get('memo') or '').strip()[:120]
+    if not name or not addr1:
+        raise HTTPException(400, '수령인 이름과 기본 주소는 필수입니다')
+    b = jload(r.get('buyer'), {}) or {}
+    prev = {k: (b.get(k) or '') for k in ('name', 'phone', 'zip', 'addr1', 'addr2', 'memo')}
+    new = {'name': name, 'phone': phone, 'zip': zipc, 'addr1': addr1, 'addr2': addr2, 'memo': memo}
+    if prev == new:
+        raise HTTPException(400, '변경된 내용이 없습니다')
+    hist = b.get('addr_history') or []
+    hist.append({'t': now_iso(), 'by': a['name'], 'prev': prev})
+    b.update(new); b['addr_history'] = hist[-10:]
+    n = run('UPDATE orders SET buyer=? WHERE order_id=?', (json.dumps(b, ensure_ascii=False), oid))
+    if not n: raise HTTPException(500, '주문 갱신에 실패했습니다 — 다시 시도하세요')
+    addr_disp = ((('[%s] ' % zipc) if zipc else '') + (addr1 + ' ' + addr2).strip()).strip()
+    audit(a, '배송지변경' + ('(강제)' if forced else ''), oid,
+          '%s %s → %s %s / %s' % (prev.get('name') or '-',
+                                  ((prev.get('addr1') or '') + ' ' + (prev.get('addr2') or '')).strip() or '-',
+                                  name, addr_disp, phone or '-'))
+    answered = False
+    inq_id = str(body.get('inq_id') or '').strip()
+    if inq_id and body.get('close_inq'):
+        q = one('SELECT id, order_id FROM member_inquiries WHERE id=?', (inq_id,))
+        if q and ((q.get('order_id') or '').strip() in ('', oid)):
+            ans = str(body.get('answer') or '').strip()[:2000] or (
+                '요청하신 배송지로 변경 완료되었습니다.\n변경 주소: %s\n감사합니다.' % addr_disp)
+            run("UPDATE member_inquiries SET answer=?, status='답변완료', answered_at=?, answered_by=? WHERE id=?",
+                (ans, now_iso(), a['name'], inq_id))
+            answered = True
+            audit(a, '문의답변', inq_id, '1:1 — 배송지 변경 처리와 함께 종결')
+    notified = ''
+    if body.get('notify'):
+        pd = digits(phone)
+        if _KR_MOBILE_RE.fullmatch(pd):
+            text = ('[맵달SEOUL] 배송지가 변경되었습니다.\n주문번호: %s\n변경 주소: %s\n'
+                    '주문/배송조회: mapdal.kr/account' % (oid, addr_disp))
+            try:
+                import threading
+                threading.Thread(target=system_sms, args=(pd, text, '배송지변경', oid), daemon=True).start()
+                notified = 'sms'
+            except Exception:
+                notified = ''
+        else:
+            try:
+                run('INSERT INTO notify_log VALUES(?,?,?,?,?,?,?,?,?)',
+                    (uid(), now_iso(), oid, phone, 'sms', '배송지변경', 'SKIP',
+                     '국내 휴대폰이 아닌 수신번호 — 발송 생략(해외 고객은 문의 답변으로 안내됨)', a['name']))
+            except Exception: pass
+            notified = 'skip'
+    return {'ok': True, 'order_id': oid, 'answered': answered, 'notified': notified, 'forced': forced}
 
 #  ── 과거 데이터 시각 보정 (UTC → KST) ────────────────────────────────
 #  운영 서버 시계가 UTC 라 KST 전환 이전 레코드는 9시간 이르게 저장돼 있다.
@@ -3221,7 +3307,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>금액</b><span class="mono">${won(o.amount)}${o.method?' · '+esc(o.method):(pmName?' · '+esc(pmName):'')}${o.pay_mid?' · MID '+esc(o.pay_mid)+(midOld?'<b style="color:#b5443c">(구)</b>':''):''}</span>
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
  <b>회원 연결</b><span>${o.member_id?('연결됨 · '+esc(o.member_email||o.member_id)):(can(2)?`미연결(비회원) <button class="btn sm" onclick="linkMember('${esc(o.order_id)}')">회원 연결</button>`:'미연결(비회원)')}</span>
- <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}</span>
+ <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}${can(1)?` <button class="btn sm ghost" onclick="shipAddrEdit('${esc(o.order_id)}')" title="배송지 변경 — 이전 주소는 이력으로 보존됩니다">변경</button>`:''}</span>
  ${(o.buyer.selections&&o.buyer.selections.length)?`<b>응모 선택</b><span>${o.buyer.selections.map(s=>esc((s.event?'['+s.event+'] ':'')+(s.q||'')+' → '+(s.a||'')).replace(/\n/g,'')).join('<br>')}</span>`:''}
  ${(o.vbank&&o.vbank.num)?`<b>입금 계좌</b><span class="mono">${esc(o.vbank.bank)} ${esc(o.vbank.num)}${o.vbank.holder?' · 예금주 '+esc(o.vbank.holder):''}${o.vbank.due?'<br>입금기한 '+esc(o.vbank.due):''}</span>`:''}
  ${o.paid_at?`<b>입금완료</b><span class="mono">${esc(o.paid_at)}</span>`:''}
@@ -4363,6 +4449,7 @@ async function saveSeo(){try{
  toast('저장 완료 — 소유확인 메타가 전 페이지에 반영되었습니다');loadSeo()}catch(e){toast(e.message)}}
 
 async function loadCS(){try{const d=await api('/admin/api/cs');
+ window._CSINQ={};(d.inq||[]).forEach(q=>{_CSINQ[q.id]=q});/*mpShipAddrEdit — 배송지 변경 모달의 원문 참조·자동 입력용*/
  const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':v==='거절'?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
  $('#csreq').innerHTML=d.reqs.length?`<table><tr><th>일시</th><th>유형</th><th>주문번호</th><th>회원</th><th>사유</th><th>상태</th><th></th></tr>
  ${d.reqs.map(r=>`<tr><td class="mono">${esc(r.created)}</td><td><b>${esc(r.rtype)}</b></td><td class="mono" style="font-size:11px">${esc(r.order_id)}</td>
@@ -4374,7 +4461,7 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
  <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${q.cno?` · <b class="mono" style="color:#E8332A">${esc(q.cno)}</b>`:''}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span></div>
  <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap">${esc(kind==='inq'?q.body:q.question)}</div>
  ${q.answer?`<div style="margin-top:6px;background:#faf9f5;padding:8px;font-size:12.5px;white-space:pre-wrap"><b>답변</b> ${esc(q.answer)}</div>`:''}
- <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
+ <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}${kind==='inq'&&q.order_id&&can(1)?`<button class="btn sm ghost" onclick="shipAddrEdit('${esc(q.order_id)}','${esc(q.id)}')" title="이 화면에서 주문 배송지를 바로 변경 — 저장 시 답변 종결·안내 문자까지 한 번에">배송지 변경</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
  $('#csinq').innerHTML=block(d.inq,'inq');$('#cspq').innerHTML=block(d.pqna,'pqna');
 }catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function csAnswer(kind,id){const ans=prompt('답변 내용을 입력하세요 (회원에게 표시됩니다)');if(!ans)return;
@@ -4415,6 +4502,58 @@ async function csReqCancel(id,btn){
 async function csReqClose(id){
  try{await api('/admin/api/cs/req-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status:$('#rqst').value,memo:$('#rqmemo').value||''})});
  toast('요청을 종결했습니다');closeM();(_csAfter||loadCS)()}catch(e){toast(e.message)}}
+/* ── 배송지 변경 원클릭 처리 (mpShipAddrEdit) ─────────────────────────────
+   CS 1:1 문의의 '배송지 변경' 요청을 문의 화면에서 그대로 처리: 주문 배송지 수정
+   + 문의 답변완료 종결 + 변경 안내 문자까지 저장 한 번으로. 주문 상세에서도 사용. */
+async function shipAddrEdit(oid,inqId){try{
+ const o=await api('/admin/api/orders/'+encodeURIComponent(oid));
+ const q=(inqId&&window._CSINQ)?_CSINQ[inqId]:null;
+ const locked=(o.fulfill==='SHIPPED'||o.fulfill==='DONE');
+ const inp=(id,val,ph)=>`<input id="${id}" value="${esc(val||'')}" placeholder="${ph||''}" style="width:100%">`;
+ $('#mbox').innerHTML=`<h3>배송지 변경 — <span class="mono" style="font-size:14px">${esc(oid)}</span> <span class="st ${esc(o.status)}">${esc(o.status)}</span></h3>
+ ${locked?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>이미 발송된 주문(${FF[o.fulfill]||o.fulfill})</b> — 택배사에 배송지 변경 가능 여부를 먼저 확인하세요. ${can(2)?'저장 시 강제 변경으로 처리됩니다(감사로그 기록).':'강제 변경은 MANAGER 이상만 가능합니다.'}</div>`:''}
+ ${q?`<div style="background:#faf9f5;border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:10px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:12.5px">고객 요청 원문${q.mname?' · '+esc(q.mname):''}</b><button class="btn sm ghost" onclick="shipAddrParse('${esc(inqId)}')" title="원문에서 수령인·주소·연락처를 추정해 아래 입력칸에 채웁니다">요청 내용 자동 입력</button></div><div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap;color:#555">${esc(q.body||'')}</div></div>`:''}
+ <div class="kv"><b>수령인</b><span>${inp('sa_name',o.buyer.name)}</span>
+ <b>연락처</b><span>${inp('sa_phone',o.buyer.phone,'해외 번호도 저장 가능 — 문자는 국내 휴대폰만 발송')}</span>
+ <b>우편번호</b><span>${inp('sa_zip',o.buyer.zip,'해외 배송지는 비워도 됩니다')}</span>
+ <b>기본 주소</b><span>${inp('sa_a1',o.buyer.addr1)}</span>
+ <b>상세 주소</b><span>${inp('sa_a2',o.buyer.addr2)}</span>
+ <b>배송 메모</b><span>${inp('sa_memo',o.buyer.ship_memo,'공동현관 비밀번호 등 (선택)')}</span></div>
+ <div style="display:grid;gap:6px;margin:10px 2px">
+ ${q?`<label style="display:flex;gap:7px;align-items:center;font-size:12.5px;cursor:pointer"><input type="checkbox" id="sa_close" checked> 저장 시 문의를 <b>답변완료</b>로 종결 — 변경 주소가 담긴 답변이 자동 등록됩니다</label>`:''}
+ <label style="display:flex;gap:7px;align-items:center;font-size:12.5px;cursor:pointer"><input type="checkbox" id="sa_notify" checked> 변경 완료 문자 발송 <span class="hint" style="display:inline">(국내 휴대폰만 · 해외 번호는 자동 생략)</span></label></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+ <button class="btn red" onclick="shipAddrSave('${esc(oid)}','${esc(inqId||'')}',${locked?1:0})" ${locked&&!can(2)?'disabled':''}>저장 — 배송지 변경</button>
+ <button class="btn ghost" onclick="closeM()">닫기</button></div>
+ <div class="hint">이전 주소는 주문 이력에 보존되며(분쟁 대비) 모든 변경은 감사로그에 기록됩니다.</div>`;
+ $('#mbg').style.display='flex';
+}catch(e){toast(e.message)}}
+function shipAddrParse(inqId){const q=window._CSINQ&&_CSINQ[inqId];if(!q||!q.body){toast('원문을 찾을 수 없습니다');return}
+ const lines=String(q.body).split('\n').map(s=>s.trim()).filter(Boolean).filter(s=>!/[?？!！]|안녕|감사|변경|부탁|주문/.test(s));
+ let phone='';const rest=[];
+ for(const s of lines){const m=s.match(/(?:\+?\d{1,3}[-\s.]?)?0?1[016789][-\s.]?\d{3,4}[-\s.]?\d{4}(?!\d)/);
+  if(m&&!phone&&s.replace(/[^0-9]/g,'').length>=9){phone=m[0]}else{rest.push(s)}}
+ let name='';if(rest.length&&rest[0].length<=20&&!/\d/.test(rest[0])){name=rest.shift()}
+ let filled=0;
+ if(name){$('#sa_name').value=name;filled++}
+ if(phone){$('#sa_phone').value=phone;filled++}
+ if(rest.length){$('#sa_a1').value=rest[0];filled++;$('#sa_a2').value=rest.slice(1).join(' ')}
+ toast(filled?'요청 원문에서 추정 입력했습니다 — 저장 전 반드시 확인하세요':'자동 인식에 실패했습니다 — 원문을 보고 직접 입력하세요')}
+async function shipAddrSave(oid,inqId,locked){
+ const v=id=>{const el=$('#'+id);return el?el.value.trim():''};
+ const name=v('sa_name'),phone=v('sa_phone'),zip=v('sa_zip'),a1=v('sa_a1'),a2=v('sa_a2'),memo=v('sa_memo');
+ if(!name||!a1){toast('수령인과 기본 주소를 입력하세요');return}
+ if(locked&&!confirm('이미 발송된 주문입니다.\n택배사 측 배송지 변경이 확인된 경우에만 진행하세요.\n\n강제 변경할까요? (감사로그에 기록됩니다)'))return;
+ const closeEl=$('#sa_close');const closeInq=!!(inqId&&closeEl&&closeEl.checked);
+ const addrDisp=((zip?'['+zip+'] ':'')+(a1+' '+a2).trim()).trim();
+ const answer=closeInq?('요청하신 배송지로 변경 완료되었습니다.\n\n수령인: '+name+(phone?' ('+phone+')':'')+'\n변경 주소: '+addrDisp+'\n\n감사합니다. 맵달SEOUL 드림'):'';
+ try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/ship-addr',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({name,phone,zip,addr1:a1,addr2:a2,memo,force:!!locked,inq_id:inqId||'',close_inq:closeInq,notify:!!($('#sa_notify')&&$('#sa_notify').checked),answer})});
+ toast('배송지 변경 완료'+(r.answered?' · 문의 답변완료 종결':'')+(r.notified==='sms'?' · 안내 문자 발송':r.notified==='skip'?' · 해외 번호 — 문자 생략':''));
+ closeM();
+ if(inqId&&typeof loadCS==='function'){loadCS()}else if(typeof loadOrders==='function'){loadOrders(opage||1)}
+}catch(e){alert(e.message)}}
+/* mpShipAddrEdit — 끝 */
 async function grantPoints(id,email){const v=prompt(email+' 님에게 지급(+) / 차감(-)할 포인트','1000');if(!v)return;
  const reason=prompt('사유 (감사로그 기록)','CS 보상')||'';
  try{const r=await api('/admin/api/members/points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,delta:Number(v),reason})});

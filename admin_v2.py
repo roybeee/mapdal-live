@@ -3035,7 +3035,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 <section id="t-cs" style="display:none">
   <div class="panel"><h3>취소/반품/교환 요청</h3><div id="csreq" class="loading">불러오는 중…</div>
   <div class="hint">취소 요청 승인 시: [완료]로 바꾼 뒤 [주문 관리]에서 해당 주문의 결제취소(환불)를 실행하세요. 재고는 자동 복원됩니다.</div></div>
-  <div class="panel"><h3>1:1 문의</h3><div id="csinq" class="loading">불러오는 중…</div></div>
+  <div class="panel"><h3>1:1 문의</h3><div class="hint">문의를 클릭하면 회원번호·구매내역·CS 이력을 바로 확인할 수 있습니다.</div><div id="csinq" class="loading">불러오는 중…</div></div>
   <div class="panel"><h3>상품 Q&amp;A <span class="tag">답변 시 상품페이지에 공개</span></h3><div id="cspq" class="loading">불러오는 중…</div></div></section>
 <section id="t-admins" style="display:none">
   <div class="panel"><h3>관리자 계정</h3><div id="alist" class="loading">불러오는 중…</div>
@@ -4370,10 +4370,11 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
  <td style="font-size:12px">${esc(r.reason)}${r.memo?'<br><span style="color:#888">메모: '+esc(r.memo)+'</span>':''}</td>
  <td>${stag(r.status)}</td><td>${can(1)?`<button class="btn sm ghost" onclick="csReq('${r.id}')">처리</button>`:''}</td></tr>`).join('')}</table>`:'<div class="loading">요청 없음</div>';
  const block=(rows,kind)=>rows.length?rows.map(q=>`<div style="border-bottom:1px solid var(--line);padding:10px 4px">
- <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span>
+ <div class="cs-head" onclick="${q.cid?`openAccount('${esc(q.cid)}')`:`toast('연결된 회원 계정을 찾을 수 없습니다')`}" title="클릭 → 회원번호·구매내역·CS 이력" style="cursor:pointer;margin:-4px;padding:4px;border-radius:4px" onmouseover="this.style.background='#faf9f5'" onmouseout="this.style.background=''">
+ <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${q.cno?` · <b class="mono" style="color:#E8332A">${esc(q.cno)}</b>`:''}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span></div>
  <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap">${esc(kind==='inq'?q.body:q.question)}</div>
  ${q.answer?`<div style="margin-top:6px;background:#faf9f5;padding:8px;font-size:12.5px;white-space:pre-wrap"><b>답변</b> ${esc(q.answer)}</div>`:''}
- ${can(1)?`<div style="margin-top:8px"><button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button></div>`:''}</div>`).join(''):'<div class="loading">없음</div>';
+ <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
  $('#csinq').innerHTML=block(d.inq,'inq');$('#cspq').innerHTML=block(d.pqna,'pqna');
 }catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function csAnswer(kind,id){const ans=prompt('답변 내용을 입력하세요 (회원에게 표시됩니다)');if(!ans)return;
@@ -11670,22 +11671,34 @@ def _inject_auth(html, path='', uid=None):
 
 # ── 관리자: 문의/상품Q&A/취소·반품·교환 요청 처리 + 포인트 ──
 @admin_router.get('/admin/api/cs')
-# ── 관리자: 문의/상품Q&A/취소·반품·교환 요청 처리 + 포인트 ──
-@admin_router.get('/admin/api/cs')
 def api_cs(request: Request):
+    """CS 목록 — 문의를 클릭해 회원번호·구매내역으로 바로 이동할 수 있도록 (mpCsAcctLink)
+    각 문의/Q&A에 고객계정 id(cid)와 회원번호(cno)를 함께 내려준다. 문의 저장 시점에
+    customer_id 가 비어 있던 과거 행은 members.customer_id 로 보강(COALESCE)한다."""
     a = get_actor(request); need(a, 0)
-    inq = rows('SELECT q.*, m.name AS mname, m.email FROM member_inquiries q LEFT JOIN members m ON m.id=q.member_id ORDER BY q.created DESC LIMIT 100')
+    inq = rows('SELECT q.*, m.name AS mname, m.email, '
+               'COALESCE(q.customer_id, m.customer_id) AS cid, c.customer_no AS cno '
+               'FROM member_inquiries q LEFT JOIN members m ON m.id=q.member_id '
+               'LEFT JOIN customer_profiles c ON c.id=COALESCE(q.customer_id, m.customer_id) '
+               'ORDER BY q.created DESC LIMIT 100')
     nm = _state['pname'] or 'id'
-    pq = rows('SELECT q.*, m.name AS mname, p.%s AS pname FROM member_pqna q LEFT JOIN members m ON m.id=q.member_id LEFT JOIN products p ON p.id=q.product_id ORDER BY q.created DESC LIMIT 100' % nm)
+    pq = rows('SELECT q.*, m.name AS mname, p.%s AS pname, '
+              'COALESCE(q.customer_id, m.customer_id) AS cid, c.customer_no AS cno '
+              'FROM member_pqna q LEFT JOIN members m ON m.id=q.member_id '
+              'LEFT JOIN products p ON p.id=q.product_id '
+              'LEFT JOIN customer_profiles c ON c.id=COALESCE(q.customer_id, m.customer_id) '
+              'ORDER BY q.created DESC LIMIT 100' % nm)
     rq = rows('SELECT r.*, m.name AS mname, m.phone AS mphone FROM member_requests r LEFT JOIN members m ON m.id=r.member_id ORDER BY r.created DESC LIMIT 100')
     krt = {'cancel': '취소', 'return': '반품', 'exchange': '교환'}
     return {'inq': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
                      'mname': r.get('mname') or '', 'email': r.get('email') or '',
                      'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
-                     'answer': r.get('answer') or ''} for r in inq],
+                     'answer': r.get('answer') or '',
+                     'cid': r.get('cid') or '', 'cno': r.get('cno') or ''} for r in inq],
             'pqna': [{'id': r['id'], 'pname': r.get('pname') or r.get('product_id'), 'question': r['question'],
                       'mname': r.get('mname') or '', 'created': (r['created'] or '')[:16].replace('T', ' '),
-                      'status': r['status'], 'answer': r.get('answer') or ''} for r in pq],
+                      'status': r['status'], 'answer': r.get('answer') or '',
+                      'cid': r.get('cid') or '', 'cno': r.get('cno') or ''} for r in pq],
             'reqs': [{'id': r['id'], 'order_id': r['order_id'], 'rtype': krt.get(r['rtype'], r['rtype']),
                       'reason': r['reason'], 'mname': r.get('mname') or '', 'mphone': r.get('mphone') or '',
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],

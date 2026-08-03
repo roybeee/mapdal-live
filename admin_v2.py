@@ -10491,6 +10491,162 @@ def _feedback_apply(html):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 검색 페이지 정비 (2026-08-03 · 기본 노출 삭제 + 검색바 단독 집중 UI)
+#   · 종전: 스크립트 말미의 run('') 이 IDX.slice(0,12) 를 렌더해, 페이지에
+#     진입만 해도 상품 12종이 진열됐다. 검색 의도가 없는 방문자에게 임의의
+#     12종을 노출하는 셈이고, 인덱스에 남아 있는 삭제 상품까지 함께 나왔다.
+#   · 변경: 질의가 비면 아무것도 렌더하지 않는다. 결과는 입력이 있을 때만
+#     등장하고, 그때까지 화면은 검색바가 독점한다.
+#   · 검색 인덱스에서 삭제된 own 상품(own_removed)을 서빙 시점에 제거해
+#     죽은 링크가 검색 결과로 나오지 않게 한다.
+#   · /search?q=… 로 들어온 검색어는 자동 실행 (외부 유입·공유 링크 대응)
+#   ※ 정적 HTML 무수정 — 서빙 시점 치환(멱등, _MP_SEARCH_MARK 가드).
+# ══════════════════════════════════════════════════════════════════════════
+
+_MP_SEARCH_MARK = '<!--MP_SEARCH_FOCUS-->'
+
+_MP_SEARCH_CSS = """<style id="mpSearchCss">
+/* 검색 스테이지 — 첫 화면을 검색바가 독점한다. 결과는 아래로 자란다.
+   (입력 시 레이아웃이 튀지 않도록 세로 중앙정렬 대신 고정 상단 여백을 쓴다) */
+#mpSearchStage{min-height:calc(100vh - 300px);padding:clamp(44px,9vh,104px) 48px 96px}
+#mpSearchStage .search-box{max-width:820px}
+#mpSearchStage .search-box input{padding:24px 66px 24px 24px;font-size:19px;letter-spacing:-.01em}
+#mpSearchStage .search-box input::placeholder{color:#A9A8A2}
+#mpSearchStage .search-box input:focus{border-color:var(--red);box-shadow:0 0 0 4px rgba(232,51,42,.10)}
+#mpSearchStage .search-box .si{right:22px;font-size:20px}
+#mpSearchStage .kw-chips{margin-top:20px}
+#mpSearchHint{margin:30px auto 0;text-align:center;font-family:var(--mono);font-size:11px;
+  letter-spacing:.10em;line-height:1.9;color:var(--steel)}
+#mpSearchCount{display:none;max-width:820px;margin:44px auto 0;padding-bottom:12px;
+  border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px;
+  letter-spacing:.08em;color:var(--steel)}
+#mpSearchCount b{color:var(--ink);font-weight:700}
+#mpSearchStage .sr-grid{margin-top:22px}
+#results.mp-in{animation:mpSrIn .22s ease both}
+@keyframes mpSrIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media(max-width:1024px){#mpSearchStage{min-height:calc(100vh - 260px);padding-left:24px;padding-right:24px}}
+@media(max-width:640px){#mpSearchStage{min-height:0;padding:40px 20px 72px}
+  #mpSearchStage .search-box input{padding:18px 54px 18px 16px;font-size:16px}}
+@media(prefers-reduced-motion:reduce){#results.mp-in{animation:none}
+  #mpSearchStage .sr-card{transition:none}}
+</style>"""
+
+_MP_SEARCH_JS_OLD = (
+    "function run(q){\n"
+    "  q=q.trim().toLowerCase();\n"
+    "  const hits=q? IDX.filter(i=>(i.n+' '+i.k+' '+i.c).toLowerCase().includes(q)) : IDX.slice(0,12);\n"
+    "  R.innerHTML=hits.map(card).join('');\n"
+    "  E.style.display=hits.length?'none':'block';\n"
+    "}\n"
+    "Q.addEventListener('input',e=>run(e.target.value));\n"
+    "document.querySelectorAll('#chips button').forEach(b=>b.addEventListener('click',"
+    "()=>{Q.value=b.textContent;run(b.textContent);}));\n"
+    "run('');")
+
+_MP_SEARCH_JS_NEW = (
+    "/*mpSearchRun*/\n"
+    "var HINT=document.getElementById('mpSearchHint'),CNT=document.getElementById('mpSearchCount');\n"
+    "function run(q){\n"
+    "  q=String(q||'').trim();var lq=q.toLowerCase();\n"
+    "  if(!lq){                       // 질의 없음 — 상품을 노출하지 않는다\n"
+    "    R.innerHTML='';R.classList.remove('mp-in');\n"
+    "    E.style.display='none';\n"
+    "    if(CNT){CNT.style.display='none';CNT.textContent='';}\n"
+    "    if(HINT)HINT.style.display='';\n"
+    "    return;\n"
+    "  }\n"
+    "  var hits=IDX.filter(function(i){\n"
+    "    return ((i.n||'')+' '+(i.k||'')+' '+(i.c||'')).toLowerCase().indexOf(lq)>=0;});\n"
+    "  R.innerHTML=hits.map(card).join('');\n"
+    "  R.classList.remove('mp-in');void R.offsetWidth;R.classList.add('mp-in');\n"
+    "  E.style.display=hits.length?'none':'block';\n"
+    "  if(HINT)HINT.style.display='none';\n"
+    "  if(CNT){CNT.innerHTML='\\u201c'+q.replace(/&/g,'&amp;').replace(/</g,'&lt;')\n"
+    "    +'\\u201d \\uac80\\uc0c1 \\uacb0\\uacfc <b>'+hits.length+'\\uac74</b>';CNT.style.display='block';}\n"
+    "}\n"
+    "Q.addEventListener('input',function(e){run(e.target.value)});\n"
+    "Q.addEventListener('keydown',function(e){\n"
+    "  if(e.key==='Escape'||e.keyCode===27){Q.value='';run('');Q.focus();}});\n"
+    "document.querySelectorAll('#chips button').forEach(function(b){\n"
+    "  b.addEventListener('click',function(){Q.value=b.textContent;run(b.textContent);Q.focus();})});\n"
+    "// 공유·외부 유입 링크(/search?q=…)의 검색어는 그대로 실행한다.\n"
+    "(function(){try{var p=new URLSearchParams(location.search).get('q');\n"
+    "  if(p)Q.value=p;}catch(e){}run(Q.value);})();")
+
+
+def _mp_search_index(html):
+    """검색 인덱스(const IDX=[…])에서 삭제된 own 상품을 제거한다.
+
+    실패하면 원문을 그대로 둔다 — 검색이 죽는 것보다 낫다.
+    """
+    rm = _own_removed_pages()
+    if not rm:
+        return html
+    m = re.search(r'const IDX=(\[[\s\S]*?\]);', html)
+    if not m:
+        return html
+    try:
+        idx = json.loads(m.group(1))
+        if not isinstance(idx, list):
+            return html
+    except Exception:
+        return html
+
+    def slug(u):
+        u = str(u or '').split('?')[0].split('#')[0].lstrip('/')
+        return u[:-5] if u.endswith('.html') else u
+
+    kept = [it for it in idx if isinstance(it, dict) and slug(it.get('u')) not in rm]
+    if len(kept) == len(idx):
+        return html
+    return html.replace(m.group(0),
+                        'const IDX=' + json.dumps(kept, ensure_ascii=False) + ';', 1)
+
+
+def _search_apply(html):
+    """search.html 전용 — 기본 상품 노출 제거 + 검색바 집중 UI (멱등)."""
+    if not isinstance(html, str) or _MP_SEARCH_MARK in html:
+        return html
+    if 'id="chips"' not in html or 'const IDX=[' not in html:
+        return html   # 검색 페이지가 아니면 통과
+
+    # ── [1] 검색 인덱스 정리: 삭제된 own 상품 제거 ──
+    html = _mp_search_index(html)
+
+    # ── [2] 스테이지 식별자 부여 (CSS 스코프) ──
+    html = html.replace('<section style="padding-top:48px">',
+                        '<section id="mpSearchStage">', 1)
+
+    # ── [3] 안내문 + 결과 건수 줄 삽입 (결과 그리드 앞) ──
+    if 'id="mpSearchHint"' not in html:
+        html = html.replace(
+            '<div id="results" class="sr-grid"></div>',
+            '<p id="mpSearchHint">키워드를 입력하면 결과가 나타납니다'
+            '<br>위 추천 키워드를 눌러 바로 검색할 수 있습니다</p>\n'
+            '  <div id="mpSearchCount" aria-live="polite"></div>\n'
+            '  <div id="results" class="sr-grid"></div>', 1)
+
+    # ── [4] 빈 결과 안내문: 다음 행동을 알려주는 문장으로 ──
+    html = html.replace(
+        '<b>검색 결과가 없습니다</b>다른 키워드로 시도하거나 인기 검색어를 눌러보세요.',
+        '<b>찾는 결과가 없습니다</b>철자를 확인하거나, 위 추천 키워드를 눌러 다시 검색해 보세요.', 1)
+
+    # ── [5] 실행부: 질의가 비면 아무것도 렌더하지 않음 + ?q= 자동 실행 ──
+    if _MP_SEARCH_JS_OLD in html:
+        html = html.replace(_MP_SEARCH_JS_OLD, _MP_SEARCH_JS_NEW, 1)
+    elif '/*mpSearchRun*/' not in html:
+        # 정적본이 변형된 경우의 최소 안전망 — 초기 12종 노출만이라도 끊는다.
+        html = html.replace('IDX.slice(0,12)', '[]', 1)
+
+    # ── [6] CSS 주입 + 멱등 마크 ──
+    if 'id="mpSearchCss"' not in html:
+        h = html.lower().find('</head>')
+        if h >= 0:
+            html = html[:h] + _MP_SEARCH_CSS + html[h:]
+    return html.replace('</body>', _MP_SEARCH_MARK + '</body>', 1)
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 체크아웃 정비 (2026-07 · 해외배송 제외 + 결제수단 정합화)
 #   · 해외 배송(DDP) 토글·안내문·해외 주소폼 제거 → 국내 배송 전용
 #   · 결제수단: 오해 소지 있던 4-라디오(선택 무시됨) → 실제 동작하는 항목만.
@@ -11832,6 +11988,7 @@ def _inject_auth(html, path='', uid=None):
     html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
     html = _feedback_apply(html)
+    html = _search_apply(html)
     html = _checkout_apply(html)
     html = _drops_ship_notice_apply(html)
     html = _order_complete_apply(html)

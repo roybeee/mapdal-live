@@ -5,7 +5,7 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 - 동시 주문 안전: 트랜잭션 + 행 잠금(FOR UPDATE), 재고 원자적 차감
 - 결제 승인 멱등 처리 (중복 승인 방지)
 """
-import os, json, secrets, datetime, base64, hashlib, threading
+import os, re, json, secrets, datetime, base64, hashlib, threading
 import urllib.request, urllib.error, urllib.parse
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query
@@ -497,6 +497,28 @@ def _product_id_candidates(pid: str):
                 cands.append(alt)
     return cands
 
+# ── 주문자 이메일 — 회원구매·비회원구매 모두 필수 (2026-08-03 요청) ──────────
+#   수신처 용도: 주문확인 / 입금안내(가상계좌) / 배송안내 메일 + 이니시스 영수증 메일
+#   (buyeremail·P_EMAIL 파라미터). 클라이언트(mpCkValidate)와 동일 규칙을 서버에서
+#   재검증한다 — 캐시된 구버전 페이지·직접 API 호출로 우회되는 것을 막는다.
+_EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$')
+
+def _require_buyer_email(buyer: dict, member: dict = None) -> str:
+    """이메일 필수 검증 + 소문자 정규화.
+
+    로그인 회원이 구버전(캐시된) 체크아웃으로 값을 못 보낸 경우에만 계정 이메일로
+    보완한다 — 이미 검증된 값이 계정에 있으므로 결제 실패로 매출을 잃지 않으면서
+    '모든 주문에 이메일이 남는다'는 요구는 그대로 충족한다. 비회원은 예외 없음.
+    """
+    e = str(buyer.get('email') or '').strip().lower()
+    if not e and member:
+        e = str(member.get('email') or '').strip().lower()
+    if not e:
+        raise HTTPException(400, '이메일 주소를 입력해 주세요 — 주문확인·입금안내·배송안내를 보내드립니다')
+    if len(e) > 60 or not _EMAIL_RE.match(e):
+        raise HTTPException(400, '올바른 이메일 주소를 입력해 주세요 (예: name@example.com)')
+    return e
+
 @app.post('/api/orders')
 async def create_order(req: Request):
     body = await req.json()
@@ -511,6 +533,7 @@ async def create_order(req: Request):
 
     # 로그인 주문은 생성 시점부터 고객/계정에 귀속한다. 전화번호 문자열 역검색은 사용하지 않는다.
     member_id = customer_id = ''
+    member_row = None
     try:
         import admin_v2
         admin_v2.ensure_ready()
@@ -518,8 +541,11 @@ async def create_order(req: Request):
         if member and (member.get('status') or 'ACTIVE') == 'ACTIVE':
             member_id = member.get('id') or ''
             customer_id = member.get('customer_id') or ''
+            member_row = member
     except Exception:
         pass
+    # 이메일 필수 — 회원/비회원 동일. 정규화한 값을 buyer 에 되돌려 저장한다.
+    buyer['email'] = _require_buyer_email(buyer, member_row)
     phone_norm = ''.join(ch for ch in str(buyer.get('phone') or '') if ch.isdigit())
     if phone_norm.startswith('82'):
         phone_norm = '0' + phone_norm[2:]

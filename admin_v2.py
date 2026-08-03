@@ -909,6 +909,8 @@ def api_order_detail(oid: str, request: Request):
     return {'order_id': r['order_id'], 'created': r.get('created'), 'status': r.get('status'),
             'fulfill': r.get('fulfill') or 'NEW', 'amount': num(r.get('amount')),
             'buyer': {'name': b.get('name', ''), 'phone': b.get('phone', ''), 'zip': b.get('zip', ''),
+                      # 주문자 이메일 — 2026-08-03 이후 주문은 필수 수집. 이전 주문은 공백.
+                      'email': b.get('email', '') or '',
                       'addr': ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
                                + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
                       # 배송지 변경 모달(mpShipAddrEdit)용 원본 필드 — addr 는 합쳐진 표시용이라 분리 제공
@@ -1821,14 +1823,14 @@ def api_orders_csv(request: Request):
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
-    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '우편번호', '주소', '품목', '총수량', '배송방식', '택배사', '송장번호', '관리자메모', '영수증URL', '응모정보']
+    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '이메일', '우편번호', '주소', '품목', '총수량', '배송방식', '택배사', '송장번호', '관리자메모', '영수증URL', '응모정보']
     lines = [','.join(head)]
     for r in rs:
         b = jload(r.get('buyer'), {}); its = jload(r.get('items'), [])
         names = ' / '.join('%s x%d' % ((it.get('n') or it.get('name') or it.get('id') or ''), num(it.get('q') or 1)) for it in its)
         lines.append(','.join(esc_csv(v) for v in [
             r.get('order_id'), (r.get('created') or '')[:19].replace('T', ' '), r.get('status'), r.get('fulfill') or 'NEW',
-            num(r.get('amount')), b.get('name', ''), b.get('phone', ''), b.get('zip', ''),
+            num(r.get('amount')), b.get('name', ''), b.get('phone', ''), b.get('email', '') or '', b.get('zip', ''),
             ((b.get('addr1', '') + ' ' + b.get('addr2', '')).strip()
              + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')), names,
             sum(num(it.get('q') or 1) for it in its), r.get('ship_method', ''),
@@ -3311,6 +3313,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <div class="kv"><b>일시</b><span class="mono">${esc((o.created||'').slice(0,19).replace('T',' '))}</span>
  <b>금액</b><span class="mono">${won(o.amount)}${o.method?' · '+esc(o.method):(pmName?' · '+esc(pmName):'')}${o.pay_mid?' · MID '+esc(o.pay_mid)+(midOld?'<b style="color:#b5443c">(구)</b>':''):''}</span>
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
+ <b>이메일</b><span>${o.buyer.email?`<a href="mailto:${esc(o.buyer.email)}" class="mono">${esc(o.buyer.email)}</a>`:'<span style="color:#999">미기재 (이메일 필수화 이전 주문)</span>'}</span>
  <b>회원 연결</b><span>${o.member_id?('연결됨 · '+esc(o.member_email||o.member_id)):(can(2)?`미연결(비회원) <button class="btn sm" onclick="linkMember('${esc(o.order_id)}')">회원 연결</button>`:'미연결(비회원)')}</span>
  <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}${can(1)?` <button class="btn sm ghost" onclick="shipAddrEdit('${esc(o.order_id)}')" title="배송지 변경 — 이전 주소는 이력으로 보존됩니다">변경</button>`:''}</span>
  ${(o.buyer.selections&&o.buyer.selections.length)?`<b>응모 선택</b><span>${o.buyer.selections.map(s=>esc((s.event?'['+s.event+'] ':'')+(s.q||'')+' → '+(s.a||'')).replace(/\n/g,'')).join('<br>')}</span>`:''}
@@ -10514,6 +10517,26 @@ def _checkout_apply(html):
         '<div class="toggle-2"><button class="on" id="tDom">국내 배송</button><button id="tIntl">해외 배송 (DDP)</button></div>',
         '', 1)
 
+    # ── [2-1] 주문자 이메일: 필수 입력란 신설 (회원구매·비회원구매 동일) ──
+    #   요청(2026-08-03): 회원가입구매·비회원구매 모두 고객 이메일 기재를 필수값으로.
+    #   정적 HTML에는 이메일 입력란이 아예 없어 주문 데이터(buyer)에 이메일이 남지
+    #   않았다 → 주문확인·입금안내 메일, 이니시스 영수증 메일 발송 대상이 공백이었음.
+    #   · 이름/연락처 행 바로 다음에 필수 입력란 삽입 (멱등 — id="bEmail" 가드)
+    #   · 로그인 회원은 /api/member/me 로 계정 이메일 자동 채움(수정 가능)
+    #   · 검증 이중화: 클라이언트 mpCkValidate + 서버 app.py /api/orders
+    if 'id="bEmail"' not in html:
+        _ck_row = ('<div class="f-row"><input class="f-input" id="bName" placeholder="받는 분 이름">'
+                   '<input class="f-input" id="bPhone" placeholder="연락처 (010-0000-0000)"></div>')
+        html = html.replace(
+            _ck_row,
+            _ck_row
+            + '\n        <input class="f-input" id="bEmail" type="email" maxlength="60" required'
+              ' inputmode="email" autocomplete="email" spellcheck="false"'
+              ' placeholder="이메일 (필수) — 주문확인·입금안내 수신">'
+              '\n        <div class="sub" style="margin:-4px 0 12px">'
+              '주문확인 · 입금안내 · 배송안내를 이메일로 보내드립니다. '
+              '<b>회원·비회원 주문 모두 필수</b> 항목입니다.</div>', 1)
+
     # ── [3] 결제수단: 카드+간편결제 통합(실제 통합결제창과 일치) · 해외카드 제거 ──
     #   기존 라디오는 value·핸들러가 없어 선택이 무시됐음 → 실제 동작 항목만 노출.
     html = html.replace(
@@ -10615,6 +10638,7 @@ def _checkout_apply(html):
         "  const buyer={\n"
         "    name:_v('bName'),\n"
         "    phone:_v('bPhone'),\n"
+        "    email:_v('bEmail').toLowerCase(),\n"
         "    zip:_v('zip'),\n"
         "    addr1:_v('addr1'),\n"
         "    addr2:_v('addr2'),\n"
@@ -10656,6 +10680,12 @@ def _checkout_apply(html):
         "    INIStdPay.pay('mpIniForm');   // 클릭 제스처 내 동기 호출 → 팝업 차단 회피")
     if _toss_handler in html:
         html = html.replace(_toss_handler, _ini_handler, 1)
+
+    # ── [6-1] 이미 이니시스 핸들러로 변환된 사본(page_edits 오버라이드 등)에도 email 부착 ──
+    if "email:_v('bEmail')" not in html:
+        html = html.replace(
+            "    phone:_v('bPhone'),\n",
+            "    phone:_v('bPhone'),\n    email:_v('bEmail').toLowerCase(),\n", 1)
 
     # ── [8] 배송 방법 정리: 맵달드림(당일)·성수 1F 픽업 제거 → 일반배송만 (멱등) ──
     html = html.replace(
@@ -10772,15 +10802,33 @@ def _checkout_apply(html):
             "    }else if(d.length<9||d.length>11){\n"
             "      return '올바른 연락처를 입력해 주세요. (예: 010-0000-0000)';\n"
             "    }\n"
+            "    // 이메일 필수 — 회원구매·비회원구매 동일. 주문확인·입금안내 수신처.\n"
+            "    var em=String(b.email||'').trim();\n"
+            "    if(!em)return '이메일 주소를 입력해 주세요.\\n\\n"
+            "주문확인 \\u00b7 입금안내 \\u00b7 배송안내를 이메일로 보내드립니다.';\n"
+            "    if(em.length>60)return '이메일 주소는 60자 이내로 입력해 주세요.';\n"
+            "    if(!/^[^\\s@]+@[^\\s@]+\\.[A-Za-z]{2,}$/.test(em))\n"
+            "      return '올바른 이메일 주소를 입력해 주세요. (예: name@example.com)';\n"
             "    if(!String(b.zip||'').trim())return '우편번호 검색으로 주소를 입력해 주세요.';\n"
             "    if(!String(b.addr1||'').trim())return '기본 주소를 입력해 주세요.';\n"
             "    if(!String(b.addr2||'').trim())return '상세 주소(동·호수 등)를 입력해 주세요.';\n"
             "    return '';};\n"
+            "  // 로그인 회원은 계정 이메일을 자동으로 채운다(고객이 수정 가능).\n"
+            "  function fillEmail(){var e=document.getElementById('bEmail');\n"
+            "    if(!e||String(e.value||'').trim())return;\n"
+            "    try{fetch('/api/member/me').then(function(r){return r.json()})\n"
+            "      .then(function(d){if(d&&d.login&&d.email&&!String(e.value||'').trim())\n"
+            "        e.value=String(d.email).trim().toLowerCase();}).catch(function(){});}catch(x){}}\n"
             "  // 연락처는 포커스가 빠질 때 형식을 정리한다(조합 중에는 건드리지 않는다).\n"
             "  function bind(){var t=document.getElementById('bPhone');\n"
             "    if(t&&!t.__mpBound){t.__mpBound=1;\n"
             "      t.addEventListener('blur',function(){var v=normTel(t.value);\n"
-            "        if(v&&v!==t.value)t.value=v;});}}\n"
+            "        if(v&&v!==t.value)t.value=v;});}\n"
+            "    var e=document.getElementById('bEmail');\n"
+            "    if(e&&!e.__mpBound){e.__mpBound=1;\n"
+            "      e.addEventListener('blur',function(){var v=String(e.value||'').trim().toLowerCase();\n"
+            "        if(v!==e.value)e.value=v;});}\n"
+            "    fillEmail();}\n"
             "  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);\n"
             "  else bind();\n"
             "})();</script></body>", 1)

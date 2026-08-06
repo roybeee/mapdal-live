@@ -10661,9 +10661,16 @@ def _search_apply(html):
 # ══════════════════════════════════════════════════════════════════════════
 
 def _checkout_apply(html):
-    """체크아웃(checkout.html)만 정비 — 해외배송 제거 + 결제수단 정합화 (멱등)."""
-    if not isinstance(html, str) or 'id="tIntl"' not in html:
-        return html   # 체크아웃 페이지가 아니면 통과 (tIntl 토글은 checkout 고유)
+    """체크아웃(checkout.html)만 정비 — 해외배송 제거 + 결제수단 정합화 (멱등).
+
+    진입 식별: 원본 정적 파일은 id="tIntl" 로, 변환·베이크(page_edits) 사본은
+    id 가 [2]에서 제거된 뒤에도 남는 JS 참조 getElementById('tIntl') 로 식별한다.
+    (종전에는 id 로만 식별해 베이크 사본이 게이트에서 막혀 [6-1]~[6-3]류
+    자가치유 패치가 닿지 않았다. 내부 변환은 전부 가드·자연 멱등이라
+    변환 결과가 재통과해도 무해하다.)"""
+    if not isinstance(html, str) or (
+            'id="tIntl"' not in html and "getElementById('tIntl')" not in html):
+        return html   # 체크아웃 페이지가 아니면 통과 (tIntl 은 checkout 고유)
 
     # ── [1] 배송지: DDP 안내문 제거 ──
     html = html.replace(
@@ -10945,6 +10952,24 @@ def _checkout_apply(html):
             "  var _rerr=(typeof window.mpRefundValidate==='function')?window.mpRefundValidate():'';\n"
             "  if(_rerr){alert(_rerr);return;}\n", 1)
 
+    # ── [6-4] 결제창 닫힘 시 버튼 복원 — 취소 후 다른 수단으로 즉시 재시도 가능 ──
+    #   결제창이 '정상적으로 열린 뒤' 사용자가 취소하면 예외도 내비게이션도 없어
+    #   버튼이 '주문 생성중…' 잠금 상태로 남는다(오류 경로의 catch 복원은 이 경우에
+    #   닿지 않는다). /inicis/close 가 보내는 postMessage('mapdal:ini-close') 수신부는
+    #   기존에 비콘 기록만 했으므로, mpPayReset([11-0] 주입)을 함께 호출한다.
+    if "mpPayEvt('close');if(window.mpPayReset" not in html:
+        html = html.replace(
+            "  if(e&&e.data==='mapdal:ini-close')mpPayEvt('close');});",
+            "  if(e&&e.data==='mapdal:ini-close'){mpPayEvt('close');"
+            "if(window.mpPayReset)window.mpPayReset();}});", 1)
+
+    # ── [6-5] 결제 직전 버튼 라벨 캡처 — 복원 시 '₩금액 결제하기' 원형 그대로 유지 ──
+    if 'btn.dataset.mpPrev' not in html:
+        html = html.replace(
+            "const btn=document.getElementById('payBtn');btn.disabled=true;btn.textContent='주문 생성중…';",
+            "const btn=document.getElementById('payBtn');btn.dataset.mpPrev=btn.innerHTML;"
+            "btn.disabled=true;btn.textContent='주문 생성중…';", 1)
+
     # ── [8] 배송 방법 정리: 맵달드림(당일)·성수 1F 픽업 제거 → 일반배송만 (멱등) ──
     html = html.replace(
         '<label class="radio-item"><input type="radio" name="ship" value="dream">'
@@ -11089,6 +11114,33 @@ def _checkout_apply(html):
             "    fillEmail();}\n"
             "  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);\n"
             "  else bind();\n"
+            "})();</script></body>", 1)
+
+    # ── [11-0] 결제창 취소 복구 런타임 (mpPayResetJs, 멱등 · mpPayVbJs 와 독립 가드) ──
+    #   [6-4]의 메시지 수신(PC 레이어·팝업 취소)과 모바일 뒤로가기(bfcache pageshow)
+    #   양쪽에서 버튼을 원래 라벨('₩금액 결제하기')로 되돌려 다른 결제수단으로 즉시
+    #   재시도할 수 있게 한다. 결제 시도 흔적(dataset.mpPrev 또는 '생성중' 라벨)이
+    #   없으면 아무것도 하지 않아 renderSum 의 정상 비활성(빈 장바구니)을 건드리지
+    #   않는다. 가드가 mpPayVbJs 와 분리되어 있어 과거 page_edits 베이크 사본에도
+    #   자가치유 주입된다.
+    if 'id="mpPayResetJs"' not in html:
+        html = html.replace('</body>',
+            "<script id=\"mpPayResetJs\">(function(){\n"
+            "  if(window.mpPayReset)return;\n"
+            "  window.mpPayReset=function(){try{\n"
+            "    var b=document.getElementById('payBtn');if(!b)return;\n"
+            "    var busy=(b.textContent||'').indexOf('생성중')>=0;\n"
+            "    var prev=(b.dataset&&b.dataset.mpPrev)||'';\n"
+            "    if(!busy&&!prev)return;                        // 결제 시도 전이면 무개입\n"
+            "    if(prev){b.innerHTML=prev;}else{b.textContent='결제하기';}\n"
+            "    try{if(b.dataset)delete b.dataset.mpPrev;}catch(e){}\n"
+            "    b.disabled=false;b.style.opacity='1';\n"
+            "    try{if(window.INIStdPay&&INIStdPay.viewOff)INIStdPay.viewOff();}catch(e){}\n"
+            "  }catch(e){}};\n"
+            "  // 모바일: 이니시스 결제 페이지에서 뒤로가기 → bfcache 복원 시\n"
+            "  // 버튼이 '주문 생성중…' 잠금 상태 그대로 되살아나는 것을 푼다.\n"
+            "  window.addEventListener('pageshow',function(e){\n"
+            "    if(e&&e.persisted)window.mpPayReset();});\n"
             "})();</script></body>", 1)
 
     # ── [11] 결제수단 사전선택 런타임 (mpPayVbJs, 멱등) ──

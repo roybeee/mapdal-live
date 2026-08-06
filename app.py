@@ -1411,10 +1411,24 @@ async def inicis_close(req: Request):
        부모창(체크아웃)에 postMessage 로 '창 닫힘'을 알려 PENDING 사유를 기록한다."""
     return HTMLResponse(
         "<!doctype html><meta charset='utf-8'><title>결제 취소</title>"
-        "<script>try{if(parent&&parent!==window)parent.postMessage('mapdal:ini-close','*')}catch(e){}"
-        "try{if(window.opener)window.opener.postMessage('mapdal:ini-close','*')}catch(e){}"
-        "try{if(window.opener){window.close();}"
-        "else{location.replace('/checkout');}}catch(e){location.replace('/checkout');}</script>"
+        "<script>"
+        # 레이어(iframe) 모드: 부모창에 취소 통지 + INIStdPay 레이어를 직접 닫는다(viewOff).
+        # 일부 버전은 iframe 이 이중 중첩되므로 parent 와 top 양쪽에 시도한다
+        # (교차출처 접근 예외는 전부 try 로 흡수).
+        "try{if(parent&&parent!==window){"
+        "try{parent.postMessage('mapdal:ini-close','*')}catch(e){}"
+        "try{if(parent.INIStdPay&&parent.INIStdPay.viewOff)parent.INIStdPay.viewOff()}catch(e){}"
+        "}}catch(e){}"
+        "try{if(top&&top!==window&&top!==parent){"
+        "try{top.postMessage('mapdal:ini-close','*')}catch(e){}"
+        "try{if(top.INIStdPay&&top.INIStdPay.viewOff)top.INIStdPay.viewOff()}catch(e){}"
+        "}}catch(e){}"
+        # 팝업 모드: 부모창 통지 후 팝업 닫기. iframe 은 여기서 절대 내비게이션하지
+        # 않는다 — 종전에는 iframe 을 /checkout 으로 이동시켜 레이어 안에 체크아웃
+        # 페이지가 통째로 로드될 수 있었다. 최상위 창으로 직접 열린 경우에만 복귀.
+        "try{if(window.opener){window.opener.postMessage('mapdal:ini-close','*');window.close();}"
+        "else if(parent===window){location.replace('/checkout');}}catch(e){}"
+        "</script>"
         "<body style=\"font-family:sans-serif;padding:40px;text-align:center;color:#141414\">"
         "결제를 취소했습니다. 창이 닫히지 않으면 <a href='/checkout'>여기</a>를 눌러 주세요.</body>")
 

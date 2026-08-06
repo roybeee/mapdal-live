@@ -928,6 +928,8 @@ def api_order_detail(oid: str, request: Request):
             'member_email': (((one('SELECT email FROM members WHERE id=?', (r.get('member_id'),)) or {}).get('email')) or '') if r.get('member_id') else '',
             'vbank': {'num': r.get('vbank_num') or '', 'bank': r.get('vbank_name') or '',
                       'holder': r.get('vbank_holder') or '', 'due': r.get('vbank_due') or ''},
+            # 가상계좌 주문의 고객 환불계좌 — 주문 시 필수 수집(buyer JSON), 수동 환불 송금처.
+            'refund': (b.get('refund') if isinstance(b.get('refund'), dict) else {}) or {},
             # 입금대기 건은 관리자가 통장 확인 후 수동으로 입금완료 처리할 수 있다.
             'can_mark_paid': (r.get('status') == 'WAITING_DEPOSIT'),
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID'),
@@ -3318,6 +3320,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}${can(1)?` <button class="btn sm ghost" onclick="shipAddrEdit('${esc(o.order_id)}')" title="배송지 변경 — 이전 주소는 이력으로 보존됩니다">변경</button>`:''}</span>
  ${(o.buyer.selections&&o.buyer.selections.length)?`<b>응모 선택</b><span>${o.buyer.selections.map(s=>esc((s.event?'['+s.event+'] ':'')+(s.q||'')+' → '+(s.a||'')).replace(/\n/g,'')).join('<br>')}</span>`:''}
  ${(o.vbank&&o.vbank.num)?`<b>입금 계좌</b><span class="mono">${esc(o.vbank.bank)} ${esc(o.vbank.num)}${o.vbank.holder?' · 예금주 '+esc(o.vbank.holder):''}${o.vbank.due?'<br>입금기한 '+esc(o.vbank.due):''}</span>`:''}
+ ${(o.refund&&o.refund.acct)?`<b>환불 계좌</b><span class="mono">${esc(o.refund.bank||'')} ${esc(o.refund.acct)} · 예금주 ${esc(o.refund.holder||'')}<br><span style="color:var(--steel);font-size:11px">고객이 주문 시 입력한 본인 명의 환불계좌 — 가상계좌 취소·환불 시 이 계좌로 송금</span></span>`:''}
  ${o.paid_at?`<b>입금완료</b><span class="mono">${esc(o.paid_at)}</span>`:''}
  ${o.receipt?`<b>영수증</b><span><a href="${esc(o.receipt)}" target="_blank">토스 영수증</a></span>`:''}</div>
  ${o.status==='WAITING_DEPOSIT'?`<div class="hint" style="background:#e8f0fe;border-left:3px solid #1565c0;padding:9px 11px;margin-bottom:10px;color:#0d47a1">
@@ -3343,7 +3346,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
   :`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund},'${esc(o.status)}')">${o.can_refund?'결제취소(환불)':(o.status==='WAITING_DEPOSIT'?'입금대기 취소':'주문취소 표시')}</button>${midStuck?`<button class="btn ghost" onclick="manualRefundDone('${esc(o.order_id)}')">수동환불 완료처리</button>`:''}`):''}
  ${can(1)?`<button class="btn" onclick="saveFulfill('${esc(o.order_id)}')">저장</button>`:''}
  <button class="btn ghost" onclick="closeM()">닫기</button></div>
- ${vbPaid&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>가상계좌 입금완료 건</b> — 자동 환불이 지원되지 않습니다. 결제 상점아이디 <b class="mono">${esc(o.pay_mid||'?')}</b>${midOld?' <b>(구 MID — 현재 설정과 다름)</b>':''} 의 이니시스 상점관리자에서 고객 환불계좌로 직접 환불한 뒤 [수동환불 완료처리]를 누르세요. 재고 복원·적립 회수·감사로그가 함께 처리됩니다.</div>`:''}
+ ${vbPaid&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>가상계좌 입금완료 건</b> — 자동 환불이 지원되지 않습니다. 결제 상점아이디 <b class="mono">${esc(o.pay_mid||'?')}</b>${midOld?' <b>(구 MID — 현재 설정과 다름)</b>':''} 의 이니시스 상점관리자에서 고객 환불계좌로 직접 환불한 뒤 [수동환불 완료처리]를 누르세요. 재고 복원·적립 회수·감사로그가 함께 처리됩니다.${o.refund&&o.refund.acct?' 고객이 주문 시 입력한 환불계좌는 위 <b>[환불 계좌]</b> 행에 있습니다.':''}</div>`:''}
  ${midStuck&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>구 상점아이디 결제 건</b> — MID <b class="mono">${esc(o.pay_mid||'판별 불가')}</b> 로 결제되어 현재 설정으로는 자동 환불이 실패합니다. Render 환경변수 <b class="mono">INICIS_MID_OLD / INICIS_INIAPI_OLD</b> 에 해당 MID·key 를 추가하면 [결제취소(환불)]이 그대로 동작합니다. key 확보가 불가하면 이니시스에서 환불 후 [수동환불 완료처리]를 사용하세요.</div>`:''}
  ${o.can_refund&&can(2)&&!vbPaid&&!midStuck?'<div class="hint">결제취소 시 이니시스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
  $('#mbg').style.display='flex';}catch(e){toast(e.message)}}
@@ -10693,13 +10696,35 @@ def _checkout_apply(html):
               '주문확인 · 입금안내 · 배송안내를 이메일로 보내드립니다. '
               '<b>회원·비회원 주문 모두 필수</b> 항목입니다.</div>', 1)
 
-    # ── [3] 결제수단: 카드+간편결제 통합(실제 통합결제창과 일치) · 해외카드 제거 ──
-    #   기존 라디오는 value·핸들러가 없어 선택이 무시됐음 → 실제 동작 항목만 노출.
-    html = html.replace(
-        '<label class="radio-item on"><input type="radio" name="pay" checked><span class="rd"><b>신용/체크카드</b><small>국내 전 카드사</small></span></label>',
-        '<label class="radio-item on"><input type="radio" name="pay" value="CARD" checked>'
+    # ── [3] 결제수단 사전선택 (2026-08-07): 결제창 진입 전에 수단을 고른다 ──
+    #   카드·계좌이체·가상계좌·휴대폰 4개 라디오 — value 는 이니시스 gopaymethod 코드
+    #   (Card/DirectBank/VBank/HPP)와 동일. /api/orders 가 payMethod 를 받아 결제창을
+    #   해당 수단으로 '바로' 연다(PC gopaymethod 단일 지정 · 모바일 P_INI_PAYMENT 매핑).
+    #   가상계좌 선택 시 [3-1] 환불계좌 패널이 열리고 필수 입력이 된다.
+    #   INICIS_GOPAYMETHOD 에 없는 수단은 mpPayVbJs 가 /api/config 의 payMethods 로
+    #   숨긴다 — 운영 스위치(재배포 없는 수단 내리기)는 그대로 유지된다.
+    _MP_PAY_RADIOS = (
+        '<label class="radio-item on"><input type="radio" name="pay" value="Card" checked>'
         '<span class="rd"><b>신용·체크카드 · 간편결제</b>'
-        '<small>카카오페이 · 네이버페이 · 페이코 · 삼성페이 · 국내 전 카드사</small></span></label>', 1)
+        '<small>카카오페이 · 네이버페이 · 페이코 · 삼성페이 · 국내 전 카드사</small></span></label>\n'
+        '          <label class="radio-item"><input type="radio" name="pay" value="DirectBank">'
+        '<span class="rd"><b>실시간 계좌이체</b><small>이체 즉시 결제완료</small></span></label>\n'
+        '          <label class="radio-item"><input type="radio" name="pay" value="VBank">'
+        '<span class="rd"><b>가상계좌 (무통장입금)</b>'
+        '<small>전용 계좌 발급 · 입금 확인 시 결제완료 (입금기한 3일) · 환불계좌 입력 필수</small></span></label>\n'
+        '          <label class="radio-item"><input type="radio" name="pay" value="HPP">'
+        '<span class="rd"><b>휴대폰 결제</b><small>통신사 소액결제</small></span></label>')
+    if 'value="VBank"' not in html:
+        # (a) 미변환 정적 원본 — 토스 시절 라디오 1번 자리를 4-라디오로 교체
+        html = html.replace(
+            '<label class="radio-item on"><input type="radio" name="pay" checked><span class="rd"><b>신용/체크카드</b><small>국내 전 카드사</small></span></label>',
+            _MP_PAY_RADIOS, 1)
+        # (b) 이전 변환(카드 단일 라디오)이 베이크된 사본(page_edits 오버라이드 등)
+        html = html.replace(
+            '<label class="radio-item on"><input type="radio" name="pay" value="CARD" checked>'
+            '<span class="rd"><b>신용·체크카드 · 간편결제</b>'
+            '<small>카카오페이 · 네이버페이 · 페이코 · 삼성페이 · 국내 전 카드사</small></span></label>',
+            _MP_PAY_RADIOS, 1)
     # 중복된 간편결제 라디오 제거 (위 통합 항목에 포함)
     html = html.replace(
         '<label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>카카오페이 · 네이버페이 · 토스페이</b></span></label>',
@@ -10708,6 +10733,59 @@ def _checkout_apply(html):
     html = html.replace(
         '<label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>PayPal · Alipay · 해외 카드</b><small>해외 배송 주문 권장</small></span></label>',
         '', 1)
+
+    # ── [3-1] 가상계좌 환불계좌 패널 — VBank 선택 시에만 표시 (mpPayVbJs 토글, 멱등) ──
+    #   가상계좌는 입금 후 취소 시 자동환불이 없어(관리자 수동 송금) 본인 명의
+    #   환불계좌가 필수다. 은행 select 의 value 는 금결원 표준코드 — 서버
+    #   (app.py /api/orders)가 _vbank_bank_name 으로 은행명을 확정 저장한다.
+    if 'id="mpPayVb"' not in html:
+        _MP_PAY_VB = (
+            '<div id="mpPayVb" style="display:none;border:1.5px solid var(--line);background:#fff;'
+            'padding:14px 14px 4px;margin:10px 0 6px">\n'
+            '          <div style="font-weight:800;font-size:13px">환불계좌 입력 <span style="color:var(--red)">(필수)</span></div>\n'
+            '          <div class="sub" style="margin:4px 0 10px">가상계좌(무통장입금) 주문은 입금 후 취소·환불 시 '
+            '아래 계좌로 환불됩니다. 반드시 <b>주문자 본인 명의</b> 계좌를 입력해 주세요 — '
+            '은행 · 예금주 · 계좌번호가 일치해야 환불이 처리됩니다.</div>\n'
+            '          <div class="f-row" style="grid-template-columns:180px 1fr">\n'
+            '            <select class="f-input" id="mpRfBank" style="cursor:pointer">\n'
+            '              <option value="" selected>은행 선택</option>\n'
+            '              <option value="04">KB국민은행</option>\n'
+            '              <option value="88">신한은행</option>\n'
+            '              <option value="20">우리은행</option>\n'
+            '              <option value="81">하나은행</option>\n'
+            '              <option value="11">NH농협은행</option>\n'
+            '              <option value="90">카카오뱅크</option>\n'
+            '              <option value="92">토스뱅크</option>\n'
+            '              <option value="89">케이뱅크</option>\n'
+            '              <option value="03">IBK기업은행</option>\n'
+            '              <option value="23">SC제일은행</option>\n'
+            '              <option value="27">씨티은행</option>\n'
+            '              <option value="07">수협은행</option>\n'
+            '              <option value="31">iM뱅크(대구)</option>\n'
+            '              <option value="32">부산은행</option>\n'
+            '              <option value="39">경남은행</option>\n'
+            '              <option value="34">광주은행</option>\n'
+            '              <option value="37">전북은행</option>\n'
+            '              <option value="35">제주은행</option>\n'
+            '              <option value="45">새마을금고</option>\n'
+            '              <option value="48">신협</option>\n'
+            '              <option value="71">우체국</option>\n'
+            '              <option value="50">저축은행</option>\n'
+            '              <option value="64">산림조합</option>\n'
+            '              <option value="12">지역농·축협</option>\n'
+            '              <option value="02">산업은행</option>\n'
+            '            </select>\n'
+            '            <input class="f-input" id="mpRfHolder" maxlength="30" autocomplete="off"'
+            ' placeholder="예금주 (본인 명의)">\n'
+            '          </div>\n'
+            '          <input class="f-input" id="mpRfAcct" maxlength="16" inputmode="numeric"'
+            ' autocomplete="off" placeholder="계좌번호 (&#39;-&#39; 없이 숫자만)">\n'
+            '          <div class="agree" style="margin-top:0"><input type="checkbox" id="mpRfAgree">'
+            '<span>환불 처리를 위한 환불계좌 정보 수집·이용에 동의합니다 (필수)</span></div>\n'
+            '        </div>')
+        html = html.replace(
+            '<div class="agree"><input type="checkbox" id="ag1"',
+            _MP_PAY_VB + '\n        <div class="agree"><input type="checkbox" id="ag1"', 1)
 
     # ── [4] intl JS 무력화: 토글 버튼이 사라졌으므로 null 참조 방지 + 항상 국내 ──
     if '/*mpNoIntl*/' not in html:
@@ -10732,6 +10810,10 @@ def _checkout_apply(html):
     html = html.replace(
         '토스페이먼츠 안전결제 · 카드/간편결제 지원',
         'KG이니시스 안전결제 · 카드 · 계좌이체 · 간편결제 지원', 1)
+    # 결제수단 사전선택 도입에 맞춰 가상계좌·휴대폰 표기 추가 (구 문구가 있으면 갱신 — 자연 멱등)
+    html = html.replace(
+        'KG이니시스 안전결제 · 카드 · 계좌이체 · 간편결제 지원',
+        'KG이니시스 안전결제 · 카드 · 계좌이체 · 가상계좌 · 휴대폰 · 간편결제 지원', 1)
 
     # ── [5-2] 결제 모드 문구: 라이브 MID면 '테스트 모드' 경고 제거 (멱등) ──
     _test_line = ('<br><span style="color:var(--red)">현재 테스트 모드 — '
@@ -10842,6 +10924,26 @@ def _checkout_apply(html):
         html = html.replace(
             "    phone:_v('bPhone'),\n",
             "    phone:_v('bPhone'),\n    email:_v('bEmail').toLowerCase(),\n", 1)
+
+    # ── [6-2] 결제수단·환불계좌를 주문 생성 요청에 부착 (원본·베이크 사본 공통) ──
+    #   mpPaySel/mpRefund 는 mpPayVbJs(아래 주입)가 정의한다. 스니펫이 어떤 이유로든
+    #   미로딩이어도 window 가드 덕에 결제가 죽지 않는다 — 이 경우 payMethod 미전송이
+    #   되어 서버가 종전(전체 수단 결제창) 동작으로 하위호환 처리한다.
+    if 'payMethod:(window.mpPaySel' not in html:
+        html = html.replace(
+            "xhr.send(JSON.stringify({items:items.map(i=>({id:i.id,q:i.q})),buyer,shipMethod:shipMethod(),intl}));",
+            "xhr.send(JSON.stringify({items:items.map(i=>({id:i.id,q:i.q})),buyer,shipMethod:shipMethod(),intl,"
+            "payMethod:(window.mpPaySel?window.mpPaySel():''),refund:(window.mpRefund?window.mpRefund():null)}));", 1)
+
+    # ── [6-3] 가상계좌 환불계좌 사전검증 — 결제창을 열기 전에 막는다 (서버도 재검증) ──
+    if 'var _rerr' not in html:
+        html = html.replace(
+            "  var _err=(typeof mpCkValidate==='function')?mpCkValidate(buyer):'';\n"
+            "  if(_err){alert(_err);return;}\n",
+            "  var _err=(typeof mpCkValidate==='function')?mpCkValidate(buyer):'';\n"
+            "  if(_err){alert(_err);return;}\n"
+            "  var _rerr=(typeof window.mpRefundValidate==='function')?window.mpRefundValidate():'';\n"
+            "  if(_rerr){alert(_rerr);return;}\n", 1)
 
     # ── [8] 배송 방법 정리: 맵달드림(당일)·성수 1F 픽업 제거 → 일반배송만 (멱등) ──
     html = html.replace(
@@ -10987,6 +11089,60 @@ def _checkout_apply(html):
             "    fillEmail();}\n"
             "  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);\n"
             "  else bind();\n"
+            "})();</script></body>", 1)
+
+    # ── [11] 결제수단 사전선택 런타임 (mpPayVbJs, 멱등) ──
+    #   · mpPaySel()      : 선택 수단(Card/DirectBank/VBank/HPP) — /api/orders payMethod
+    #   · mpRefund()      : VBank 선택 시 환불계좌 payload — /api/orders refund
+    #   · mpRefundValidate(): 결제창 열기 전 환불계좌 검증 (서버 규칙과 동일)
+    #   · 라디오 change → 환불계좌 패널(#mpPayVb) 토글 · 계좌번호 숫자만 유지
+    #   · /api/config payMethods 로 미제공 수단 라디오 숨김(INICIS_GOPAYMETHOD 스위치 유지)
+    if 'id="mpPayVbJs"' not in html:
+        html = html.replace('</body>',
+            "<script id=\"mpPayVbJs\">(function(){\n"
+            "  if(window.mpPaySel)return;\n"
+            "  var METH=['Card','DirectBank','VBank','HPP'];\n"
+            "  window.mpPaySel=function(){var r=document.querySelector('input[name=\"pay\"]:checked');\n"
+            "    var v=r?String(r.value||''):'';return METH.indexOf(v)>=0?v:(v||'Card');};\n"
+            "  window.mpRefund=function(){if(window.mpPaySel()!=='VBank')return null;\n"
+            "    var g=function(id){var el=document.getElementById(id);return el?String(el.value||'').trim():'';};\n"
+            "    var ag=document.getElementById('mpRfAgree');\n"
+            "    return {holder:g('mpRfHolder'),bank:g('mpRfBank'),\n"
+            "      acct:g('mpRfAcct').replace(/\\D/g,''),agree:!!(ag&&ag.checked)};};\n"
+            "  window.mpRefundValidate=function(){\n"
+            "    if(window.mpPaySel()!=='VBank')return '';\n"
+            "    var r=window.mpRefund()||{};\n"
+            "    if(!r.bank)return '환불받으실 은행을 선택해 주세요.\\n\\n가상계좌(무통장입금) 주문은 취소·환불 시 환불받을 계좌가 필요합니다.';\n"
+            "    if(!r.holder||r.holder.length<2)return '환불계좌 예금주를 입력해 주세요. (주문자 본인 명의)';\n"
+            "    if(!r.acct||r.acct.length<6||r.acct.length>16)return \"환불계좌번호를 확인해 주세요. ('-' 없이 숫자만 입력)\";\n"
+            "    if(!r.agree)return '환불계좌 정보 수집·이용에 동의해 주세요. (환불 처리에 필요한 필수 동의)';\n"
+            "    return '';};\n"
+            "  function tog(){var vb=document.getElementById('mpPayVb');if(!vb)return;\n"
+            "    vb.style.display=(window.mpPaySel()==='VBank')?'block':'none';}\n"
+            "  document.addEventListener('change',function(e){\n"
+            "    var t=e&&e.target;if(t&&t.name==='pay')tog();});\n"
+            "  function bindAcct(){var ac=document.getElementById('mpRfAcct');\n"
+            "    if(ac&&!ac.__mpBound){ac.__mpBound=1;\n"
+            "      ac.addEventListener('input',function(){var v=ac.value.replace(/\\D/g,'');\n"
+            "        if(v!==ac.value)ac.value=v;});}}\n"
+            "  // 서버 허용 수단(INICIS_GOPAYMETHOD)에 없는 라디오 숨김 — 운영 스위치 유지\n"
+            "  function filt(){try{fetch('/api/config').then(function(r){return r.json()}).then(function(c){\n"
+            "    var pm=(c&&c.payMethods)||null;if(!pm||!pm.length)return;\n"
+            "    var ok={};for(var i=0;i<pm.length;i++)ok[String(pm[i]).toLowerCase()]=1;\n"
+            "    var inps=document.querySelectorAll('input[name=\"pay\"]');\n"
+            "    for(var j=0;j<inps.length;j++){var inp=inps[j];\n"
+            "      var li=inp.closest?inp.closest('.radio-item'):null;\n"
+            "      if(!ok[String(inp.value||'').toLowerCase()]){\n"
+            "        if(li)li.style.display='none';inp.disabled=true;\n"
+            "        if(inp.checked)inp.checked=false;}}\n"
+            "    if(!document.querySelector('input[name=\"pay\"]:checked')){\n"
+            "      for(var k=0;k<inps.length;k++){if(!inps[k].disabled){inps[k].checked=true;\n"
+            "        var li2=inps[k].closest?inps[k].closest('.radio-item'):null;\n"
+            "        if(li2)li2.classList.add('on');break;}}}\n"
+            "    tog();}).catch(function(){});}catch(e){}}\n"
+            "  function go(){bindAcct();tog();filt();}\n"
+            "  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);\n"
+            "  else go();\n"
             "})();</script></body>", 1)
 
     return html

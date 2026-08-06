@@ -450,11 +450,16 @@ def _vbank_finalize(oid: str, tid: str, vnum: str, vbank: str, vname: str, vdate
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
 def _ini_mobile_params(order_id: str, amount: int, order_name: str,
-                       buyer: dict, origin: str) -> dict:
+                       buyer: dict, origin: str, pay_sel: str = '') -> dict:
     """모바일 결제요청 파라미터 (https://mobile.inicis.com/smart/payment/ 로 POST).
-       PC와 달리 P_ 접두 필드를 쓰고 서명 대신 P_CHKFAKE(Hash) 로 위변조를 검증한다."""
+       PC와 달리 P_ 접두 필드를 쓰고 서명 대신 P_CHKFAKE(Hash) 로 위변조를 검증한다.
+       pay_sel: 체크아웃에서 사전선택한 수단(Card/DirectBank/VBank/HPP). 모바일 규격은
+       요청당 1개 수단(P_INI_PAYMENT)만 받으므로, 사전선택이 곧 모바일에서
+       계좌이체·가상계좌를 여는 유일한 경로다(종전엔 CARD 고정이라 카드만 가능했다)."""
+    # PC(gopaymethod) 코드 → 모바일(P_INI_PAYMENT) 코드. 미선택(구버전 캐시)은 CARD 유지.
+    _MOBILE_PM = {'Card': 'CARD', 'DirectBank': 'BANK', 'VBank': 'VBANK', 'HPP': 'MOBILE'}
     p = {
-        'P_INI_PAYMENT': 'CARD',            # 지불수단: CARD/BANK/VBANK/HPP
+        'P_INI_PAYMENT': _MOBILE_PM.get(pay_sel, 'CARD'),   # 지불수단: CARD/BANK/VBANK/MOBILE
         'P_MID'   : INICIS_MID,
         'P_OID'   : order_id,
         'P_AMT'   : str(amount),
@@ -468,6 +473,10 @@ def _ini_mobile_params(order_id: str, amount: int, order_name: str,
         'P_NOTI'    : order_id,             # 그대로 되돌아오는 상점 전달값
         'P_HPP_METHOD': '2',                # 휴대폰결제 상품유형 — 컨텐츠=1, 실물=2 (맵달=실물)
     }
+    if pay_sel == 'VBank':
+        # 가상계좌 입금기한 — PC(acceptmethod vbank(YYYYMMDD))와 동일하게 채번일 포함 3일(KST).
+        #   기한 없는 계좌 발급·SMS 안내 공백을 막는다. 입금통보는 P_NOTI_URL(/inicis/mobile-noti).
+        p['P_VBANK_DT'] = (kst_naive() + datetime.timedelta(days=3)).strftime('%Y%m%d')
     # 금액 위변조 방지 해시 (Hash Key 미설정 시 생략 — 결제는 정상 진행)
     if INICIS_MOBILE_HASHKEY:
         p['P_CHKFAKE'] = _ini_hash(
@@ -479,7 +488,11 @@ def config():
     return {'pg': 'inicis', 'mid': INICIS_MID,
             'freeShipOver': FREE_SHIP_OVER, 'shipFee': SHIP_FEE,
             'dropPrefix': DROP_PREFIX, 'dropShipFee': DROP_SHIP_FEE,
-            'pointRateBp': POINT_RATE_BP}
+            'pointRateBp': POINT_RATE_BP,
+            # 체크아웃 결제수단 사전선택 라디오 노출 목록 (2026-08-07).
+            #   INICIS_GOPAYMETHOD 환경변수를 그대로 반영 — 수단을 내리면(예: VBank 제거)
+            #   재배포 없이 체크아웃 라디오에서도 함께 사라진다(mpPayVbJs가 필터링).
+            'payMethods': [m.strip() for m in INICIS_GOPAYMETHOD.split(':') if m.strip()]}
 
 def _product_id_candidates(pid: str):
     """장바구니가 보낸 상품 ID를 DB 저장 형태로 정규화한 후보 목록을 만든다.
@@ -546,6 +559,48 @@ async def create_order(req: Request):
         pass
     # 이메일 필수 — 회원/비회원 동일. 정규화한 값을 buyer 에 되돌려 저장한다.
     buyer['email'] = _require_buyer_email(buyer, member_row)
+
+    # ── 결제수단 사전선택 (2026-08-07) ─────────────────────────────────────
+    #   체크아웃에서 수단(카드·계좌이체·가상계좌·휴대폰)을 먼저 고르면 결제창이
+    #   해당 수단으로 '바로' 열린다(PC gopaymethod 단일 지정 · 모바일 P_INI_PAYMENT 매핑).
+    #   payMethod 미전송(구버전 캐시 체크아웃) 시에는 종전대로 전체 수단 결제창을
+    #   열어 하위호환한다 — 이 경우 환불계좌 요구도 종전과 동일하게 없다.
+    _PM_CANON = {'card': 'Card', 'directbank': 'DirectBank', 'vbank': 'VBank', 'hpp': 'HPP'}
+    _pm_raw_sel = str(body.get('payMethod') or '').strip()
+    pay_sel = _PM_CANON.get(_pm_raw_sel.lower(), '')
+    if _pm_raw_sel and not pay_sel:
+        raise HTTPException(400, '지원하지 않는 결제수단입니다 — 새로고침 후 다시 시도해 주세요')
+    _pm_allowed = [m.strip() for m in INICIS_GOPAYMETHOD.split(':') if m.strip()]
+    if pay_sel and pay_sel not in _pm_allowed:
+        # INICIS_GOPAYMETHOD 운영 스위치로 내린 수단 — 캐시된 구 화면의 선택을 차단.
+        raise HTTPException(400, '현재 이용할 수 없는 결제수단입니다 — 다른 결제수단을 선택해 주세요')
+
+    # ── 가상계좌 환불계좌 필수 (2026-08-07) ────────────────────────────────
+    #   가상계좌는 입금 후 취소 시 자동환불이 지원되지 않아(관리자 수동 송금)
+    #   본인 명의 환불계좌가 반드시 필요하다. 주문 생성 시점에 필수로 받아
+    #   buyer JSON 에 저장한다 — 컬럼 추가 없음(PG ALTER 트랜잭션 중단 리스크 회피),
+    #   주문 INSERT 와 원자적으로 함께 저장되며 관리자 주문상세 [환불 계좌]로 표시된다.
+    #   클라이언트(mpRefundValidate)와 동일 규칙을 서버가 재검증한다 — 캐시된
+    #   구버전 페이지·직접 API 호출로 우회되는 것을 막는다.
+    if pay_sel == 'VBank':
+        rf = body.get('refund') or {}
+        if not isinstance(rf, dict):
+            rf = {}
+        r_holder = str(rf.get('holder') or '').strip()[:30]
+        r_code = ''.join(ch for ch in str(rf.get('bank') or '') if ch.isdigit())
+        r_bank = _vbank_bank_name(r_code)          # 금결원 표준코드 → 은행명 (미등록 코드=공백)
+        r_acct = ''.join(ch for ch in str(rf.get('acct') or '') if ch.isdigit())
+        if not r_bank:
+            raise HTTPException(400, '환불받으실 은행을 선택해 주세요 — 가상계좌 주문은 환불계좌 입력이 필수입니다')
+        if len(r_holder) < 2:
+            raise HTTPException(400, '환불계좌 예금주를 입력해 주세요 (주문자 본인 명의)')
+        if not (6 <= len(r_acct) <= 16):
+            raise HTTPException(400, "환불계좌번호를 확인해 주세요 ('-' 없이 숫자만 입력)")
+        if not rf.get('agree'):
+            raise HTTPException(400, '환불계좌 정보 수집·이용에 동의해 주세요 — 환불 처리에 필요한 필수 동의입니다')
+        buyer['refund'] = {'holder': r_holder, 'bank': r_bank,
+                           'bank_code': r_code.zfill(2)[-2:], 'acct': r_acct}
+
     phone_norm = ''.join(ch for ch in str(buyer.get('phone') or '') if ch.isdigit())
     if phone_norm.startswith('82'):
         phone_norm = '0' + phone_norm[2:]
@@ -625,8 +680,9 @@ async def create_order(req: Request):
         pass
     name0 = resolved[0]['n'][:28]
     order_name = name0 + (f' 외 {len(resolved)-1}건' if len(resolved) > 1 else '')
-    _pay_log(order_id, 'CREATED', '%s · %s원 · %s' %
-             ('모바일' if _is_mobile_ua(req) else 'PC', format(amount, ','), order_name[:60]))
+    _pay_log(order_id, 'CREATED', '%s · %s원 · %s%s' %
+             ('모바일' if _is_mobile_ua(req) else 'PC', format(amount, ','), order_name[:60],
+              (' · 선택수단 ' + pay_sel) if pay_sel else ''))
 
     # ── INIStdPay STEP1 서명 파라미터 생성 (oid=order_id, price=amount) ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -651,7 +707,10 @@ async def create_order(req: Request):
         #   해석해 카드 탭이 아예 렌더링되지 않는다. 반드시 수단 코드를 콜론(:)으로 명시한다.
         #   Card=신용/체크카드(간편결제 포함), DirectBank=계좌이체, VBank=가상계좌, HPP=휴대폰
         #   → INICIS_GOPAYMETHOD 환경변수로 재배포 없이 조정 가능(가상계좌 미계약 대응).
-        'gopaymethod': INICIS_GOPAYMETHOD,
+        #   체크아웃 사전선택(pay_sel)이 있으면 해당 수단만 지정해 결제창이 그 수단으로
+        #   바로 열린다. 미선택(구버전 캐시)은 종전대로 전체 수단 노출 — 하위호환.
+        #   ※ gopaymethod 는 서명(oid·price·timestamp) 대상이 아니므로 단일 지정해도 안전.
+        'gopaymethod': pay_sel or INICIS_GOPAYMETHOD,
         'acceptmethod': 'centerCd(Y):below1000:HPP(2):va_receipt:vbank(%s)'
                         % (kst_naive() + datetime.timedelta(days=3)).strftime('%Y%m%d'),
         'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/inicis/close',
@@ -660,7 +719,7 @@ async def create_order(req: Request):
     #   이니시스는 PC/모바일 모듈이 분리되어 있어 모바일에서 INIStdPay.js 를 호출하면
     #   'Dev. Error' 로 결제창이 뜨지 않는다. 두 벌을 모두 내려주고 클라이언트가
     #   기기에 맞는 쪽을 선택한다(서버 UA 판별 결과도 함께 전달).
-    inicis_mobile = _ini_mobile_params(order_id, amount, order_name, buyer, origin)
+    inicis_mobile = _ini_mobile_params(order_id, amount, order_name, buyer, origin, pay_sel)
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
             'sub': sub, 'shipFee': ship_fee, 'inicis': inicis,
             'inicisMobile': inicis_mobile,

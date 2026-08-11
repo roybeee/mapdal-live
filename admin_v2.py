@@ -3097,7 +3097,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   · 확인용: <a href="/robots.txt" target="_blank">robots.txt</a> · <a href="/sitemap.xml" target="_blank">sitemap.xml</a> (전 페이지 + 등록 상품 + K-POP 앨범 전체 수록, 10분 캐시)</div></div></section>
 <section id="t-banner" style="display:none">
   <div class="panel"><h3>메인배너 — 홈 히어로 슬라이드 <span class="tag">저장 즉시 홈 반영 · 최대 5개</span></h3>
-  <div class="hint" style="margin-bottom:10px">이미지 업로드 시 자동 리사이즈됩니다. 태그 키워드·태그 배경색·앨범명·행사 이름은 배너 이미지 좌하단 캡션으로 표시되고, 이미지가 없는 슬라이드는 기존 텍스트 히어로 디자인으로 노출됩니다.</div>
+  <div class="hint" style="margin-bottom:10px">이미지 업로드 시 자동 리사이즈됩니다. 태그 키워드·태그 배경색·앨범명·행사 이름은 배너 이미지 좌하단 캡션으로 표시되고, <b>PC·모바일 이미지가 모두 없는 슬라이드</b>만 기존 텍스트 히어로 디자인으로 노출됩니다. 이미지가 하나라도 있으면 이미지 배너로 노출되며 텍스트 히어로 문구는 표시되지 않습니다.</div>
   <style>.bnf{display:flex;flex-direction:column;font-size:12px;font-weight:700;color:#666;gap:3px}.bnf input{font:inherit;font-weight:400;color:#141414;padding:7px 9px;border:1px solid #ddd;border-radius:5px;background:#fff}</style>
   <datalist id="bntags"><option value="VIDEOCALL"><option value="FANSIGN&amp;PHOTO EVENT"><option value="FANSIGN"><option value="PHOTO EVENT"><option value="LUCKY DRAW"><option value="POP-UP"><option value="NEW DROP"><option value="LIVE"></datalist>
   <div id="bnbox" class="loading">불러오는 중…</div></div></section>
@@ -3727,7 +3727,8 @@ function renderBanner(){
  BN.slides.forEach((s,i)=>{
   const card=document.createElement('div');card.className='panel';card.style.marginBottom='10px';
   card.innerHTML=`<h3 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">슬라이드 ${i+1}
-    <span class="tag">${s.img?'이미지 배너':'텍스트 히어로'}</span>
+    <span class="tag">${s.img?'이미지 배너':(s.img_m?'이미지 배너 · 모바일 전용':'텍스트 히어로')}</span>
+    ${(!s.img&&s.img_m)?'<span class="tag" style="background:#FFB000;color:#141414">PC 이미지 권장</span>':''}
     <span style="margin-left:auto;display:flex;gap:4px;align-items:center">
      <button class="btn sm ghost" onclick="bnMove(${i},-1)" ${i===0?'disabled':''}>↑</button>
      <button class="btn sm ghost" onclick="bnMove(${i},1)" ${i===BN.slides.length-1?'disabled':''}>↓</button>
@@ -3735,11 +3736,12 @@ function renderBanner(){
     </span></h3>
    <div style="display:flex;gap:14px;flex-wrap:wrap">
     <div style="width:230px">
-     <div id="bnpv${i}" style="width:230px;height:96px;background:linear-gradient(135deg,#E8332A,#B71F18);${s.img?`background-image:url('${esc(s.img)}');`:''}background-size:cover;background-position:center;border:1px solid #e3e1db;border-radius:6px;position:relative;overflow:hidden">
+     <div id="bnpv${i}" style="width:230px;height:96px;background:linear-gradient(135deg,#E8332A,#B71F18);${(s.img||s.img_m)?`background-image:url('${esc(s.img||s.img_m)}');`:''}background-size:cover;background-position:center;border:1px solid #e3e1db;border-radius:6px;position:relative;overflow:hidden">
       <span id="bnchip${i}" style="position:absolute;left:8px;bottom:8px;display:${s.tag_label?'inline-block':'none'};font:700 10px 'IBM Plex Mono',monospace;letter-spacing:.04em;color:#fff;padding:3px 7px;border-radius:4px;background:${bnCss(s.tag_color)}">${esc(s.tag_label||'')}</span>
      </div>
      <button class="btn sm" style="margin-top:6px;width:100%" onclick="$('#bnfile${i}').click()">PC 이미지 업로드</button>
      <input type="file" id="bnfile${i}" accept="image/*" style="display:none" onchange="bnUpload(${i},this)">
+     ${s.img?`<button class="btn sm ghost" style="width:100%;margin-top:4px" onclick="BN.slides[${i}].img='';renderBanner()">PC 이미지 제거</button>`:''}
      <div class="hint" style="margin-top:3px;font-size:11px">PC 권장 2560×1080 (2.4:1 크롭)</div>
      <div style="display:flex;gap:8px;margin-top:10px;align-items:flex-start">
       <div style="width:76px;height:95px;flex:0 0 auto;background:#f0eee8;${s.img_m?`background-image:url('${esc(s.img_m)}');`:''}background-size:cover;background-position:center;border:1px ${s.img_m?'solid':'dashed'} #cfccc4;border-radius:6px;display:flex;align-items:center;justify-content:center;font:10px 'IBM Plex Mono',monospace;color:#999">${s.img_m?'':'PC 이미지<br>사용'}</div>
@@ -3747,7 +3749,7 @@ function renderBanner(){
        <button class="btn sm ghost" style="width:100%" onclick="$('#bnfilem${i}').click()">모바일 이미지 업로드</button>
        <input type="file" id="bnfilem${i}" accept="image/*" style="display:none" onchange="bnUpload(${i},this,'img_m')">
        ${s.img_m?`<button class="btn sm ghost" style="width:100%;margin-top:4px" onclick="BN.slides[${i}].img_m='';renderBanner()">모바일 이미지 제거</button>`:''}
-       <div class="hint" style="margin-top:3px;font-size:11px">모바일 권장 1080×1350 (4:5 원본 노출) — 비우면 PC 이미지로 표시</div>
+       <div class="hint" style="margin-top:3px;font-size:11px">모바일 권장 1080×1350 (4:5 원본 노출) — 비우면 PC 이미지로 표시. 반대로 PC 이미지가 비어 있으면 이 이미지가 PC에서도 쓰이며, 잘림 없이 블러 배경 위에 전체 노출됩니다.</div>
       </div>
      </div>
     </div>

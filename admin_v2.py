@@ -110,6 +110,52 @@ _ALLOWED_IMG = {
 }
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8MB (브라우저에서 리사이즈 후 올리므로 여유값)
 
+# 영상 업로드 — 히어로 배너·이벤트 본문용 짧은 클립 기준
+_ALLOWED_VIDEO = {
+    'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
+}
+_VIDEO_EXT_CT = {'mp4': 'video/mp4', 'webm': 'video/webm', 'mov': 'video/quicktime'}
+MAX_VIDEO_BYTES = 50 * 1024 * 1024  # 50MB
+
+
+def video_ctype(content_type: str, filename: str = '') -> str:
+    """브라우저가 빈/잘못된 MIME 을 보내는 경우(특히 .mov)를 확장자로 보정."""
+    ct = (content_type or '').split(';')[0].strip().lower()
+    if ct in _ALLOWED_VIDEO:
+        return ct
+    m = re.search(r'\.(mp4|webm|mov)$', filename or '', re.I)
+    return _VIDEO_EXT_CT[m.group(1).lower()] if m else ct
+
+
+def store_video(data: bytes, content_type: str, prefix: str = 'videos'):
+    """영상 바이트를 R2에 저장하고 공개 URL을 반환.
+
+    이미지와 달리 DB(base64) 폴백을 쓰지 않는다 — 수십 MB를 assets 테이블에 넣으면
+    조회·백업 성능이 무너지므로, R2 미설정 시에는 조용히 우회하지 않고 명확히 거부한다.
+    """
+    ct = (content_type or '').split(';')[0].strip().lower()
+    ext = _ALLOWED_VIDEO.get(ct)
+    if not ext:
+        raise HTTPException(400, '지원하지 않는 영상 형식입니다 (mp4/webm/mov만 가능)')
+    if not data:
+        raise HTTPException(400, '빈 파일입니다')
+    if len(data) > MAX_VIDEO_BYTES:
+        raise HTTPException(400, '영상 용량이 너무 큽니다 (최대 50MB) — 길이를 줄이거나 화질을 낮춰 주세요')
+    if not r2_ready():
+        raise HTTPException(503, '영상 업로드는 R2 스토리지 설정이 필요합니다 (R2_* 환경변수를 확인해 주세요)')
+    try:
+        cli, c = _r2_client()
+        key = '%s/%s/%s%s' % (prefix.strip('/'),
+                              kst_naive().strftime('%Y%m'),
+                              uid() + secrets.token_hex(4), ext)
+        cli.put_object(Bucket=c['bucket'], Key=key, Body=data,
+                       ContentType=ct, CacheControl='public, max-age=31536000, immutable')
+        return {'url': c['public'] + '/' + key, 'stored': 'r2'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, 'R2 영상 업로드 실패: %s' % (str(e)[:200]))
+
 def _r2_client():
     import boto3
     from botocore.config import Config
@@ -3097,7 +3143,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   · 확인용: <a href="/robots.txt" target="_blank">robots.txt</a> · <a href="/sitemap.xml" target="_blank">sitemap.xml</a> (전 페이지 + 등록 상품 + K-POP 앨범 전체 수록, 10분 캐시)</div></div></section>
 <section id="t-banner" style="display:none">
   <div class="panel"><h3>메인배너 — 홈 히어로 슬라이드 <span class="tag">저장 즉시 홈 반영 · 최대 5개</span></h3>
-  <div class="hint" style="margin-bottom:10px">이미지 업로드 시 자동 리사이즈됩니다. 태그 키워드·태그 배경색·앨범명·행사 이름은 배너 이미지 좌하단 캡션으로 표시되고, <b>PC·모바일 이미지가 모두 없는 슬라이드</b>만 기존 텍스트 히어로 디자인으로 노출됩니다. 이미지가 하나라도 있으면 이미지 배너로 노출되며 텍스트 히어로 문구는 표시되지 않습니다.</div>
+  <div class="hint" style="margin-bottom:10px">이미지 업로드 시 자동 리사이즈됩니다. 태그 키워드·태그 배경색·앨범명·행사 이름은 배너 이미지 좌하단 캡션으로 표시되고, <b>PC·모바일 이미지와 영상이 모두 없는 슬라이드</b>만 기존 텍스트 히어로 디자인으로 노출됩니다. 이미지나 영상이 하나라도 있으면 미디어 배너로 노출되며 텍스트 히어로 문구는 표시되지 않습니다. <b>영상 슬라이드는 전환 간격 대신 재생이 끝나는 시점에 다음 슬라이드로 넘어갑니다.</b></div>
   <style>.bnf{display:flex;flex-direction:column;font-size:12px;font-weight:700;color:#666;gap:3px}.bnf input{font:inherit;font-weight:400;color:#141414;padding:7px 9px;border:1px solid #ddd;border-radius:5px;background:#fff}</style>
   <datalist id="bntags"><option value="VIDEOCALL"><option value="FANSIGN&amp;PHOTO EVENT"><option value="FANSIGN"><option value="PHOTO EVENT"><option value="LUCKY DRAW"><option value="POP-UP"><option value="NEW DROP"><option value="LIVE"></datalist>
   <div id="bnbox" class="loading">불러오는 중…</div></div></section>
@@ -3727,8 +3773,9 @@ function renderBanner(){
  BN.slides.forEach((s,i)=>{
   const card=document.createElement('div');card.className='panel';card.style.marginBottom='10px';
   card.innerHTML=`<h3 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">슬라이드 ${i+1}
-    <span class="tag">${s.img?'이미지 배너':(s.img_m?'이미지 배너 · 모바일 전용':'텍스트 히어로')}</span>
-    ${(!s.img&&s.img_m)?'<span class="tag" style="background:#FFB000;color:#141414">PC 이미지 권장</span>':''}
+    <span class="tag">${s.video?'영상 배너':(s.img?'이미지 배너':(s.img_m?'이미지 배너 · 모바일 전용':'텍스트 히어로'))}</span>
+    ${(!s.video&&!s.img&&s.img_m)?'<span class="tag" style="background:#FFB000;color:#141414">PC 이미지 권장</span>':''}
+    ${s.video?'<span class="tag" style="background:#141414;color:#FFB000">재생 종료 시 다음 슬라이드</span>':''}
     <span style="margin-left:auto;display:flex;gap:4px;align-items:center">
      <button class="btn sm ghost" onclick="bnMove(${i},-1)" ${i===0?'disabled':''}>↑</button>
      <button class="btn sm ghost" onclick="bnMove(${i},1)" ${i===BN.slides.length-1?'disabled':''}>↓</button>
@@ -3737,12 +3784,20 @@ function renderBanner(){
    <div style="display:flex;gap:14px;flex-wrap:wrap">
     <div style="width:230px">
      <div id="bnpv${i}" style="width:230px;height:96px;background:linear-gradient(135deg,#E8332A,#B71F18);${(s.img||s.img_m)?`background-image:url('${esc(s.img||s.img_m)}');`:''}background-size:cover;background-position:center;border:1px solid #e3e1db;border-radius:6px;position:relative;overflow:hidden">
+      ${s.video?'<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(20,20,20,.42);color:#fff;font:700 11px \'IBM Plex Mono\',monospace;letter-spacing:.08em">▶ VIDEO</span>':''}
       <span id="bnchip${i}" style="position:absolute;left:8px;bottom:8px;display:${s.tag_label?'inline-block':'none'};font:700 10px 'IBM Plex Mono',monospace;letter-spacing:.04em;color:#fff;padding:3px 7px;border-radius:4px;background:${bnCss(s.tag_color)}">${esc(s.tag_label||'')}</span>
      </div>
      <button class="btn sm" style="margin-top:6px;width:100%" onclick="$('#bnfile${i}').click()">PC 이미지 업로드</button>
      <input type="file" id="bnfile${i}" accept="image/*" style="display:none" onchange="bnUpload(${i},this)">
      ${s.img?`<button class="btn sm ghost" style="width:100%;margin-top:4px" onclick="BN.slides[${i}].img='';renderBanner()">PC 이미지 제거</button>`:''}
      <div class="hint" style="margin-top:3px;font-size:11px">PC 권장 2560×1080 (2.4:1 크롭)</div>
+     <div style="margin-top:10px;padding-top:9px;border-top:1px dashed #ddd">
+      <button class="btn sm ghost" style="width:100%" onclick="$('#bnvid${i}').click()">${s.video?'영상 교체':'영상 업로드'}</button>
+      <input type="file" id="bnvid${i}" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="bnUploadVideo(${i},this)">
+      ${s.video?`<button class="btn sm ghost" style="width:100%;margin-top:4px" onclick="BN.slides[${i}].video='';renderBanner()">영상 제거</button>
+      <div class="hint" style="margin-top:3px;font-size:11px;word-break:break-all;color:#0E9F6E">${esc(String(s.video).split('/').pop())}</div>`:''}
+      <div class="hint" style="margin-top:3px;font-size:11px">mp4·webm·mov, 최대 50MB, 16:9 가로 권장. <b>영상은 재생이 끝나면 자동으로 다음 슬라이드로 넘어갑니다</b>(전환 간격 무시). 영상이 있으면 이미지는 로딩 중 표지로만 쓰입니다.</div>
+     </div>
      <div style="display:flex;gap:8px;margin-top:10px;align-items:flex-start">
       <div style="width:76px;height:95px;flex:0 0 auto;background:#f0eee8;${s.img_m?`background-image:url('${esc(s.img_m)}');`:''}background-size:cover;background-position:center;border:1px ${s.img_m?'solid':'dashed'} #cfccc4;border-radius:6px;display:flex;align-items:center;justify-content:center;font:10px 'IBM Plex Mono',monospace;color:#999">${s.img_m?'':'PC 이미지<br>사용'}</div>
       <div style="flex:1;min-width:0">
@@ -3782,8 +3837,15 @@ async function bnUpload(i,inp,key){const f=inp.files[0];if(!f)return;inp.value='
   toast((key==='img_m'?'모바일':'PC')+' 이미지 업로드 완료 — 저장을 눌러 홈에 반영하세요');}
  catch(e){if(e.message!=='세션 만료')toast(e.message);}
  const pv2=$('#bnpv'+i);if(pv2)pv2.style.opacity=1;}
+async function bnUploadVideo(i,inp){const f=inp.files[0];if(!f)return;inp.value='';
+ const pv=$('#bnpv'+i);if(pv)pv.style.opacity=.5;
+ try{toast('영상 업로드 중… (용량에 따라 시간이 걸립니다)');
+  BN.slides[i].video=await uploadVideoFile(f);renderBanner();
+  toast('영상 업로드 완료 — 저장을 눌러 홈에 반영하세요');}
+ catch(e){if(e.message!=='세션 만료')toast(e.message);
+  const pv2=$('#bnpv'+i);if(pv2)pv2.style.opacity=1;}}
 function bnMove(i,d){const s=BN.slides,j=i+d;if(j<0||j>=s.length)return;const t=s[i];s[i]=s[j];s[j]=t;renderBanner();}
-function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',img_m:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
+function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',img_m:'',video:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
 async function saveBanner(){try{BN.interval_ms=parseInt($('#bniv').value)||3000;
  const d=await api('/admin/api/banner',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(BN)});
  toast('저장 완료 — 홈페이지에 '+d.slides+'개 슬라이드 반영');}catch(e){toast(e.message)}}
@@ -3849,6 +3911,46 @@ async function uploadFile(file){
  const fd=new FormData();fd.append('file',small,small.name||'image.jpg');
  const r=await api('/admin/api/upload',{method:'POST',body:fd});
  return r.url;
+}
+/* 영상 업로드 — 리사이즈 없이 원본 그대로 R2 로 (mp4/webm/mov, 최대 50MB) */
+async function uploadVideoFile(file){
+ if(file.size>50*1024*1024)throw new Error('영상이 50MB를 넘습니다 ('+(file.size/1048576).toFixed(1)+'MB) — 길이를 줄이거나 화질을 낮춰 주세요');
+ const fd=new FormData();fd.append('file',file,file.name||'video.mp4');
+ const r=await api('/admin/api/upload-video',{method:'POST',body:fd});
+ return r.url;
+}
+/* 본문 삽입용 영상 마크업 — 유튜브·비메오는 16:9 반응형 iframe, 그 밖은 video 태그.
+   페이지 CSS에 의존하지 않도록 전부 인라인 스타일로 만든다. */
+function mpMediaEmbed(u){
+ u=String(u||'').trim();if(!u)return '';
+ var yt=u.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{6,})/);
+ var vm=u.match(/vimeo\.com\/(?:video\/)?(\d{6,})/);
+ var src=yt?('https://www.youtube.com/embed/'+yt[1]+'?rel=0&playsinline=1')
+        :vm?('https://player.vimeo.com/video/'+vm[1]):'';
+ if(src)return '<div style="position:relative;width:100%;max-width:960px;margin:16px auto;padding-top:56.25%;background:#000">'
+   +'<iframe src="'+esc(src)+'" title="이벤트 영상" loading="lazy" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0" '
+   +'allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen></iframe></div>';
+ return '<video src="'+esc(u)+'" controls playsinline preload="metadata" '
+   +'style="width:100%;max-width:960px;height:auto;display:block;margin:16px auto;background:#000"></video>';
+}
+function mpInsertBody(target,html){
+ const t=document.getElementById(target);if(!t||!html)return false;
+ t.value=(t.value?t.value+'\n':'')+html;return true;
+}
+async function drUpVideo(inp,target){
+ if(!inp.files||!inp.files[0])return;
+ try{toast('영상 업로드 중… (용량에 따라 시간이 걸립니다)');
+  const u=await uploadVideoFile(inp.files[0]);
+  mpInsertBody(target,mpMediaEmbed(u));toast('본문에 영상 삽입 완료 — 저장을 눌러 반영하세요');}
+ catch(e){if(e.message!=='세션 만료')toast('업로드 실패: '+e.message)}
+ inp.value='';
+}
+function drAddVideoUrl(target,inputId){
+ const el=document.getElementById(inputId);const u=(el?el.value:'').trim();
+ if(!u){toast('영상 링크를 붙여넣어 주세요');return}
+ if(!/^https?:\/\//i.test(u)){toast('http(s):// 로 시작하는 주소만 넣을 수 있습니다');return}
+ mpInsertBody(target,mpMediaEmbed(u));el.value='';
+ toast('본문에 영상 삽입 완료 — 저장을 눌러 반영하세요');
 }
 /* ── 아티스트 메타태그 탭 ─────────────────────────────────────────── */
 let ARTS=[];
@@ -4189,8 +4291,8 @@ const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_la
  <button class="btn sm ghost" type="button" onclick="drOptAdd()">+ 옵션 추가</button>
  <div class="hint" style="margin-top:5px">가격을 입력한 옵션은 사이트에서 <b>수량 선택 카드</b>(메이크스타형)로 표시되고, 저장하면 구매용 상품이 자동 생성·연동됩니다. 재고를 비우면 무제한 판매이며, <b>저장할 때마다 입력한 재고 수치로 재설정</b>됩니다. 가격 없이 이름만 넣으면 예전처럼 안내 목록으로만 표시됩니다. 구매형 옵션이 하나라도 있으면 [구매 링크] 버튼 대신 옵션 카드가 노출됩니다.</div></span>
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
- <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지를 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"></div></span>
- <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지를 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"></div></span>
+ <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지·영상을 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_htmlvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_html')"><input id="dr_htmlvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_html','dr_htmlvurl')">링크로 영상 삽입</button></div><div class="hint" style="margin-top:4px;font-size:11px">영상 파일은 mp4·webm·mov, 최대 50MB (10~30초 클립 권장). 유튜브·비메오 링크는 16:9 반응형 플레이어로, 그 밖의 mp4 주소는 재생 컨트롤이 있는 플레이어로 삽입됩니다.</div></span>
+ <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지·영상을 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_benefitvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_benefit')"><input id="dr_benefitvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_benefit','dr_benefitvurl')">링크로 영상 삽입</button></div></span>
  <b>응모 전 유의사항</b><span><span class="hint">입력한 내용이 그대로 표시됩니다 — 번호·기호를 직접 적어 주세요. 빈 줄은 문단 간격으로 표시됩니다.</span>
  <textarea id="dr_te_extra" rows="14" style="width:100%;margin-top:6px" placeholder="예)&#10;1) 본 이벤트는 맵달SEOUL 온라인몰 회원·비회원 모두 참여 가능합니다.&#10;2) 개인정보 기재 책임은 본인에게 있습니다.">${esc(v.entry_extra||'')}</textarea></span>
  <b>대면 팬사인회<br>당첨자 유의사항</b><span><span class="hint">유형에 [팬사인회]가 선택된 이벤트에 표시됩니다. 입력한 그대로 노출되며, 비우면 섹션이 표시되지 않습니다.</span>
@@ -5106,6 +5208,18 @@ async def api_upload(request: Request, file: UploadFile = File(...)):
     res = store_image(data, file.content_type)  # 형식/용량 검증 + R2 또는 DB 폴백 저장
     audit(a, '이미지업로드', res['url'][:120],
           '%s · %.0fKB · %s' % (file.content_type, len(data) / 1024, res['stored']))
+    return {'ok': True, 'url': res['url'], 'storage': res['stored']}
+
+
+# ── 영상 업로드 (히어로 배너 + 이벤트 상세 본문 공용) ──────────────────────
+@admin_router.post('/admin/api/upload-video')
+async def api_upload_video(request: Request, file: UploadFile = File(...)):
+    a = get_actor(request); need(a, 2, '영상 업로드')
+    data = await file.read()
+    ct = video_ctype(file.content_type, file.filename or '')
+    res = store_video(data, ct)
+    audit(a, '영상업로드', res['url'][:120],
+          '%s · %.1fMB · %s' % (ct, len(data) / 1048576.0, res['stored']))
     return {'ok': True, 'url': res['url'], 'storage': res['stored']}
 
 # ── 메인배너 (홈 히어로 슬라이드) — hero_api 저장소 재사용 ─────────────────

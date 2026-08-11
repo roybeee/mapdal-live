@@ -308,6 +308,17 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 .mzh .mzh-img{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;min-height:0!important;object-fit:cover!important;object-position:center!important;margin:0!important;padding:0!important;filter:none!important;display:block!important;z-index:1}
 .mzh .mzh-slide.is-img::after{content:"";position:absolute;inset:0;z-index:1;
   background:linear-gradient(90deg,rgba(20,20,20,.28) 0%,transparent 45%)}
+/* 모바일 전용 이미지만 등록된 슬라이드 — PC(2.4:1)에서 세로 이미지를 잘라내지 않고
+   블러 배경 위에 전체 노출한다. 모바일(≤1024px)에서는 기존과 동일하게 cover. */
+.mzh .mzh-bg{position:absolute;inset:0;z-index:0;background-size:cover;background-position:center;
+  filter:blur(26px) brightness(.5);transform:scale(1.14)}
+.mzh .mzh-slide.is-mobonly{background:#141414}
+.mzh .mzh-slide.is-mobonly .mzh-img{object-fit:contain!important}
+.mzh .mzh-slide.is-mobonly::after{background:linear-gradient(90deg,rgba(20,20,20,.18) 0%,transparent 55%)}
+@media (max-width:1024px){
+  .mzh .mzh-bg{display:none}
+  .mzh .mzh-slide.is-mobonly .mzh-img{object-fit:cover!important}
+}
 /* 블랙 라이브 스테이지 — 관리자에서 슬라이드별 활성화 */
 .mzh .mzh-slide.is-live{background:#111;color:#fff}
 .mzh .mzh-slide.is-live .hero-inner{padding-right:min(48%,620px)}
@@ -417,12 +428,24 @@ function esc(s){return String(s==null?"":s)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
   .replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
 
+/* CSS url() 안전 인코딩 — 인용부호·괄호·역슬래시·공백을 퍼센트 인코딩한다.
+   encodeURIComponent 는 ' ( ) 를 그대로 남기므로 직접 매핑해야 한다. */
+function cssUrl(u){return String(u==null?"":u).replace(/[\s"'()\\]/g,function(c){
+  return "%"+c.charCodeAt(0).toString(16).toUpperCase();});}
+
 function slideHTML(s){
-  var isImg=!!s.img;
-  var isLive=s.live_visual===true||(!isImg&&String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
-  var hasText=!!(s.title||s.title2||s.eyebrow||s.sub||s.cta_label||s.cta2_label||s.chip);
+  /* 이미지 판정 규칙 — PC 이미지(img)가 없어도 모바일 전용 이미지(img_m)만 등록되어
+     있으면 이미지 배너로 취급한다. (과거 isImg=!!s.img 였기 때문에 모바일 이미지만
+     올린 슬라이드는 이미지·캡션이 통째로 누락되고 옛 텍스트 히어로가 노출되었다.) */
+  var pcImg=s.img||"", mobImg=s.img_m||"", mainImg=pcImg||mobImg, mobOnly=!pcImg&&!!mobImg;
+  var isImg=!!mainImg;
+  /* 이미지 슬라이드는 캡션(태그·앨범명·행사명)만 노출한다. DB에 과거 텍스트 히어로
+     필드(title/eyebrow/sub/cta/chip/live_visual)가 남아 있어도 이미지 위에 겹쳐
+     그리지 않는다 — 관리자 UI에 그 필드가 없어 편집으로 지울 수 없기 때문이다. */
+  var isLive=!isImg&&(s.live_visual===true||String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
+  var hasText=!isImg&&!!(s.title||s.title2||s.eyebrow||s.sub||s.cta_label||s.cta2_label||s.chip);
   var useA=s.href&&!hasText, tagOpen, tagClose;
-  var cls=(isImg?' is-img':'')+(isLive?' is-live':'');
+  var cls=(isImg?' is-img':'')+(isLive?' is-live':'')+(mobOnly?' is-mobonly':'');
   if(useA){tagOpen='<a class="mzh-slide'+cls+'" href="'+esc(s.href)+'">';tagClose="</a>";}
   else{tagOpen='<div class="mzh-slide'+cls+'"'+(s.href?' data-href="'+esc(s.href)+'" style="cursor:pointer"':'')+'>';tagClose="</div>";}
   var h="";
@@ -430,9 +453,10 @@ function slideHTML(s){
     /* 아트 디렉션: PC(2.4:1 cover 크롭)와 모바일(원본 비율 노출)은 최적 규격이 달라
        모바일 전용 이미지(img_m)가 있으면 <picture>로 분기한다(1024px = 모바일 CSS 기준).
        없으면 기존과 동일한 단일 <img> — 완전 하위호환. */
-    var imgTag='<img class="mzh-img" src="'+esc(s.img)+'" alt="'+esc(s.title||"프로모션 배너")+'" '+
-       'onerror="this.style.display=\'none\';var sl=this.closest?this.closest(\'.mzh-slide\'):this.parentNode;if(sl&&sl.classList)sl.classList.remove(\'is-img\')">';
-    h+=s.img_m?'<picture><source media="(max-width:1024px)" srcset="'+esc(s.img_m)+'">'+imgTag+'</picture>':imgTag;
+    if(mobOnly)h+='<div class="mzh-bg" aria-hidden="true" style="background-image:url('+esc(cssUrl(mobImg))+')"></div>';
+    var imgTag='<img class="mzh-img" src="'+esc(mainImg)+'" alt="'+esc(s.album||s.event||s.title||"프로모션 배너")+'" '+
+       'onerror="this.style.display=\'none\';var sl=this.closest?this.closest(\'.mzh-slide\'):this.parentNode;if(sl&&sl.classList){sl.classList.remove(\'is-img\');sl.classList.remove(\'is-mobonly\');}">';
+    h+=(pcImg&&mobImg)?'<picture><source media="(max-width:1024px)" srcset="'+esc(mobImg)+'">'+imgTag+'</picture>':imgTag;
     var capBg={purple:"#7C3AED",gold:"linear-gradient(135deg,#B98A2F,#E7C873)",red:"#E8332A",amber:"#FFB000",ink:"#141414",blue:"#2563EB",green:"#0E9F6E"};
     if(s.tag_label||s.album||s.event){
       var tc=(s.tag_color||"").trim(),bg=capBg[tc]||(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(tc)?tc:"#7C3AED");
@@ -480,8 +504,9 @@ function slideHTML(s){
 function render(data){
   slides=(data.slides||[]).filter(function(s){return s&&s.active!==false;});
   if(!slides.length)slides=MZH_DEFAULT.slides;
+  /* 트랙 높이(모바일 752px) 판정 — slideHTML의 isLive와 동일 규칙을 쓴다 */
   root.classList.toggle("has-live",slides.some(function(s){
-    return s.live_visual===true||(!s.img&&String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
+    return !s.img&&!s.img_m&&(s.live_visual===true||String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
   }));
   INT=Math.max(1500,Math.min(15000,data.interval_ms||3000));
   root.style.setProperty("--mzh-int",INT+"ms");
@@ -516,7 +541,7 @@ function go(i,user){
   });
   /* 다음 슬라이드 이미지 프리로드 — 뷰포트에 맞는 쪽만 */
   var nx=slides[(idx+1)%slides.length];
-  if(nx){var pre=(nx.img_m&&window.matchMedia&&matchMedia("(max-width:1024px)").matches)?nx.img_m:nx.img;
+  if(nx){var pre=(nx.img_m&&window.matchMedia&&matchMedia("(max-width:1024px)").matches)?nx.img_m:(nx.img||nx.img_m);
     if(pre){var im=new Image();im.src=pre;}}
   runBar();
   if(user)restart();

@@ -8289,13 +8289,25 @@ img,video,canvas,svg,iframe{max-width:100%;height:auto}
  .k2g-price .amt{font-size:12.5px}
  .k2g-price .pct{font-size:13.5px}
 }
-/* ── 모바일 히어로: 2.4:1 배너 측면 크롭 제거 → 원본 비율 노출 + 캡션 패널 분리 ── */
+/* ── 모바일 히어로: 2.4:1 배너 측면 크롭 제거 → 원본 비율 노출 + 캡션 패널 분리 ──
+   주의: 슬라이드가 height:auto 플렉스 컬럼으로 바뀌므로, 미디어는 반드시
+   position:static(문서 흐름)이어야 슬라이드 높이를 만들어 낸다. 영상(.mzh-video)이
+   여기서 빠지면 absolute 로 남아 흐름에서 이탈하고, 슬라이드 높이가 캡션만큼으로
+   줄어들어 모바일에서 배너가 통째로 보이지 않는다. 미디어 추가 시 이 선택자에
+   함께 넣을 것. */
 @media(max-width:1024px){
  .mzh .mzh-track{height:auto!important}
  .mzh .mzh-slide{height:auto!important;display:flex!important;flex-direction:column;background:#141414}
  .mzh .mzh-slide.is-img::after{display:none}
- .mzh .mzh-img{position:static!important;width:100%!important;height:auto!important;max-height:62vh!important;object-fit:contain!important;background:#141414;flex:0 0 auto}
+ .mzh .mzh-img,.mzh .mzh-video{position:static!important;width:100%!important;height:auto!important;max-height:62vh!important;object-fit:contain!important;background:#141414;flex:0 0 auto}
+ .mzh .mzh-bg{display:none!important}
+ /* 모바일은 영상이 문서 흐름에 있어 네이티브 재생 컨트롤이 정상 위치에 보인다 —
+    데스크톱용 중앙 ▶ 배지는 캡션 영역까지 걸쳐 어긋나므로 숨긴다. */
+ .mzh .mzh-slide.is-vfail::before{display:none!important}
  .mzh .mzh-cap{position:static;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;background:#141414;padding:16px 20px 50px}
+ /* 16:9 영상은 4:5 이미지 슬라이드보다 낮아 트랙 높이만큼 아래 여백이 생긴다.
+    캡션을 가운데 두면 영상과 동떨어져 보이므로 영상 바로 아래에 붙인다. */
+ .mzh .mzh-slide.is-video .mzh-cap{justify-content:flex-start}
  .mzh .mzh-slide .hero-inner{flex:1;min-height:0}
  .mzh-progress{background:rgba(255,255,255,.14)}
  #mpCatBar{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 34px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 34px),transparent)}

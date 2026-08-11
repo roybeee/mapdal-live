@@ -309,7 +309,13 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 /* 영상 배너 — 자동재생(무음·인라인)이며 재생이 끝나면 다음 슬라이드로 넘어간다.
    자동재생이 차단된 환경에서는 JS가 controls 를 켜고 일반 전환 간격으로 되돌린다. */
 .mzh .mzh-slide.is-video{background:#141414}
-.mzh .mzh-video::-webkit-media-controls-overlay-play-button{display:none}
+/* 자동재생이 차단된 경우(iOS 저전력 모드·데이터 세이버 등) 탭해서 재생할 수 있음을
+   눈에 보이게 알린다 — 표지만 떠 있고 아무 표시가 없으면 "영상이 안 보인다"가 된다. */
+.mzh .mzh-slide.is-vfail::before{content:"▶";position:absolute;left:50%;top:50%;
+  transform:translate(-50%,-50%);z-index:3;width:66px;height:66px;border-radius:50%;
+  background:rgba(20,20,20,.58);border:2px solid rgba(255,255,255,.85);color:#fff;
+  font-size:20px;line-height:1;display:flex;align-items:center;justify-content:center;
+  padding-left:4px;pointer-events:none}
 .mzh .mzh-slide.is-img::after{content:"";position:absolute;inset:0;z-index:1;
   background:linear-gradient(90deg,rgba(20,20,20,.28) 0%,transparent 45%)}
 /* 모바일 전용 이미지만 등록된 슬라이드 — PC(2.4:1)에서 세로 이미지를 잘라내지 않고
@@ -437,7 +443,7 @@ function esc(s){return String(s==null?"":s)
 function cssUrl(u){return String(u==null?"":u).replace(/[\s"'()\\]/g,function(c){
   return "%"+c.charCodeAt(0).toString(16).toUpperCase();});}
 
-function slideHTML(s){
+function slideHTML(s,i){
   /* 이미지 판정 규칙 — PC 이미지(img)가 없어도 모바일 전용 이미지(img_m)만 등록되어
      있으면 이미지 배너로 취급한다. (과거 isImg=!!s.img 였기 때문에 모바일 이미지만
      올린 슬라이드는 이미지·캡션이 통째로 누락되고 옛 텍스트 히어로가 노출되었다.) */
@@ -459,9 +465,13 @@ function slideHTML(s){
   var h="";
   if(isVid){
     /* 무음·인라인 자동재생 (iOS 요구사항: muted + playsinline).
+       첫 슬라이드에는 autoplay 속성을 직접 붙인다 — 모바일 브라우저는 JS play() 보다
+       네이티브 autoplay 경로를 훨씬 안정적으로 허용한다. 뒤 슬라이드는 사용자 조작
+       이후에 도달하므로 자동재생 정책에 걸리지 않아 JS play() 만으로 충분하다.
        loop 는 붙이지 않는다 — ended 이벤트로 다음 슬라이드를 넘기기 때문이며,
        슬라이드가 1개뿐일 때만 render()에서 loop 를 켠다. */
-    h+='<video class="mzh-video" src="'+esc(vid)+'" muted playsinline preload="metadata" '
+    h+='<video class="mzh-video" src="'+esc(vid)+'" muted playsinline '
+      +(i===0?'autoplay preload="auto" ':'preload="metadata" ')
       +'disablepictureinpicture aria-label="'+esc(s.album||s.event||"프로모션 영상")+'"'
       +(mainImg?' poster="'+esc(mainImg)+'"':'')+'></video>';
   }
@@ -553,6 +563,10 @@ function activeVideo(){var v=videoOf(idx);return(v&&v.dataset.failed!=="1")?v:nu
 function bindVideos(){
   var single=slides.length<2;
   Array.prototype.forEach.call(track.querySelectorAll("video.mzh-video"),function(v){
+    /* innerHTML 로 만든 <video> 는 iOS Safari 에서 muted 속성이 반영되지 않는 사례가
+       있다. muted 가 아니면 자동재생이 무조건 차단되므로 프로퍼티로 다시 지정한다. */
+    v.muted=true;
+    if("playsInline" in v)v.playsInline=true;
     if(single)v.loop=true;                       /* 슬라이드가 1개면 넘길 곳이 없으므로 반복 */
     v.addEventListener("loadedmetadata",function(){
       if(v===videoOf(idx))schedule();            /* 길이를 알게 된 시점에 진행바·타이머 재설정 */
@@ -561,11 +575,54 @@ function bindVideos(){
       if(v===videoOf(idx)&&!paused&&slides.length>1)next();
     });
     v.addEventListener("error",function(){failVideo(v);});
+    v.addEventListener("playing",function(){     /* 재시도·수동 재생 성공 시 실패 표시 해제 */
+      v.dataset.failed="0";v.dataset.tries="0";
+      var sl=v.parentNode;if(sl&&sl.classList)sl.classList.remove("is-vfail");
+      v.controls=false;
+      if(v===videoOf(idx))schedule();            /* 영상 길이 기준 전환으로 복귀 */
+    });
   });
+}
+/* 재생 시도 — 모바일에서는 버퍼 부족(AbortError)·자동재생 정책(NotAllowedError)으로
+   play() 가 일시적으로 거부되는 일이 흔하다. 한 번의 거부를 영구 실패로 처리하면
+   표지만 남고 재생이 되지 않으므로, 버퍼 준비 시점과 첫 사용자 입력 시점에 재시도한다. */
+function tryPlay(v){
+  if(!v||v.dataset.failed==="1")return;
+  v.muted=true;
+  var p;
+  try{p=v.play();}catch(e){onPlayFail(v);return;}
+  if(p&&p.catch)p.catch(function(){onPlayFail(v);});
+}
+function onPlayFail(v){
+  var n=parseInt(v.dataset.tries||"0",10)+1;
+  v.dataset.tries=String(n);
+  if(n>=3){failVideo(v);return;}
+  if(v.dataset.retryBound!=="1"){
+    v.dataset.retryBound="1";
+    v.addEventListener("canplay",function(){
+      if(v===videoOf(idx)&&!paused&&!reduced)tryPlay(v);
+    });
+  }
+  armGestureRetry();
+  if(v===videoOf(idx))schedule();               /* 재생 전까지는 일반 전환 간격으로 진행 */
+}
+/* 첫 사용자 입력(탭·클릭) 이후에는 자동재생 정책이 풀린다 — 한 번만 걸어 둔다. */
+var gestureArmed=false;
+function armGestureRetry(){
+  if(gestureArmed)return;gestureArmed=true;
+  var fire=function(){
+    document.removeEventListener("touchstart",fire,true);
+    document.removeEventListener("click",fire,true);
+    var v=videoOf(idx);
+    if(v&&!paused&&!reduced)tryPlay(v);
+  };
+  document.addEventListener("touchstart",fire,true);
+  document.addEventListener("click",fire,true);
 }
 function failVideo(v){
   if(v.dataset.failed==="1")return;
   v.dataset.failed="1";v.controls=true;          /* 자동재생 차단 시 사용자가 직접 재생 가능 */
+  var sl=v.parentNode;if(sl&&sl.classList)sl.classList.add("is-vfail");
   if(v===videoOf(idx))schedule();                /* 일반 전환 간격으로 복귀 */
 }
 function syncVideos(){
@@ -574,8 +631,7 @@ function syncVideos(){
     if(!v)return;
     if(k===idx){
       if(reduced||paused){try{v.pause();}catch(e){}return;}
-      var p=v.play();
-      if(p&&p.catch)p.catch(function(){failVideo(v);});
+      tryPlay(v);
     }else{
       try{v.pause();if(v.currentTime)v.currentTime=0;}catch(e){}
     }

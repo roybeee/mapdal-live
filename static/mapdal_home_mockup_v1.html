@@ -305,7 +305,11 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
   text-shadow:0 2px 10px rgba(0,0,0,.4);word-break:keep-all}
 @media (max-width:1279px){.mzh .mzh-slide .drop-chip{display:none}}
 .mzh picture{display:contents}
-.mzh .mzh-img{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;min-height:0!important;object-fit:cover!important;object-position:center!important;margin:0!important;padding:0!important;filter:none!important;display:block!important;z-index:1}
+.mzh .mzh-img,.mzh .mzh-video{position:absolute!important;top:0!important;left:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;min-height:0!important;object-fit:cover!important;object-position:center!important;margin:0!important;padding:0!important;filter:none!important;display:block!important;z-index:1;background:#141414}
+/* 영상 배너 — 자동재생(무음·인라인)이며 재생이 끝나면 다음 슬라이드로 넘어간다.
+   자동재생이 차단된 환경에서는 JS가 controls 를 켜고 일반 전환 간격으로 되돌린다. */
+.mzh .mzh-slide.is-video{background:#141414}
+.mzh .mzh-video::-webkit-media-controls-overlay-play-button{display:none}
 .mzh .mzh-slide.is-img::after{content:"";position:absolute;inset:0;z-index:1;
   background:linear-gradient(90deg,rgba(20,20,20,.28) 0%,transparent 45%)}
 /* 모바일 전용 이미지만 등록된 슬라이드 — PC(2.4:1)에서 세로 이미지를 잘라내지 않고
@@ -421,7 +425,7 @@ var root=document.getElementById("mzHero"),
     bar=document.getElementById("mzhBar"),
     prevBtn=document.getElementById("mzhPrev"),
     nextBtn=document.getElementById("mzhNext");
-var slides=[],idx=0,timer=null,INT=3000,paused=false,
+var slides=[],idx=0,timer=null,vidGuard=null,INT=3000,paused=false,
     reduced=window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 function esc(s){return String(s==null?"":s)
@@ -437,19 +441,31 @@ function slideHTML(s){
   /* 이미지 판정 규칙 — PC 이미지(img)가 없어도 모바일 전용 이미지(img_m)만 등록되어
      있으면 이미지 배너로 취급한다. (과거 isImg=!!s.img 였기 때문에 모바일 이미지만
      올린 슬라이드는 이미지·캡션이 통째로 누락되고 옛 텍스트 히어로가 노출되었다.) */
-  var pcImg=s.img||"", mobImg=s.img_m||"", mainImg=pcImg||mobImg, mobOnly=!pcImg&&!!mobImg;
-  var isImg=!!mainImg;
-  /* 이미지 슬라이드는 캡션(태그·앨범명·행사명)만 노출한다. DB에 과거 텍스트 히어로
-     필드(title/eyebrow/sub/cta/chip/live_visual)가 남아 있어도 이미지 위에 겹쳐
+  var pcImg=s.img||"", mobImg=s.img_m||"", mainImg=pcImg||mobImg;
+  var vid=s.video||"";
+  var isVid=!!vid;
+  /* 영상 슬라이드는 등록된 이미지를 표지(poster)로만 쓴다 — 로딩 중 검은 화면 방지 */
+  var isImg=!isVid&&!!mainImg, mobOnly=!isVid&&!pcImg&&!!mobImg;
+  var hasMedia=isVid||isImg;
+  /* 미디어 슬라이드는 캡션(태그·앨범명·행사명)만 노출한다. DB에 과거 텍스트 히어로
+     필드(title/eyebrow/sub/cta/chip/live_visual)가 남아 있어도 이미지·영상 위에 겹쳐
      그리지 않는다 — 관리자 UI에 그 필드가 없어 편집으로 지울 수 없기 때문이다. */
-  var isLive=!isImg&&(s.live_visual===true||String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
-  var hasText=!isImg&&!!(s.title||s.title2||s.eyebrow||s.sub||s.cta_label||s.cta2_label||s.chip);
+  var isLive=!hasMedia&&(s.live_visual===true||String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
+  var hasText=!hasMedia&&!!(s.title||s.title2||s.eyebrow||s.sub||s.cta_label||s.cta2_label||s.chip);
   var useA=s.href&&!hasText, tagOpen, tagClose;
-  var cls=(isImg?' is-img':'')+(isLive?' is-live':'')+(mobOnly?' is-mobonly':'');
+  var cls=(hasMedia?' is-img':'')+(isVid?' is-video':'')+(isLive?' is-live':'')+(mobOnly?' is-mobonly':'');
   if(useA){tagOpen='<a class="mzh-slide'+cls+'" href="'+esc(s.href)+'">';tagClose="</a>";}
   else{tagOpen='<div class="mzh-slide'+cls+'"'+(s.href?' data-href="'+esc(s.href)+'" style="cursor:pointer"':'')+'>';tagClose="</div>";}
   var h="";
-  if(isImg){
+  if(isVid){
+    /* 무음·인라인 자동재생 (iOS 요구사항: muted + playsinline).
+       loop 는 붙이지 않는다 — ended 이벤트로 다음 슬라이드를 넘기기 때문이며,
+       슬라이드가 1개뿐일 때만 render()에서 loop 를 켠다. */
+    h+='<video class="mzh-video" src="'+esc(vid)+'" muted playsinline preload="metadata" '
+      +'disablepictureinpicture aria-label="'+esc(s.album||s.event||"프로모션 영상")+'"'
+      +(mainImg?' poster="'+esc(mainImg)+'"':'')+'></video>';
+  }
+  else if(isImg){
     /* 아트 디렉션: PC(2.4:1 cover 크롭)와 모바일(원본 비율 노출)은 최적 규격이 달라
        모바일 전용 이미지(img_m)가 있으면 <picture>로 분기한다(1024px = 모바일 CSS 기준).
        없으면 기존과 동일한 단일 <img> — 완전 하위호환. */
@@ -457,6 +473,8 @@ function slideHTML(s){
     var imgTag='<img class="mzh-img" src="'+esc(mainImg)+'" alt="'+esc(s.album||s.event||s.title||"프로모션 배너")+'" '+
        'onerror="this.style.display=\'none\';var sl=this.closest?this.closest(\'.mzh-slide\'):this.parentNode;if(sl&&sl.classList){sl.classList.remove(\'is-img\');sl.classList.remove(\'is-mobonly\');}">';
     h+=(pcImg&&mobImg)?'<picture><source media="(max-width:1024px)" srcset="'+esc(mobImg)+'">'+imgTag+'</picture>':imgTag;
+  }
+  if(hasMedia){
     var capBg={purple:"#7C3AED",gold:"linear-gradient(135deg,#B98A2F,#E7C873)",red:"#E8332A",amber:"#FFB000",ink:"#141414",blue:"#2563EB",green:"#0E9F6E"};
     if(s.tag_label||s.album||s.event){
       var tc=(s.tag_color||"").trim(),bg=capBg[tc]||(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(tc)?tc:"#7C3AED");
@@ -506,11 +524,12 @@ function render(data){
   if(!slides.length)slides=MZH_DEFAULT.slides;
   /* 트랙 높이(모바일 752px) 판정 — slideHTML의 isLive와 동일 규칙을 쓴다 */
   root.classList.toggle("has-live",slides.some(function(s){
-    return !s.img&&!s.img_m&&(s.live_visual===true||String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
+    return !s.img&&!s.img_m&&!s.video&&(s.live_visual===true||String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
   }));
   INT=Math.max(1500,Math.min(15000,data.interval_ms||3000));
   root.style.setProperty("--mzh-int",INT+"ms");
   track.innerHTML=slides.map(slideHTML).join("");
+  bindVideos();
   dotsBox.innerHTML=slides.map(function(_,i){
     return '<button role="tab" aria-selected="false" aria-label="슬라이드 '+(i+1)+'"></button>';
   }).join("");
@@ -519,7 +538,48 @@ function render(data){
   });
   var single=slides.length<2;
   prevBtn.style.display=nextBtn.style.display=dotsBox.style.display=single?"none":"";
-  idx=0;go(0,false);updateLiveClocks();restart();
+  idx=0;go(0,false);updateLiveClocks();
+}
+
+/* ── 영상 배너 ────────────────────────────────────────────────────────────
+   영상 슬라이드는 전환 간격(interval_ms)을 쓰지 않고 재생이 끝나는 시점(ended)에
+   다음 슬라이드로 넘어간다. 재생 실패·ended 미발생 시에는 안전망 타이머가 대신
+   넘겨 캐러셀이 멈추지 않게 한다. */
+function videoOf(k){
+  var el=track.children[k];
+  return el&&el.querySelector?el.querySelector("video.mzh-video"):null;
+}
+function activeVideo(){var v=videoOf(idx);return(v&&v.dataset.failed!=="1")?v:null;}
+function bindVideos(){
+  var single=slides.length<2;
+  Array.prototype.forEach.call(track.querySelectorAll("video.mzh-video"),function(v){
+    if(single)v.loop=true;                       /* 슬라이드가 1개면 넘길 곳이 없으므로 반복 */
+    v.addEventListener("loadedmetadata",function(){
+      if(v===videoOf(idx))schedule();            /* 길이를 알게 된 시점에 진행바·타이머 재설정 */
+    });
+    v.addEventListener("ended",function(){
+      if(v===videoOf(idx)&&!paused&&slides.length>1)next();
+    });
+    v.addEventListener("error",function(){failVideo(v);});
+  });
+}
+function failVideo(v){
+  if(v.dataset.failed==="1")return;
+  v.dataset.failed="1";v.controls=true;          /* 자동재생 차단 시 사용자가 직접 재생 가능 */
+  if(v===videoOf(idx))schedule();                /* 일반 전환 간격으로 복귀 */
+}
+function syncVideos(){
+  Array.prototype.forEach.call(track.children,function(el,k){
+    var v=el.querySelector?el.querySelector("video.mzh-video"):null;
+    if(!v)return;
+    if(k===idx){
+      if(reduced||paused){try{v.pause();}catch(e){}return;}
+      var p=v.play();
+      if(p&&p.catch)p.catch(function(){failVideo(v);});
+    }else{
+      try{v.pause();if(v.currentTime)v.currentTime=0;}catch(e){}
+    }
+  });
 }
 
 function updateLiveClocks(){
@@ -541,30 +601,55 @@ function go(i,user){
   });
   /* 다음 슬라이드 이미지 프리로드 — 뷰포트에 맞는 쪽만 */
   var nx=slides[(idx+1)%slides.length];
-  if(nx){var pre=(nx.img_m&&window.matchMedia&&matchMedia("(max-width:1024px)").matches)?nx.img_m:(nx.img||nx.img_m);
+  if(nx&&!nx.video){var pre=(nx.img_m&&window.matchMedia&&matchMedia("(max-width:1024px)").matches)?nx.img_m:(nx.img||nx.img_m);
     if(pre){var im=new Image();im.src=pre;}}
-  runBar();
-  if(user)restart();
+  syncVideos();
+  schedule();
 }
 function next(){go(idx+1,false);}
-function runBar(){
+function clearTimers(){
+  if(timer){clearTimeout(timer);timer=null;}
+  if(vidGuard){clearTimeout(vidGuard);vidGuard=null;}
+}
+/* 현재 슬라이드에 맞는 체류시간(ms) — 영상 슬라이드는 영상 길이를 따른다 */
+function dwellMs(){
+  var v=activeVideo();
+  if(!v)return INT;
+  var d=v.duration;
+  return(isFinite(d)&&d>0)?Math.round(d*1000):0;   /* 0 = 아직 길이 모름(메타데이터 대기) */
+}
+function runBar(ms){
   if(reduced||!bar)return;
   bar.classList.remove("run");void bar.offsetWidth;/* reflow → 애니 재시작 */
+  bar.style.animationDuration=(ms>0?ms:INT)+"ms";
   if(!paused&&slides.length>1)bar.classList.add("run");
 }
-function restart(){
-  if(timer)clearInterval(timer);
+/* 진행바 + 다음 슬라이드 예약을 한 번에 — go()·재생상태 변화마다 호출된다 */
+function schedule(){
+  clearTimers();
+  var v=activeVideo(),ms=dwellMs();
+  runBar(ms);
   if(reduced||paused||slides.length<2)return;
-  timer=setInterval(next,INT);
+  if(v){
+    /* 정상 경로는 ended 이벤트. 안전망: 디코드 실패·네트워크 정지로 ended 가 오지
+       않아도 캐러셀이 멈추지 않도록 여유를 두고 강제 전환한다. */
+    vidGuard=setTimeout(next,Math.max(INT,ms>0?ms+2500:14000));
+    return;
+  }
+  timer=setTimeout(next,INT);
 }
+function restart(){schedule();}
 function setPaused(p){
   paused=p;
-  if(p){if(timer)clearInterval(timer);timer=null;bar&&bar.classList.remove("run");}
-  else{runBar();restart();}
+  if(p){clearTimers();bar&&bar.classList.remove("run");
+    var v=videoOf(idx);if(v){try{v.pause();}catch(e){}}}
+  else{syncVideos();schedule();}
 }
 
 track.addEventListener("click",function(e){
   var sl=e.target.closest?e.target.closest(".mzh-slide[data-href]"):null;
+  /* 자동재생 차단으로 controls 가 켜진 영상은 조작이 목적이므로 링크 이동을 막는다 */
+  if(e.target&&e.target.tagName==="VIDEO"&&e.target.controls)return;
   if(sl&&!(e.target.closest&&e.target.closest("a")))location.href=sl.getAttribute("data-href");
 });
 prevBtn.addEventListener("click",function(){go(idx-1,true);});

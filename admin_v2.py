@@ -617,6 +617,10 @@ def ensure_ready():
         if tcx and 'customer_id' not in tcx:
             try: run('ALTER TABLE %s ADD COLUMN customer_id TEXT' % table)
             except Exception: pass
+    icx = _cols('member_inquiries')
+    if icx and 'photos' not in icx:
+        try: run('ALTER TABLE member_inquiries ADD COLUMN photos TEXT')
+        except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids',
                 'info_rows', 'ship_rows'):
@@ -4575,6 +4579,7 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
  <div class="cs-head" onclick="${q.cid?`openAccount('${esc(q.cid)}')`:`toast('연결된 회원 계정을 찾을 수 없습니다')`}" title="클릭 → 회원번호·구매내역·CS 이력" style="cursor:pointer;margin:-4px;padding:4px;border-radius:4px" onmouseover="this.style.background='#faf9f5'" onmouseout="this.style.background=''">
  <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${q.cno?` · <b class="mono" style="color:#E8332A">${esc(q.cno)}</b>`:''}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span></div>
  <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap">${esc(kind==='inq'?q.body:q.question)}</div>
+ ${(q.photos&&q.photos.length)?`<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${q.photos.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" style="width:72px;height:72px;object-fit:cover;border:1px solid var(--line)"></a>`).join('')}</div>`:''}
  ${q.answer?`<div style="margin-top:6px;background:#faf9f5;padding:8px;font-size:12.5px;white-space:pre-wrap"><b>답변</b> ${esc(q.answer)}</div>`:''}
  <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}${kind==='inq'&&q.order_id&&can(1)?`<button class="btn sm ghost" onclick="shipAddrEdit('${esc(q.order_id)}','${esc(q.id)}')" title="이 화면에서 주문 배송지를 바로 변경 — 저장 시 답변 종결·안내 문자까지 한 번에">배송지 변경</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
  $('#csinq').innerHTML=block(d.inq,'inq');$('#cspq').innerHTML=block(d.pqna,'pqna');
@@ -7330,14 +7335,15 @@ function route(){const p=(location.hash||'#orders').slice(1);
  document.querySelectorAll('aside a[data-p]').forEach(a=>a.className=a.dataset.p===p?'on':'');
  (PANES[p]||orders)()}
 window.addEventListener('hashchange',route);
-async function orders(){
- const d=await api('/api/member/orders?range=3m');
- $('#pane').innerHTML='<div class="panel"><h3>주문/배송 조회 <small style="color:#888;font-weight:400">(최근 3개월)</small></h3>'+
+async function orders(rng){rng=rng||'3m';
+ const d=await api('/api/member/orders?range='+rng);
+ const rsel='<select onchange="orders(this.value)" style="font:inherit;font-size:12px;padding:4px 6px">'+[['1m','최근 1개월'],['3m','최근 3개월'],['all','전체 기간']].map(x=>'<option value="'+x[0]+'"'+(rng===x[0]?' selected':'')+'>'+x[1]+'</option>').join('')+'</select>';
+ $('#pane').innerHTML='<div class="panel"><h3>주문/배송 조회 <small style="font-weight:400">'+rsel+'</small></h3>'+
  (d.rows.length?'<table><tr><th>주문번호/일시</th><th>상품</th><th class="r">금액</th><th>상태</th><th></th></tr>'+
  d.rows.map(o=>'<tr><td class="mono" style="font-size:11.5px">'+esc(o.order_id)+'<br><span style="color:#999">'+esc(o.created)+'</span></td>'+
  '<td>'+esc(o.label)+'</td><td class="r mono">'+won(o.amount)+'</td>'+
  '<td><span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span>'+(o.tracking?'<br><a class="mono" target="_blank" rel="noopener" style="font-size:11px;color:#1a5fb4;text-decoration:underline" href="'+esc(o.track_url||'#')+'">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+' ↗</a>':'')+'</td>'+
- '<td><button class="b ghost" onclick="orderDetail(\''+esc(o.order_id)+'\')">상세</button></td></tr>').join('')+'</table>':'<div class="empty">연결된 최근 주문이 없습니다</div>')+'</div>'+
+ '<td><button class="b ghost" onclick="orderDetail(\''+esc(o.order_id)+'\')">상세</button></td></tr>').join('')+'</table>':'<div class="empty">'+(rng==='all'?'연결된 주문이 없습니다':'이 기간에 주문이 없습니다 — 위에서 [전체 기간]을 선택해 보세요')+'</div>')+'</div>'+
  '<div class="panel"><h3>기존·비회원 주문 연결</h3><div class="hint">주문번호와 주문 당시 휴대폰으로 받은 인증번호를 확인한 후에만 이 계정으로 연결됩니다.</div><div class="row2"><div><label>주문번호</label><input id="coid" placeholder="MD-2026..."></div><div><label>주문 당시 휴대폰</label><input id="cph" placeholder="010-0000-0000"></div></div><div style="margin-top:10px"><button class="b" onclick="claimSend()">인증번호 받기</button></div><div id="claimVerify" style="display:none"><label>인증번호 6자리</label><div style="display:flex;gap:8px"><input id="ccode" maxlength="6"><button class="b red" onclick="claimVerify()" style="white-space:nowrap">주문 연결</button></div></div></div><div id="odetail"></div>'}
 let CLAIM_ID='';async function claimSend(){try{const d=await post('/api/member/orders/claim/send',{order_id:$('#coid').value,phone:$('#cph').value});CLAIM_ID=d.claim_id;$('#claimVerify').style.display='block';toast(d.dry?'테스트 모드: 관리자 알림 로그에서 인증번호를 확인하세요':'인증번호를 발송했습니다')}catch(e){toast(e.message)}}
 async function claimVerify(){try{await post('/api/member/orders/claim/verify',{claim_id:CLAIM_ID,code:$('#ccode').value});toast('주문이 안전하게 연결되었습니다');orders()}catch(e){toast(e.message)}}
@@ -7349,14 +7355,34 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
  (o.step===0?'<div class="hint" style="margin:0">'+esc(o.status_kr)+' 처리된 주문입니다.</div>'
   :o.tracking?'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="font-size:12.5px">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+'</span>'+(o.track_url?'<a class="b" target="_blank" rel="noopener" href="'+esc(o.track_url)+'">배송조회</a>':'')+'</div>'
   :'<div class="hint" style="margin:0">'+(o.step>=4?'상품이 출고되어 배송 중입니다. 운송장 번호가 등록되면 이곳에서 바로 조회할 수 있습니다.':o.step===3?'상품을 준비하고 있습니다. 발송과 함께 운송장 번호가 등록됩니다.':o.step===2?'결제가 확인되었습니다. 곧 상품 준비를 시작합니다.':'결제(입금) 확인 전 주문입니다. 확인 후 상품 준비가 시작됩니다.')+'</div>')+'</div>'+
+ (o.vbank&&o.vbank.num?'<div style="background:#fff7e0;border-left:3px solid #b58900;padding:10px 12px;margin-top:10px;font-size:13px"><b>입금 계좌 안내</b><br>'+
+  '<span class="mono" style="font-size:14px"><b>'+esc(o.vbank.bank)+' '+esc(o.vbank.num)+'</b></span>'+
+  (o.vbank.holder?'<br>예금주 '+esc(o.vbank.holder):'')+(o.vbank.due?'<br>입금기한 '+esc(vbDue(o.vbank.due)):'')+
+  '<br>입금액 <b>'+won(o.amount)+'</b> — 입금 확인 즉시 자동으로 결제완료 처리됩니다.</div>':'')+
  '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+'</div>'+
  (o.open_request?'<div class="hint" style="color:var(--red)">'+({cancel:'취소',return:'반품',exchange:'교환'}[o.open_request.rtype]||'')+' 요청이 '+esc(o.open_request.status)+' 상태입니다.</div>':'')+
  '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
  (o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a>':'')+
  '<a class="b ghost" target="_blank" href="/api/member/receipt/'+encodeURIComponent(oid)+'">거래명세서</a>'+
- (!o.open_request&&o.can_cancel?'<button class="b red" onclick="reqOrder(\''+esc(oid)+'\',\'cancel\')">취소 요청</button>':'')+
+ (o.can_self_cancel?'<button class="b red" onclick="selfCancel(\''+esc(oid)+'\')">주문 즉시취소</button>'
+  :(!o.open_request&&o.can_cancel?'<button class="b red" onclick="reqOrder(\''+esc(oid)+'\',\'cancel\')">취소 요청</button>':''))+
  (!o.open_request&&o.can_return?'<button class="b" onclick="reqOrder(\''+esc(oid)+'\',\'return\')">반품 요청</button><button class="b ghost" onclick="reqOrder(\''+esc(oid)+'\',\'exchange\')">교환 요청</button>':'')+
- '</div></div>';$('#odetail').scrollIntoView({behavior:'smooth'})}
+ (o.can_edit_addr?'<button class="b ghost" onclick="addrEditForm(\''+esc(oid)+'\')">배송지 변경</button>':'')+
+ '</div><div id="addredit"></div></div>';$('#odetail').scrollIntoView({behavior:'smooth'});window._ODET=o}
+function vbDue(d){d=String(d||'');return d.length>=12?(d.slice(0,4)+'.'+d.slice(4,6)+'.'+d.slice(6,8)+' '+d.slice(8,10)+':'+d.slice(10,12)):d}
+async function selfCancel(oid){if(!confirm('이 주문을 바로 취소할까요?\n입금 전 주문은 즉시 취소되며 되돌릴 수 없습니다.\n(수량·옵션 변경은 취소 후 다시 주문해 주세요)'))return;
+ try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/self-cancel',{reason:'고객 직접 취소'});
+ toast('주문이 취소되었습니다');orders()}catch(e){alert(e.message)}}
+function addrEditForm(oid){const b=(window._ODET&&window._ODET.buyer)||{};
+ $('#addredit').innerHTML='<div style="border:1px solid var(--line);padding:12px;margin-top:10px"><b style="font-size:12.5px">배송지 변경</b>'+
+ '<div class="row2" style="margin-top:6px"><div><label>받는분 *</label><input id="ae_n" value="'+esc(b.name)+'"></div><div><label>연락처</label><input id="ae_p" value="'+esc(b.phone)+'"></div>'+
+ '<div><label>우편번호</label><input id="ae_z" value="'+esc(b.zip)+'"></div><div><label>배송 메모</label><input id="ae_m" value="'+esc(b.memo)+'"></div></div>'+
+ '<label>주소 *</label><input id="ae_1" value="'+esc(b.addr1)+'"><label>상세주소</label><input id="ae_2" value="'+esc(b.addr2)+'">'+
+ '<div style="margin-top:10px;display:flex;gap:8px"><button class="b" onclick="addrEditSave(\''+esc(oid)+'\')">변경 저장</button><button class="b ghost" onclick="document.getElementById(\'addredit\').innerHTML=\'\'">닫기</button></div>'+
+ '<div class="hint">발송 전 주문만 변경됩니다. 이미 발송된 주문은 1:1 문의로 접수해 주세요.</div></div>'}
+async function addrEditSave(oid){try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/ship-addr',
+ {name:$('#ae_n').value,phone:$('#ae_p').value,zip:$('#ae_z').value,addr1:$('#ae_1').value,addr2:$('#ae_2').value,memo:$('#ae_m').value});
+ toast('배송지가 변경되었습니다');orderDetail(oid)}catch(e){alert(e.message)}}
 async function reqOrder(oid,t){const kr={cancel:'취소',return:'반품',exchange:'교환'}[t];
  const reason=prompt(kr+' 사유를 입력해 주세요');if(!reason)return;
  try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/request',{rtype:t,reason});
@@ -7364,9 +7390,12 @@ async function reqOrder(oid,t){const kr={cancel:'취소',return:'반품',exchang
 
 async function reqPane(){const d=await api('/api/member/requests');
  $('#pane').innerHTML='<div class="panel"><h3>취소/반품/교환 요청</h3>'+
- (d.requests.length?'<table><tr><th>일시</th><th>주문번호</th><th>유형</th><th>사유</th><th>상태</th></tr>'+
- d.requests.map(r=>'<tr><td class="mono">'+esc(r.created)+'</td><td class="mono" style="font-size:11.5px">'+esc(r.order_id)+'</td><td><b>'+esc(r.rtype)+'</b></td><td>'+esc(r.reason)+(r.memo?'<br><span class="hint">답변: '+esc(r.memo)+'</span>':'')+'</td><td><span class="tagst '+(r.status==='완료'?'s2':r.status==='거절'?'s0':'s1')+'">'+esc(r.status)+'</span></td></tr>').join('')+'</table>':'<div class="empty">요청 내역이 없습니다</div>')+'</div>'+
+ (d.requests.length?'<table><tr><th>일시</th><th>주문번호</th><th>유형</th><th>사유</th><th>상태</th><th></th></tr>'+
+ d.requests.map(r=>'<tr><td class="mono">'+esc(r.created)+'</td><td class="mono" style="font-size:11.5px">'+esc(r.order_id)+'</td><td><b>'+esc(r.rtype)+'</b></td><td>'+esc(r.reason)+(r.memo?'<br><span class="hint">답변: '+esc(r.memo)+'</span>':'')+'</td><td><span class="tagst '+(r.status==='완료'?'s2':r.status==='거절'||r.status==='철회'?'s0':'s1')+'">'+esc(r.status)+'</span></td>'+
+ '<td>'+(r.status==='접수'?'<button class="b ghost" onclick="reqWithdraw(\''+esc(r.id)+'\')">철회</button>':'')+'</td></tr>').join('')+'</table>':'<div class="empty">요청 내역이 없습니다</div>')+'</div>'+
  '<div class="panel"><h3>취소 완료된 주문</h3>'+(d.cancelled_orders.length?'<table><tr><th>주문번호</th><th>일자</th><th class="r">금액</th></tr>'+d.cancelled_orders.map(c=>'<tr><td class="mono">'+esc(c.order_id)+'</td><td class="mono">'+esc(c.created)+'</td><td class="r mono">'+won(c.amount)+'</td></tr>').join('')+'</table>':'<div class="empty">없음</div>')+'</div>'}
+async function reqWithdraw(id){if(!confirm('이 요청을 철회할까요?\n관리자 처리가 시작되기 전(접수 상태)에만 철회할 수 있습니다.'))return;
+ try{await post('/api/member/requests/withdraw',{id});toast('요청을 철회했습니다');reqPane()}catch(e){alert(e.message)}}
 
 async function receipts(){
  const d=await api('/api/member/orders?range=all');const rs=d.rows.filter(o=>o.paid||o.receipt);
@@ -7475,12 +7504,22 @@ async function inqPane(){const d=await api('/api/member/inquiries');
  $('#pane').innerHTML='<div class="panel"><h3>1:1 문의하기</h3>'+
  '<label>제목</label><input id="iqt"><label>내용</label><textarea id="iqb" rows="4"></textarea>'+
  '<label>관련 주문번호 (선택)</label><input id="iqo" placeholder="MPD...">'+
- '<div style="margin-top:12px"><button class="b" onclick="inqAdd()">문의 등록</button></div></div>'+
+ '<label>사진 첨부 (선택 · 최대 3장)</label><input id="iqp" type="file" accept="image/*" multiple>'+
+ '<div class="hint">하자·교환 문의는 사진을 함께 올려주시면 별도 요청 없이 바로 확인해 드립니다.</div>'+
+ '<div id="iqpv" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>'+
+ '<div style="margin-top:12px"><button class="b" id="iqbtn" onclick="inqAdd()">문의 등록</button></div></div>'+
  '<div class="panel"><h3>1:1 문의내역</h3>'+
  (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q">'+esc(q.title)+' <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+(q.order_id?' · '+esc(q.order_id):'')+'</span></div>'+
  '<div style="margin-top:6px;white-space:pre-wrap;font-size:13px">'+esc(q.body)+'</div>'+
+ ((q.photos&&q.photos.length)?'<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'+q.photos.map(u=>'<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" style="width:64px;height:64px;object-fit:cover;border:1px solid #ddd"></a>').join('')+'</div>':'')+
  (q.answer?'<div class="a"><b>맵달SEOUL 답변</b> <span class="hint" style="display:inline">'+esc(q.answered_at)+'</span><br>'+esc(q.answer)+'</div>':'')+'</div>').join(''):'<div class="empty">문의 내역이 없습니다</div>')+'</div>'}
-async function inqAdd(){try{await post('/api/member/inquiries',{title:$('#iqt').value,body:$('#iqb').value,order_id:$('#iqo').value});toast('문의가 접수되었습니다');inqPane()}catch(e){toast(e.message)}}
+async function inqAdd(){const btn=$('#iqbtn');btn.disabled=true;
+ try{const files=Array.from(($('#iqp').files)||[]).slice(0,3);const photos=[];
+ for(const f of files){const fd=new FormData();fd.append('file',f);
+  const r=await fetch('/api/member/inquiries/photo',{method:'POST',body:fd});
+  const j=await r.json();if(!r.ok)throw new Error(j.detail||'사진 업로드 실패');photos.push(j.url)}
+ await post('/api/member/inquiries',{title:$('#iqt').value,body:$('#iqb').value,order_id:$('#iqo').value,photos});
+ toast('문의가 접수되었습니다');inqPane()}catch(e){toast(e.message)}finally{btn.disabled=false}}
 
 async function pqnaPane(){const d=await api('/api/member/pqna');
  $('#pane').innerHTML='<div class="panel"><h3>상품 Q&amp;A 내역</h3>'+
@@ -11426,7 +11465,8 @@ def _order_complete_apply(html):
         "      }\n"
         "      if(d.status!=='PAID')throw new Error('결제가 완료되지 않았습니다');\n"
         "      title.textContent='주문이 완료되었습니다';\n"
-        "      desc.innerHTML='결제 금액 <b>₩'+(+d.amount).toLocaleString('ko-KR')+'</b> · 결제가 정상 승인되었습니다.';\n"
+        "      var _trk=(d.tracking?'<br>운송장 <b class=\\\"mono\\\">'+d.tracking+'</b> — 마이페이지 [주문/배송 조회]에서 실시간 추적이 가능합니다.':'');\n"
+        "      desc.innerHTML='결제 금액 <b>₩'+(+d.amount).toLocaleString('ko-KR')+'</b> · 결제가 정상 승인되었습니다.'+_trk;\n"
         "      desc.setAttribute('data-mp-pay','1');\n"
         "      ono.textContent='ORDER NO. '+oid;\n"
         "      try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
@@ -12417,7 +12457,7 @@ def api_cs(request: Request):
     return {'inq': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
                      'mname': r.get('mname') or '', 'email': r.get('email') or '',
                      'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
-                     'answer': r.get('answer') or '',
+                     'answer': r.get('answer') or '', 'photos': jload(r.get('photos'), []),
                      'cid': r.get('cid') or '', 'cno': r.get('cno') or ''} for r in inq],
             'pqna': [{'id': r['id'], 'pname': r.get('pname') or r.get('product_id'), 'question': r['question'],
                       'mname': r.get('mname') or '', 'created': (r['created'] or '')[:16].replace('T', ' '),
@@ -12987,6 +13027,11 @@ def api_m_order_detail(oid: str, request: Request):
     b = jload(r.get('buyer'), {})
     st, kr = order_step(r.get('status'), r.get('fulfill'))
     open_req = one("SELECT rtype, status FROM member_requests WHERE order_id=? AND customer_id=? AND status IN ('접수','처리중')", (oid, m.get('customer_id') or ''))
+    # 가상계좌 입금 전 주문은 계좌 안내가 이메일에만 남아 재확인 문의가 잦다 — 상세에 상시 노출
+    vbank = None
+    if r.get('status') == 'WAITING_DEPOSIT' and (r.get('vbank_num') or ''):
+        vbank = {'num': r.get('vbank_num') or '', 'bank': r.get('vbank_name') or '',
+                 'holder': r.get('vbank_holder') or '', 'due': r.get('vbank_due') or ''}
     return {'order_id': oid, 'created': (r.get('created') or '')[:19].replace('T', ' '), 'step': st, 'status_kr': kr,
             'amount': num(r.get('amount')), 'ship_method': r.get('ship_method') or '',
             'tracking': r.get('tracking') or '',
@@ -12995,10 +13040,16 @@ def api_m_order_detail(oid: str, request: Request):
             'receipt': r.get('receipt_url') or '',
             'addr': ('[%s] %s %s' % (b.get('zip', ''), b.get('addr1', ''), b.get('addr2', ''))
                      + ((' · 메모: ' + str(b.get('memo'))) if b.get('memo') else '')),
+            'buyer': {'name': b.get('name') or '', 'phone': b.get('phone') or '', 'zip': b.get('zip') or '',
+                      'addr1': b.get('addr1') or '', 'addr2': b.get('addr2') or '', 'memo': b.get('memo') or ''},
             'items': [{'name': it.get('n') or it.get('name') or it.get('id', ''), 'qty': num(it.get('q') or 1),
                        'price': num(it.get('p') or it.get('price') or 0)} for it in jload(r.get('items'), [])],
+            'vbank': vbank,
             # WAITING_DEPOSIT(가상계좌 입금 전)은 돈이 움직이지 않아 취소 요청을 허용한다.
             'can_cancel': (r.get('status') in ('PENDING', 'WAITING_DEPOSIT')) or (r.get('status') == 'PAID' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING')),
+            # 돈이 움직이지 않은 주문(입금 전)은 요청·승인 왕복 없이 즉시 셀프취소를 허용한다.
+            'can_self_cancel': r.get('status') in ('PENDING', 'WAITING_DEPOSIT'),
+            'can_edit_addr': (r.get('status') or '') != 'CANCELLED' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING'),
             'can_return': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE'),
             'open_request': dict(open_req) if open_req else None}
 
@@ -13021,6 +13072,72 @@ def api_m_order_request(oid: str, request: Request, body: dict = Body(...)):
         raise HTTPException(400, '이미 처리 중인 요청이 있습니다')
     run('INSERT INTO member_requests(id,member_id,order_id,rtype,reason,created,status,admin_memo,updated,customer_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
         (uid(), m['id'], oid, rtype, reason, now_iso(), '접수', '', now_iso(), m.get('customer_id') or ''))
+    return {'ok': True}
+
+@admin_router.post('/api/member/orders/{oid}/self-cancel')
+def api_m_order_self_cancel(oid: str, request: Request, body: dict = Body(...)):
+    """입금 전 주문(PENDING·WAITING_DEPOSIT) 즉시 셀프취소.
+
+    돈이 움직이지 않은 주문은 요청→관리자 승인 왕복이 낭비다(취소 요청의 다수가
+    수량·옵션 변경 후 재주문 목적). PAID 는 환불이 얽히므로 기존 요청 흐름 유지.
+    취소 코어(_order_cancel_core)를 그대로 사용 — 재고 복원·적립 회수·감사로그 포함."""
+    m = member_required(request)
+    r = _own_order(m, oid)
+    if r.get('status') not in ('PENDING', 'WAITING_DEPOSIT'):
+        raise HTTPException(400, '입금 전 주문만 즉시 취소할 수 있습니다 — 결제 완료 주문은 [취소 요청]을 이용해 주세요')
+    reason = (body.get('reason') or '고객 직접 취소').strip()[:200]
+    actor = {'name': '고객셀프(%s)' % ((m.get('name') or '')[:12] or '회원'), 'role': 'SELF'}
+    res = _order_cancel_core(actor, r, reason, manual=False)
+    # 같은 주문에 걸린 미처리 취소요청은 함께 종결 — 어드민 CS 큐에 유령 요청이 남지 않도록
+    run("UPDATE member_requests SET status='완료', admin_memo='고객 직접 취소로 자동 종결', updated=? "
+        "WHERE order_id=? AND customer_id=? AND status IN ('접수','처리중')",
+        (now_iso(), oid, m.get('customer_id') or ''))
+    return {'ok': True, 'cancelled': True, 'prev_status': res.get('prev_status')}
+
+@admin_router.post('/api/member/requests/withdraw')
+def api_m_request_withdraw(request: Request, body: dict = Body(...)):
+    """접수 상태(관리자 처리 전) 취소/반품/교환 요청의 셀프 철회."""
+    m = member_required(request)
+    rid = (body.get('id') or '').strip()
+    n = run("UPDATE member_requests SET status='철회', admin_memo='고객 직접 철회', updated=? "
+            "WHERE id=? AND customer_id=? AND status='접수'",
+            (now_iso(), rid, m.get('customer_id') or ''))
+    if not n: raise HTTPException(400, '이미 처리가 시작되어 철회할 수 없습니다 — 1:1 문의로 문의해 주세요')
+    return {'ok': True}
+
+@admin_router.post('/api/member/orders/{oid}/ship-addr')
+def api_m_order_ship_addr(oid: str, request: Request, body: dict = Body(...)):
+    """발송 전 주문의 배송지 셀프 변경 — 어드민 ship-addr 와 같은 이력 보존 규칙.
+
+    발송 후(SHIPPED·DONE)는 택배사 확인이 필요하므로 셀프 변경을 막고 1:1 문의로
+    유도한다(어드민의 강제 변경 경로는 그대로). 이전 주소는 buyer.addr_history 에
+    최근 10건 보존 — 분쟁·오배송 추적용."""
+    m = member_required(request)
+    r = _own_order(m, oid)
+    if (r.get('status') or '') == 'CANCELLED':
+        raise HTTPException(400, '취소된 주문은 배송지를 변경할 수 없습니다')
+    if (r.get('fulfill') or 'NEW') not in ('NEW', 'PREPARING'):
+        raise HTTPException(400, '이미 발송된 주문입니다 — 배송지 변경은 1:1 문의로 접수해 주세요')
+    name = str(body.get('name') or '').strip()[:40]
+    phone = re.sub(r'[^0-9+\-]', '', str(body.get('phone') or ''))[:20]
+    zipc = str(body.get('zip') or '').strip()[:10]
+    addr1 = str(body.get('addr1') or '').strip()[:120]
+    addr2 = str(body.get('addr2') or '').strip()[:80]
+    memo = str(body.get('memo') or '').strip()[:120]
+    if not name or not addr1:
+        raise HTTPException(400, '수령인 이름과 기본 주소는 필수입니다')
+    b = jload(r.get('buyer'), {}) or {}
+    prev = {k: (b.get(k) or '') for k in ('name', 'phone', 'zip', 'addr1', 'addr2', 'memo')}
+    new = {'name': name, 'phone': phone, 'zip': zipc, 'addr1': addr1, 'addr2': addr2, 'memo': memo}
+    if prev == new:
+        raise HTTPException(400, '변경된 내용이 없습니다')
+    hist = b.get('addr_history') or []
+    hist.append({'t': now_iso(), 'by': '고객셀프', 'prev': prev})
+    b.update(new); b['addr_history'] = hist[-10:]
+    n = run('UPDATE orders SET buyer=? WHERE order_id=?', (json.dumps(b, ensure_ascii=False), oid))
+    if not n: raise HTTPException(500, '주문 갱신에 실패했습니다 — 다시 시도하세요')
+    audit({'name': '고객셀프(%s)' % ((m.get('name') or '')[:12] or '회원'), 'role': 'SELF'}, '배송지변경(셀프)', oid,
+          '%s → %s %s' % ((prev.get('addr1') or '-'), addr1, addr2))
     return {'ok': True}
 
 @admin_router.get('/api/member/requests')
@@ -13355,15 +13472,33 @@ def api_m_inq_create(request: Request, body: dict = Body(...)):
     m = member_required(request)
     title = (body.get('title') or '').strip()[:80]; bd = (body.get('body') or '').strip()[:2000]
     if not title or not bd: raise HTTPException(400, '제목과 내용을 입력하세요')
-    run('INSERT INTO member_inquiries(id,member_id,order_id,title,body,created,status,answer,answered_at,answered_by,customer_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-        (uid(), m['id'], (body.get('order_id') or '')[:40], title, bd, now_iso(), '접수', '', '', '', m.get('customer_id') or ''))
+    # 하자·교환 문의는 사진이 핵심 증빙 — 리뷰와 동일한 업로드 저장소(R2/DB)의 URL만 허용
+    pub = (r2_conf().get('public') or '').rstrip('/')
+    photos = []
+    for u in (body.get('photos') or [])[:3]:
+        u = str(u or '')
+        if (pub and u.startswith(pub + '/')) or u.startswith('/admin/asset/'):
+            photos.append(u[:2000])
+    run('INSERT INTO member_inquiries(id,member_id,order_id,title,body,created,status,answer,answered_at,answered_by,customer_id,photos) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+        (uid(), m['id'], (body.get('order_id') or '')[:40], title, bd, now_iso(), '접수', '', '', '', m.get('customer_id') or '',
+         json.dumps(photos, ensure_ascii=False)))
     return {'ok': True}
+
+@admin_router.post('/api/member/inquiries/photo')
+async def api_m_inq_photo(request: Request, file: UploadFile = File(...)):
+    m = member_of(request)
+    if not m:
+        raise HTTPException(401, '로그인이 필요합니다')
+    data = await file.read()
+    res = store_image(data, file.content_type or '', 'inquiries')
+    return {'ok': True, 'url': res.get('url')}
 
 @admin_router.get('/api/member/inquiries')
 def api_m_inq_list(request: Request):
     m = member_required(request)
     return {'rows': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
+                      'photos': jload(r.get('photos'), []),
                       'answer': r.get('answer') or '', 'answered_at': (r.get('answered_at') or '')[:16].replace('T', ' ')}
                      for r in rows('SELECT * FROM member_inquiries WHERE customer_id=? ORDER BY created DESC LIMIT 50', (m.get('customer_id') or '',))]}
 

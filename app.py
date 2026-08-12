@@ -212,6 +212,20 @@ def _has_vbank_cols() -> bool:
             _VB_COLS_OK = False
     return _VB_COLS_OK
 
+_SHIP_COLS_OK = None    # fulfill/tracking/courier 컬럼 존재 여부 (최초 1회 판정 후 캐시)
+
+def _has_ship_cols() -> bool:
+    """orders.fulfill/tracking/courier 컬럼 존재 여부 — _has_vbank_cols 와 동일 패턴."""
+    global _SHIP_COLS_OK
+    if _SHIP_COLS_OK is None:
+        try:
+            with db() as c:
+                c.exec('SELECT fulfill, tracking, courier FROM orders WHERE 1=0')
+            _SHIP_COLS_OK = True
+        except Exception:
+            _SHIP_COLS_OK = False
+    return _SHIP_COLS_OK
+
 def _has_ga_cols() -> bool:
     """orders.ga_* 컬럼 존재 여부 — 매 조회 예외는 PG 트랜잭션을 오염시키므로 1회 판정 후 캐시."""
     global _GA_COLS_OK
@@ -1456,6 +1470,8 @@ def get_order(order_id: str):
     base = 'order_id,created,status,amount,items,ship_method'
     cols = (base + ',pay_method,vbank_num,vbank_name,vbank_holder,vbank_due'
             ) if _has_vbank_cols() else base
+    if _has_ship_cols():
+        cols += ',fulfill,tracking,courier'
     with db() as c:
         row = c.one('SELECT %s FROM orders WHERE order_id=?' % cols, (order_id,))
     if not row: raise HTTPException(404, 'not found')
@@ -1467,6 +1483,9 @@ def get_order(order_id: str):
     row['vbank'] = {'num': row.pop('vbank_num', '') or '', 'bank': row.pop('vbank_name', '') or '',
                     'holder': row.pop('vbank_holder', '') or '', 'due': row.pop('vbank_due', '') or ''}
     row.setdefault('pay_method', '')
+    # 비회원도 주문번호만으로 배송 추적이 가능하도록 운송장 정보를 함께 내려준다.
+    for k in ('fulfill', 'tracking', 'courier'):
+        row.setdefault(k, '')
     return row
 
 @app.get('/admin', response_class=HTMLResponse)

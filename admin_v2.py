@@ -247,6 +247,27 @@ def num(x):
         try: return int(float(x))
         except Exception: return 0
 
+def _day_after(s):
+    """'YYYY-MM-DD' → 다음날 'YYYY-MM-DD'. 기간필터 상한을 '< 익일' 로 만든다.
+
+    ── 왜 바꿨나 (2026-08-25) ────────────────────────────────────────────
+    종전 상한은 `created <= '종료일~'` 이었다. '~'(0x7E)가 모든 숫자·문자보다
+    뒤라는 **바이트 비교** 전제인데, 이건 SQLite(로컬)에서만 참이다.
+    운영 PostgreSQL(Render, lc_collate=en_US.UTF8)은 1차 정렬에서 문장부호를
+    무시하므로 '2026-08-25T14:32:11' <= '2026-08-25~' 가 **거짓**이 된다
+    (실측 확인). 결과: 기간 조회에서 **종료일 당일이 통째로 누락**됐다.
+      · 시작일=종료일=오늘 → 0건 (당일 주문이 있어도 '없음')
+      · 7/1~7/29 조회 → 480건만 (실제 618건, 7/29 하루치 138건 누락)
+    '< 익일' 은 'YYYY-MM-DD' 숫자 비교만 쓰므로 콜레이션과 무관하게
+    SQLite·PostgreSQL 양쪽에서 같은 결과를 낸다.
+    형식이 깨진 입력은 None 을 돌려주고 호출부가 상한 조건 자체를 생략한다
+    — 잘못된 값 때문에 조용히 0건이 되는 쪽이 더 위험하기 때문이다."""
+    t = str(s or '').strip()[:10]
+    try:
+        return (datetime.date.fromisoformat(t) + datetime.timedelta(days=1)).isoformat()
+    except Exception:
+        return None
+
 def _env_int_av(name, default, lo=None, hi=None):
     """환경변수 정수 읽기 — 미설정·오타는 기본값으로 안전하게 떨어진다.
        운영 스위치(자동정리 주기·유예 등)를 재배포 없이 조정하기 위한 공통 헬퍼."""
@@ -900,7 +921,9 @@ def api_orders(request: Request):
     if p.get('fulfill') and 'fulfill' in _state['ocols']:
         where.append("COALESCE(fulfill,'NEW') = ?"); args.append(p['fulfill'])
     if p.get('from'): where.append('created >= ?'); args.append(p['from'])
-    if p.get('to'): where.append('created <= ?'); args.append(p['to'] + '~')
+    if p.get('to'):
+        _hi = _day_after(p['to'])          # 상한: '<= 종료일~'(콜레이션 의존) → '< 익일'
+        if _hi: where.append('created < ?'); args.append(_hi)
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     page = max(1, int(p.get('page', 1) or 1)); size = 20
     total = num((one('SELECT COUNT(*) AS c FROM orders' + w, tuple(args)) or {}).get('c'))
@@ -1245,7 +1268,7 @@ def api_kst_fix(request: Request, body: dict = Body(...)):
             'total_rows': total_rows, 'total_cells': total_cells, 'detail': report,
             'already_done': bool(mark)}
 
-def _order_cancel_core(a, r, reason, manual=False):
+def _order_cancel_core(a, r, reason, manual=False, restock=True):
     """주문취소 공용 코어 — [주문] 상세의 취소 버튼과 [CS] 취소요청 원클릭이 함께 쓴다.
 
     PAID(카드·계좌이체·휴대폰)면 이니시스 INIAPI 환불을 먼저 실행하고, 성공했을
@@ -1259,7 +1282,11 @@ def _order_cancel_core(a, r, reason, manual=False):
     manual=True: '수동환불 완료처리' — 이니시스 API 를 호출하지 않고 취소 상태만
     반영한다(재고 복원·적립 회수·감사로그 포함). 상점관리자에서 이미 환불했거나
     (가상계좌·구MID 건) 법인계좌로 직접 송금환불한 경우 전용. 돈이 움직이지 않으므로
-    프런트에서 "수동환불" 타이핑 확인을 거친 요청만 들어온다."""
+    프런트에서 "수동환불" 타이핑 확인을 거친 요청만 들어온다.
+
+    restock=False: 상태만 정리하고 재고에 손대지 않는다. 오래 방치된 미결제
+    주문의 일괄 정리 전용 — 차감 시점과 복원 시점의 재고 기준(행사 종료·재입고·
+    수동 조정)이 이미 달라져 있어, 되돌리면 오히려 실재고와 어긋난다."""
     oid = r['order_id']
     prev_status = r.get('status') or ''
     if prev_status == 'CANCELLED':                    # 이중취소 방지 — 재고 이중복원 차단
@@ -1338,12 +1365,30 @@ def _order_cancel_core(a, r, reason, manual=False):
     if 'admin_memo' in _state['ocols']: sets.append('admin_memo=?'); args.append(('[취소] ' + reason)[:300])
     run('UPDATE orders SET %s WHERE order_id=?' % ', '.join(sets), tuple(args + [oid]))
     restored = 0
-    if _state['pcols']:
+    if _state['pcols'] and restock:
         for it in jload(r.get('items'), []):
             if it.get('id'):
                 try:
-                    restored += run('UPDATE products SET stock = stock + ?, soldout = 0 WHERE id = ?', (num(it.get('q') or 1), it['id']))
-                    catalog_inventory_from_legacy(it['id'])
+                    # ── 재고 복원 안전 규칙 (2026-08-25) ──────────────────────
+                    #   종전: UPDATE products SET stock=stock+?, soldout=0 WHERE id=?
+                    #   두 가지 문제가 있었다.
+                    #   ① 재고 미추적 상품(stock IS NULL)은 주문 시 차감이 아예
+                    #      일어나지 않는데(app.py: `if row['stock'] is not None`),
+                    #      취소 때만 soldout=0 이 걸려 **관리자가 수동으로 내린
+                    #      품절 표시가 풀렸다**. 종료된 DROPS 상품이 되살아난다.
+                    #   ② 복원 후에도 재고가 0 이하면 품절이 유지돼야 한다.
+                    #   → 차감이 실제로 가능했던 상품(stock IS NOT NULL)만 되돌리고,
+                    #     품절 해제는 복원 결과 재고가 남아 있을 때만 한다.
+                    #     catalog_inventory_from_legacy 가 이 값을 재고원장에
+                    #     그대로 전파하므로 여기서 막지 않으면 원장까지 오염된다.
+                    n_up = run('UPDATE products SET stock = stock + ? '
+                               'WHERE id = ? AND stock IS NOT NULL',
+                               (num(it.get('q') or 1), it['id']))
+                    if n_up:
+                        run('UPDATE products SET soldout = 0 '
+                            'WHERE id = ? AND stock IS NOT NULL AND stock > 0', (it['id'],))
+                        restored += n_up
+                        catalog_inventory_from_legacy(it['id'])
                 except Exception: pass
     # 적립 회수 — 약관 제10조 제3항. 실패해도 환불/취소는 되돌리지 않는다.
     revoked = 0
@@ -1397,7 +1442,13 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
 VBANK_EXPIRE_GRACE      = _env_int_av('VBANK_EXPIRE_GRACE', 60, 0, 1440)
 VBANK_EXPIRE_SWEEP      = _env_int_av('VBANK_EXPIRE_SWEEP', 10, 0, 1440)
 VBANK_EXPIRE_FALLBACK_D = _env_int_av('VBANK_EXPIRE_FALLBACK_D', 3, 1, 60)
-VBANK_EXPIRE_PENDING_H  = _env_int_av('VBANK_EXPIRE_PENDING_H', 0, 0, 720)
+#   · VBANK_EXPIRE_PENDING_H(시간, 기본 24): 결제창 이탈로 남은 PENDING 주문의
+#     정리 기준. 이니시스 인증·승인은 수 분 내 끝나므로 24시간이면 확정 이탈이다.
+#     0 이면 PENDING 정리를 끄고 적체 규모만 보고한다.
+#   · VBANK_EXPIRE_RESTOCK_D(일, 기본 7): 이 일수 이내 PENDING 만 재고를 복원한다.
+#     그보다 오래된 건은 상태만 정리하고 재고에 손대지 않는다(위 2단 처리 참고).
+VBANK_EXPIRE_PENDING_H  = _env_int_av('VBANK_EXPIRE_PENDING_H', 24, 0, 720)
+VBANK_EXPIRE_RESTOCK_D  = _env_int_av('VBANK_EXPIRE_RESTOCK_D', 7, 0, 365)
 
 _SWEEP_ACTOR = {'name': '시스템(자동정리)', 'role': 'OWNER', 'master': False}
 
@@ -1428,8 +1479,11 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
     now = kst_naive()
     a = actor or _SWEEP_ACTOR
     out = {'ok': True, 'dry': bool(dry), 'now': now.isoformat(timespec='seconds'),
-           'grace_min': VBANK_EXPIRE_GRACE, 'checked': 0, 'expired': 0, 'cancelled': 0,
-           'restored': 0, 'pending_stuck': 0, 'orders': [], 'errors': []}
+           'grace_min': VBANK_EXPIRE_GRACE, 'pending_h': VBANK_EXPIRE_PENDING_H,
+           'restock_d': VBANK_EXPIRE_RESTOCK_D,
+           'checked': 0, 'expired': 0, 'cancelled': 0, 'restored': 0,
+           'pending_stuck': 0, 'pending_recent': 0, 'pending_stale': 0,
+           'pending_preview': [], 'orders': [], 'errors': []}
     try:
         waiting = rows("SELECT * FROM orders WHERE status='WAITING_DEPOSIT'")
     except Exception as e:
@@ -1461,32 +1515,58 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
             out['orders'].append(item)
         except Exception as e:
             out['errors'].append('%s: %s' % (oid, str(getattr(e, 'detail', e))[:100]))
-    # PENDING(결제창 이탈) 누수 규모 — 기본은 보고만, 환경변수로 켜면 함께 정리한다.
+    # ── PENDING(결제창 이탈) 자동정리 — 2단 처리 ────────────────────────────
+    #   PENDING 도 주문 생성 시점에 재고를 차감한 상태라 방치하면 재고가 묶인다.
+    #   다만 '전부 취소 + 전부 재고복원' 은 위험하다. 실측(2026-08-25) 결과
+    #   적체분 265건의 복원 대상 1,728개 중 1,421개가 재고 미추적 상품이었고,
+    #   현재 품절로 잡아둔 상품이 6종 섞여 있었다 — 되돌리면 종료된 행사 상품이
+    #   되살아난다. 그래서 주문 나이에 따라 두 갈래로 나눈다.
+    #     · 최근분(생성 후 VBANK_EXPIRE_RESTOCK_D 이내) → 취소 + 재고 복원
+    #       차감 시점과 복원 시점의 재고 기준이 같아 되돌리는 것이 정확하다.
+    #     · 적체분(그보다 오래됨)                        → 취소만, 재고 불변
+    #       행사 종료·재입고·수동 조정으로 기준이 이미 달라졌다.
+    #   재고 복원 자체도 _order_cancel_core 가 재고 추적 상품에만 적용하고
+    #   품절 해제는 잔여 재고가 있을 때만 하므로 이중으로 안전하다.
+    ph = VBANK_EXPIRE_PENDING_H
     try:
         pend = rows("SELECT * FROM orders WHERE status='PENDING'") or []
     except Exception:
         pend = []
-    ph = VBANK_EXPIRE_PENDING_H
     for r in pend:
         c0 = _created_dt(r.get('created'))
-        if not c0 or (now - c0).total_seconds() < max(2, ph or 24) * 3600:
+        if not c0:
+            continue
+        age_h = (now - c0).total_seconds() / 3600.0
+        if age_h < max(2, ph or 24):                    # 승인 진행 중인 건 보호
             continue
         out['pending_stuck'] += 1
+        fresh = age_h <= VBANK_EXPIRE_RESTOCK_D * 24    # 재고 복원 대상 여부
+        item = {'order_id': r.get('order_id') or '', 'amount': num(r.get('amount')),
+                'due': 'PENDING · %.0f시간 경과' % age_h,
+                'created': str(r.get('created') or '')[:16].replace('T', ' '),
+                'restock': fresh}
+        if fresh: out['pending_recent'] += 1
+        else:     out['pending_stale'] += 1
         if dry or not ph:
+            if dry: out['pending_preview'].append(item)
             continue
         try:
-            res = _order_cancel_core(a, r, '결제 미완료 자동취소 (%d시간 경과)' % ph)
+            res = _order_cancel_core(
+                a, r,
+                '결제 미완료 자동취소 (%.0f시간 경과%s)' % (age_h, '' if fresh else ' · 재고 미복원'),
+                restock=fresh)
             out['cancelled'] += 1
             out['restored'] += int(res.get('stock_restored_items') or 0)
-            out['orders'].append({'order_id': r.get('order_id') or '', 'amount': num(r.get('amount')),
-                                  'due': 'PENDING', 'created': str(r.get('created') or '')[:16].replace('T', ' '),
-                                  'restored': res.get('stock_restored_items')})
+            item['restored'] = res.get('stock_restored_items')
+            out['orders'].append(item)
         except Exception as e:
             out['errors'].append('%s: %s' % (r.get('order_id') or '', str(getattr(e, 'detail', e))[:100]))
         if len(out['orders']) >= limit:
             break
     if not dry and out['cancelled']:
-        print('[vbank-sweep] 만료 %d건 취소 · 재고복원 %d라인' % (out['cancelled'], out['restored']), flush=True)
+        print('[sweep] 취소 %d건 (입금기한만료 %d · 미결제 최근 %d · 미결제 적체 %d) · 재고복원 %d라인'
+              % (out['cancelled'], out['expired'], out['pending_recent'], out['pending_stale'],
+                 out['restored']), flush=True)
     return out
 
 _sweep_started = {'on': False}
@@ -2027,7 +2107,9 @@ def api_orders_csv(request: Request):
     p = request.query_params
     where, args = [], []
     if p.get('from'): where.append('created >= ?'); args.append(p['from'])
-    if p.get('to'): where.append('created <= ?'); args.append(p['to'] + '~')
+    if p.get('to'):
+        _hi = _day_after(p['to'])          # 상한: '<= 종료일~'(콜레이션 의존) → '< 익일'
+        if _hi: where.append('created < ?'); args.append(_hi)
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
@@ -2135,7 +2217,9 @@ def api_orders_options_csv(request: Request):
     p = request.query_params
     where, args = [], []
     if p.get('from'): where.append('created >= ?'); args.append(p['from'])
-    if p.get('to'): where.append('created <= ?'); args.append(p['to'] + '~')
+    if p.get('to'):
+        _hi = _day_after(p['to'])          # 상한: '<= 종료일~'(콜레이션 의존) → '< 익일'
+        if _hi: where.append('created < ?'); args.append(_hi)
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
@@ -2299,7 +2383,9 @@ def _stats_detail_compute(p):
     ek = '' if only_general else ev_raw.casefold()
     filtered = bool(qk or ek or only_general)
 
-    where, args = ['created >= ?', 'created <= ?'], [d_from.isoformat(), d_to.isoformat() + '~']
+    #   상한은 '< 익일' — '<= 종료일~' 는 PostgreSQL 콜레이션에서 종료일 당일을 누락시킨다.
+    where, args = ['created >= ?', 'created < ?'], [d_from.isoformat(),
+                   (d_to + datetime.timedelta(days=1)).isoformat()]
     rs = rows('SELECT order_id, created, status, amount, items, buyer FROM orders WHERE %s ORDER BY created ASC LIMIT 50001'
               % ' AND '.join(where), tuple(args))
     truncated = len(rs) > 50000
@@ -3227,7 +3313,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <button class="btn" onclick="loadOrders(1)">검색</button>
   <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button>
   <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button>
-  <button class="btn ghost" onclick="vbSweep()" id="vbsweepbtn" title="입금기한이 지난 가상계좌 주문을 취소하고 재고를 복원합니다 (자동으로도 주기 실행)">기한만료 정리</button></div>
+  <button class="btn ghost" onclick="vbSweep()" id="vbsweepbtn" title="입금기한 만료·결제 미완료 주문을 취소하고 재고를 정리합니다 (자동으로도 주기 실행)">미결제 정리</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
 <section id="t-products" style="display:none">
   <div class="product-tabs"><button class="product-tab on" id="pt-catalog" onclick="productMode('catalog')">상품</button>
@@ -3516,13 +3602,21 @@ function optcsv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|stat
 async function vbSweep(){const b=$('#vbsweepbtn');const old=b.textContent;
  try{b.disabled=true;b.textContent='확인 중…';
   const p=await api('/admin/api/orders/vbank-sweep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry:1})});
-  const pend=p.pending_stuck?('\n\n※ 결제 미완료(PENDING)로 재고가 묶인 주문이 '+p.pending_stuck+'건 있습니다. 이 버튼으로는 정리하지 않습니다 — 환경변수 VBANK_EXPIRE_PENDING_H 로 활성화할 수 있습니다.'):'';
-  if(!p.expired){toast('기한이 지난 입금대기 주문이 없습니다 (입금대기 '+p.checked+'건)'+(p.pending_stuck?' · PENDING 누수 '+p.pending_stuck+'건':''));if(p.pending_stuck)alert('기한 만료 대상은 없습니다.'+pend);return}
-  const lst=p.orders.slice(0,12).map(o=>'· '+o.order_id+' · '+(o.amount||0).toLocaleString('ko-KR')+'원 · 기한 '+o.due).join('\n');
-  if(!confirm('입금기한이 지난 가상계좌 주문 '+p.expired+'건을 취소하고 재고를 복원합니다.\n(입금대기 전체 '+p.checked+'건 · 기한 후 '+p.grace_min+'분 유예 적용)\n\n'+lst+(p.orders.length>12?'\n… 외 '+(p.orders.length-12)+'건':'')+'\n\n되돌릴 수 없습니다. 진행할까요?'+pend))return;
+  const tot=(p.expired||0)+(p.pending_stuck||0);
+  if(!tot){toast('정리할 주문이 없습니다 (입금대기 '+p.checked+'건 점검)');return}
+  var m='정리 대상 '+tot+'건입니다.\n\n';
+  if(p.expired)m+='[입금기한 만료] '+p.expired+'건 — 취소 + 재고 복원\n'
+    +p.orders.slice(0,6).map(o=>'  · '+o.order_id+' · '+(o.amount||0).toLocaleString('ko-KR')+'원 · 기한 '+o.due).join('\n')
+    +(p.orders.length>6?'\n  … 외 '+(p.orders.length-6)+'건':'')+'\n\n';
+  if(p.pending_recent)m+='[미결제 · 최근 '+p.restock_d+'일 이내] '+p.pending_recent+'건 — 취소 + 재고 복원\n';
+  if(p.pending_stale)m+='[미결제 · 적체분] '+p.pending_stale+'건 — 취소만, 재고는 건드리지 않음\n'
+    +'  (행사 종료·재입고·수동 조정으로 차감 당시 재고 기준이 이미 달라져,\n'
+    +'   되돌리면 품절 상품이 되살아나고 실재고와 어긋납니다)\n';
+  m+='\n'+p.pending_h+'시간 넘게 결제되지 않은 주문이 대상입니다. 되돌릴 수 없습니다. 진행할까요?';
+  if(!confirm(m))return;
   b.textContent='정리 중…';
   const r=await api('/admin/api/orders/vbank-sweep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-  toast('만료 '+r.cancelled+'건 취소 · 재고 '+r.restored+'라인 복원'+(r.errors&&r.errors.length?' · 실패 '+r.errors.length+'건':''));
+  toast('취소 '+r.cancelled+'건 (기한만료 '+r.expired+' · 미결제 '+(r.pending_recent+r.pending_stale)+') · 재고 '+r.restored+'라인 복원'+(r.errors&&r.errors.length?' · 실패 '+r.errors.length+'건':''));
   if(r.errors&&r.errors.length)alert('일부 주문을 정리하지 못했습니다:\n\n'+r.errors.join('\n'));
   loadOrders(1);
  }catch(e){alert(e.message)}finally{b.disabled=false;b.textContent=old}}

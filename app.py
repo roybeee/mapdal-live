@@ -60,6 +60,44 @@ def kst_naive():
     return datetime.datetime.now(KST).replace(tzinfo=None)
 def kst_iso():
     return kst_naive().isoformat(timespec='seconds')
+
+# ── 가상계좌 입금기한 (KST) ─────────────────────────────────────────────
+#   정책: 채번 당일 23:59 마감. PC(acceptmethod vbank(YYYYMMDDhhmm))와
+#   모바일(P_VBANK_DT + P_VBANK_TM)에 같은 값을 넣어 두 모듈의 기한을 일치시킨다.
+#   ※ 이니시스 규격: vbank 는 시·분까지 지정 시 YYYYMMDDhhmm, 모바일은 날짜(8)와
+#     시간(hhmm, 4)을 분리해 받는다. 미지정 시 PC=결제창에서 고객 선택, 모바일=+10일.
+#   ※ 심야 채번 보호: 마감까지 남은 시간이 VBANK_DUE_GRACE(기본 30분) 미만이면
+#     입금할 시간 자체가 없어 미입금 취소만 늘어나므로 익일 같은 시각으로 넘긴다.
+#     환경변수로 재배포 없이 조정 — 무조건 당일 마감을 원하면 VBANK_DUE_GRACE=0.
+#   · VBANK_DUE_HHMM  : 마감 시각 hhmm (기본 '2359')
+#   · VBANK_DUE_DAYS  : 기준일 오프셋 (기본 0=당일 · 종전 3일 정책 복귀 시 3)
+#   · VBANK_DUE_GRACE : 최소 보장 입금시간(분, 기본 30)
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = (os.getenv(name) or '').strip()
+        return int(v) if v else default
+    except Exception:
+        return default
+
+VBANK_DUE_HHMM  = re.sub(r'\D', '', os.getenv('VBANK_DUE_HHMM', '2359') or '')[:4] or '2359'
+VBANK_DUE_DAYS  = max(0, min(30, _env_int('VBANK_DUE_DAYS', 0)))
+VBANK_DUE_GRACE = max(0, min(720, _env_int('VBANK_DUE_GRACE', 30)))
+
+def _vbank_due() -> str:
+    """가상계좌 입금기한 YYYYMMDDhhmm (KST). PC·모바일 공통 소스."""
+    now = kst_naive()
+    try:
+        hh, mm = int(VBANK_DUE_HHMM[:2]), int(VBANK_DUE_HHMM[2:4])
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            raise ValueError
+    except Exception:
+        hh, mm = 23, 59
+    due = (now + datetime.timedelta(days=VBANK_DUE_DAYS)).replace(
+        hour=hh, minute=mm, second=0, microsecond=0)
+    while due <= now + datetime.timedelta(minutes=VBANK_DUE_GRACE):
+        due += datetime.timedelta(days=1)
+    return due.strftime('%Y%m%d%H%M')
+
 ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', 'mapdal-admin-2026')
 FREE_SHIP_OVER, SHIP_FEE = 30000, 3000
 # ── NEW/DROPS 배송·적립 특칙 ─────────────────────────────────────────────
@@ -488,9 +526,13 @@ def _ini_mobile_params(order_id: str, amount: int, order_name: str,
         'P_HPP_METHOD': '2',                # 휴대폰결제 상품유형 — 컨텐츠=1, 실물=2 (맵달=실물)
     }
     if pay_sel == 'VBank':
-        # 가상계좌 입금기한 — PC(acceptmethod vbank(YYYYMMDD))와 동일하게 채번일 포함 3일(KST).
-        #   기한 없는 계좌 발급·SMS 안내 공백을 막는다. 입금통보는 P_NOTI_URL(/inicis/mobile-noti).
-        p['P_VBANK_DT'] = (kst_naive() + datetime.timedelta(days=3)).strftime('%Y%m%d')
+        # 가상계좌 입금기한 — PC(acceptmethod vbank(YYYYMMDDhhmm))와 같은 _vbank_due() 값.
+        #   모바일 규격은 날짜(P_VBANK_DT, YYYYMMDD)와 시각(P_VBANK_TM, hhmm)이 분리돼 있다.
+        #   미지정 시 +10일로 자동설정되므로 두 필드를 모두 넣어야 당일 마감이 실제로 걸린다.
+        #   입금통보는 P_NOTI_URL(/inicis/mobile-noti).
+        _due = _vbank_due()
+        p['P_VBANK_DT'] = _due[:8]
+        p['P_VBANK_TM'] = _due[8:12]
     # 금액 위변조 방지 해시 (Hash Key 미설정 시 생략 — 결제는 정상 진행)
     if INICIS_MOBILE_HASHKEY:
         p['P_CHKFAKE'] = _ini_hash(
@@ -715,8 +757,9 @@ async def create_order(req: Request):
         # acceptmethod: centerCd(Y)=IDC센터코드 수신(필수), below1000=1천원이하 카드결제 허용,
         #   HPP(2)=휴대폰결제 상품유형 '실물'(맵달=실물상품). 휴대폰결제 노출 시 HPP(1|2) 필수.
         #   va_receipt=가상계좌 채번 시 현금영수증 정보 입력창 노출(실물 커머스 표준),
-        #   vbank(YYYYMMDD)=가상계좌 입금기한 지정 — 채번일 포함 3일(KST)로 고정해
+        #   vbank(YYYYMMDDhhmm)=가상계좌 입금기한 지정 — 채번 당일 23:59(KST) 마감.
         #   기한 없는 계좌가 발급되거나 화면·SMS 안내에 기한이 비는 일을 막는다.
+        #   기한 산출은 _vbank_due() 단일 소스(모바일 P_VBANK_DT/TM 과 동일 값).
         # gopaymethod: 결제창에 노출할 수단. 빈 문자열('')이면 이니시스가 '선택 수단 없음'으로
         #   해석해 카드 탭이 아예 렌더링되지 않는다. 반드시 수단 코드를 콜론(:)으로 명시한다.
         #   Card=신용/체크카드(간편결제 포함), DirectBank=계좌이체, VBank=가상계좌, HPP=휴대폰
@@ -725,8 +768,7 @@ async def create_order(req: Request):
         #   바로 열린다. 미선택(구버전 캐시)은 종전대로 전체 수단 노출 — 하위호환.
         #   ※ gopaymethod 는 서명(oid·price·timestamp) 대상이 아니므로 단일 지정해도 안전.
         'gopaymethod': pay_sel or INICIS_GOPAYMETHOD,
-        'acceptmethod': 'centerCd(Y):below1000:HPP(2):va_receipt:vbank(%s)'
-                        % (kst_naive() + datetime.timedelta(days=3)).strftime('%Y%m%d'),
+        'acceptmethod': 'centerCd(Y):below1000:HPP(2):va_receipt:vbank(%s)' % _vbank_due(),
         'returnUrl': origin + '/inicis/return', 'closeUrl': origin + '/inicis/close',
     }
     # ── 모바일 결제 파라미터 (PC와 별개 모듈) ──

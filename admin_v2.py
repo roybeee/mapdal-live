@@ -10,7 +10,7 @@ v2 전체 기능 + ① 고객(회원) CRM  ② 알림톡/SMS 발송(솔라피)  
 알림 발송 환경변수(솔라피): SOLAPI_API_KEY, SOLAPI_API_SECRET, SOLAPI_SENDER(발신번호),
  SOLAPI_PF_ID(카카오채널 pfId — 알림톡용). 미설정 시 발송 대신 로그만 기록(DRY).
 """
-import os, re, json, sqlite3, base64, hashlib, hmac, secrets, datetime, time, socket, calendar
+import os, re, json, sqlite3, base64, hashlib, hmac, secrets, datetime, time, socket, calendar, threading
 import urllib.request, urllib.error, urllib.parse
 from fastapi import APIRouter, HTTPException, Request, Body, UploadFile, File
 from fastapi.responses import HTMLResponse, Response, JSONResponse, RedirectResponse
@@ -246,6 +246,18 @@ def num(x):
     except Exception:
         try: return int(float(x))
         except Exception: return 0
+
+def _env_int_av(name, default, lo=None, hi=None):
+    """환경변수 정수 읽기 — 미설정·오타는 기본값으로 안전하게 떨어진다.
+       운영 스위치(자동정리 주기·유예 등)를 재배포 없이 조정하기 위한 공통 헬퍼."""
+    try:
+        v = (os.getenv(name) or '').strip()
+        n = int(v) if v else int(default)
+    except Exception:
+        n = int(default)
+    if lo is not None: n = max(lo, n)
+    if hi is not None: n = min(hi, n)
+    return n
 
 #  ── 시각 기준 ──────────────────────────────────────────────────────────
 #  운영 서버(Render 싱가포르)의 시스템 시계는 UTC 이므로 utcnow()/now() 를 그대로
@@ -662,6 +674,8 @@ def ensure_ready():
     except Exception: pass
     try: _account_migrate() # 기존 회원을 단일 고객 ID·동의·포인트 원장 구조로 안전하게 백필
     except Exception as e: print('account migration skipped:', e)
+    try: vbank_sweep_start()  # 가상계좌 입금기한 만료 자동정리 스레드 (프로세스당 1회)
+    except Exception as e: print('vbank sweep start skipped:', e)
 
 # ── 인증 + 역할 ─────────────────────────────────────────────────────────
 RANK = {'VIEWER': 0, 'STAFF': 1, 'MANAGER': 2, 'OWNER': 3}
@@ -1361,6 +1375,148 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
     if not r: raise HTTPException(404, 'not found')
     reason = (body.get('reason') or '관리자 취소').strip()[:200]
     return _order_cancel_core(a, r, reason, manual=bool(body.get('manual')))
+
+# ── 가상계좌 입금기한 만료 자동정리 (2026-08-25) ────────────────────────
+#   입금기한을 당일 23:59로 좁히면서(app.py _vbank_due) 미입금 건이 매일 쌓인다.
+#   WAITING_DEPOSIT 은 주문 생성 시점에 이미 재고를 차감한 상태라, 방치하면
+#   팔 수 있는 재고가 계속 묶인다 — 기한이 지난 건을 자동으로 CANCELLED 처리하고
+#   재고를 복원한다.
+#   · 취소 경로는 관리자 취소와 동일한 _order_cancel_core 재사용
+#     (이중취소 차단 · 재고복원 · 적립회수 · 감사로그 · pay_log 를 그대로 승계).
+#     WAITING_DEPOSIT 은 PAID 가 아니므로 INIAPI 환불은 호출되지 않는다 — 돈이
+#     움직이지 않는 순수 상태정리다.
+#   · VBANK_EXPIRE_GRACE(분, 기본 60): 기한 직전 입금의 이니시스 입금통보가 늦게
+#     도착하는 구간 보호. 기한 + 유예를 넘긴 건만 취소한다.
+#   · VBANK_EXPIRE_SWEEP(분, 기본 10): 백그라운드 스윕 주기. 0 이면 자동 스윕을
+#     끄고 [주문] 탭의 [기한만료 정리] 버튼(수동 실행)만 남긴다.
+#   · VBANK_EXPIRE_FALLBACK_D(일, 기본 3): vbank_due 가 비어 있는 구 데이터의
+#     안전판 — 주문 생성 후 이 일수를 넘긴 입금대기만 만료로 본다.
+#   · VBANK_EXPIRE_PENDING_H(시간, 기본 0=비활성): 결제창 이탈로 남은 PENDING
+#     주문도 함께 정리한다. PENDING 역시 재고를 차감한 상태이므로 누수가 생기지만,
+#     승인 진행 중인 건을 건드릴 위험이 있어 기본값은 꺼두고 규모만 보고한다.
+VBANK_EXPIRE_GRACE      = _env_int_av('VBANK_EXPIRE_GRACE', 60, 0, 1440)
+VBANK_EXPIRE_SWEEP      = _env_int_av('VBANK_EXPIRE_SWEEP', 10, 0, 1440)
+VBANK_EXPIRE_FALLBACK_D = _env_int_av('VBANK_EXPIRE_FALLBACK_D', 3, 1, 60)
+VBANK_EXPIRE_PENDING_H  = _env_int_av('VBANK_EXPIRE_PENDING_H', 0, 0, 720)
+
+_SWEEP_ACTOR = {'name': '시스템(자동정리)', 'role': 'OWNER', 'master': False}
+
+def _vdue_dt(s):
+    """vbank_due(YYYYMMDDhhmm[ss]) → datetime(KST naive). 파싱 불가면 None.
+       시각이 없는 구 데이터(YYYYMMDD)는 그날 23:59 로 해석한다."""
+    d = re.sub(r'\D', '', str(s or ''))
+    try:
+        if len(d) >= 12: return datetime.datetime.strptime(d[:12], '%Y%m%d%H%M')
+        if len(d) >= 8:  return datetime.datetime.strptime(d[:8], '%Y%m%d').replace(hour=23, minute=59)
+    except Exception:
+        pass
+    return None
+
+def _created_dt(s):
+    try: return datetime.datetime.fromisoformat(str(s or '')[:19])
+    except Exception: return None
+
+def vbank_expire_sweep(dry=False, actor=None, limit=300):
+    """입금기한이 지난 가상계좌 주문을 취소하고 재고를 복원한다 (멱등).
+
+    dry=True 면 실제 취소 없이 대상만 집계한다(관리자 미리보기).
+    반환: {checked, expired, cancelled, restored, pending_stuck, orders[], errors[]}"""
+    try:
+        ensure_ready()
+    except Exception:
+        pass
+    now = kst_naive()
+    a = actor or _SWEEP_ACTOR
+    out = {'ok': True, 'dry': bool(dry), 'now': now.isoformat(timespec='seconds'),
+           'grace_min': VBANK_EXPIRE_GRACE, 'checked': 0, 'expired': 0, 'cancelled': 0,
+           'restored': 0, 'pending_stuck': 0, 'orders': [], 'errors': []}
+    try:
+        waiting = rows("SELECT * FROM orders WHERE status='WAITING_DEPOSIT'")
+    except Exception as e:
+        out['ok'] = False; out['errors'].append(str(e)[:120]); return out
+    out['checked'] = len(waiting or [])
+    cut = now - datetime.timedelta(minutes=VBANK_EXPIRE_GRACE)
+    for r in (waiting or []):
+        due = _vdue_dt(r.get('vbank_due'))
+        if due is None:                                    # 구 데이터 안전판 — 생성일 기준
+            c0 = _created_dt(r.get('created'))
+            if not c0 or (now - c0).days < VBANK_EXPIRE_FALLBACK_D:
+                continue
+            due = c0 + datetime.timedelta(days=VBANK_EXPIRE_FALLBACK_D)
+        if due > cut:                                      # 아직 기한 내(유예 포함)
+            continue
+        out['expired'] += 1
+        oid = r.get('order_id') or ''
+        item = {'order_id': oid, 'amount': num(r.get('amount')),
+                'due': _vdue_fmt(r.get('vbank_due')) or '(기한없음)',
+                'created': str(r.get('created') or '')[:16].replace('T', ' ')}
+        if dry:
+            out['orders'].append(item); continue
+        try:
+            res = _order_cancel_core(a, r, '입금기한 만료 자동취소 (기한 %s)'
+                                     % (_vdue_fmt(r.get('vbank_due')) or '-'))
+            out['cancelled'] += 1
+            out['restored'] += int(res.get('stock_restored_items') or 0)
+            item['restored'] = res.get('stock_restored_items')
+            out['orders'].append(item)
+        except Exception as e:
+            out['errors'].append('%s: %s' % (oid, str(getattr(e, 'detail', e))[:100]))
+    # PENDING(결제창 이탈) 누수 규모 — 기본은 보고만, 환경변수로 켜면 함께 정리한다.
+    try:
+        pend = rows("SELECT * FROM orders WHERE status='PENDING'") or []
+    except Exception:
+        pend = []
+    ph = VBANK_EXPIRE_PENDING_H
+    for r in pend:
+        c0 = _created_dt(r.get('created'))
+        if not c0 or (now - c0).total_seconds() < max(2, ph or 24) * 3600:
+            continue
+        out['pending_stuck'] += 1
+        if dry or not ph:
+            continue
+        try:
+            res = _order_cancel_core(a, r, '결제 미완료 자동취소 (%d시간 경과)' % ph)
+            out['cancelled'] += 1
+            out['restored'] += int(res.get('stock_restored_items') or 0)
+            out['orders'].append({'order_id': r.get('order_id') or '', 'amount': num(r.get('amount')),
+                                  'due': 'PENDING', 'created': str(r.get('created') or '')[:16].replace('T', ' '),
+                                  'restored': res.get('stock_restored_items')})
+        except Exception as e:
+            out['errors'].append('%s: %s' % (r.get('order_id') or '', str(getattr(e, 'detail', e))[:100]))
+        if len(out['orders']) >= limit:
+            break
+    if not dry and out['cancelled']:
+        print('[vbank-sweep] 만료 %d건 취소 · 재고복원 %d라인' % (out['cancelled'], out['restored']), flush=True)
+    return out
+
+_sweep_started = {'on': False}
+
+def vbank_sweep_start():
+    """백그라운드 스윕 스레드 1회 기동 (프로세스당 단일 · 멱등)."""
+    if _sweep_started['on'] or VBANK_EXPIRE_SWEEP <= 0:
+        return
+    _sweep_started['on'] = True
+    def _loop():
+        import time
+        time.sleep(90)                       # 부팅·마이그레이션이 끝난 뒤 시작
+        while True:
+            try: vbank_expire_sweep()
+            except Exception as e: print('[vbank-sweep] 실패:', e, flush=True)
+            time.sleep(max(60, VBANK_EXPIRE_SWEEP * 60))
+    threading.Thread(target=_loop, daemon=True, name='vbank-sweep').start()
+    print('[vbank-sweep] 자동정리 시작 — 주기 %d분 · 유예 %d분'
+          % (VBANK_EXPIRE_SWEEP, VBANK_EXPIRE_GRACE), flush=True)
+
+@admin_router.post('/admin/api/orders/vbank-sweep')
+def api_vbank_sweep(request: Request, body: dict = Body(default={})):
+    """입금기한 만료 정리 — 미리보기(dry=1)와 실행을 같은 엔드포인트로 처리."""
+    a = get_actor(request); need(a, 2, '입금기한 만료 정리')
+    dry = bool((body or {}).get('dry'))
+    res = vbank_expire_sweep(dry=dry, actor=a)
+    if not dry and res.get('cancelled'):
+        audit(a, '입금기한 만료정리', '', '%d건 취소 · 재고복원 %d라인'
+              % (res['cancelled'], res['restored']))
+    return res
 
 @admin_router.post('/admin/api/orders/{oid}/link-member')
 def api_order_link_member(oid: str, request: Request, body: dict = Body(...)):
@@ -3070,7 +3226,8 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <input id="ofrom" type="date"><input id="oto" type="date">
   <button class="btn" onclick="loadOrders(1)">검색</button>
   <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button>
-  <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button></div>
+  <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button>
+  <button class="btn ghost" onclick="vbSweep()" id="vbsweepbtn" title="입금기한이 지난 가상계좌 주문을 취소하고 재고를 복원합니다 (자동으로도 주기 실행)">기한만료 정리</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
 <section id="t-products" style="display:none">
   <div class="product-tabs"><button class="product-tab on" id="pt-catalog" onclick="productMode('catalog')">상품</button>
@@ -3353,6 +3510,22 @@ async function loadOrders(p){opage=p;const q=new URLSearchParams({page:p});
 const pager=(p,d,fn)=>`<div class="pager"><button class="btn sm ghost" ${p<=1?'disabled':''} onclick="${fn}(${p-1})">이전</button><span>${p} / ${Math.max(1,Math.ceil(d.total/d.size))} · 총 ${d.total}</span><button class="btn sm ghost" ${p*d.size>=d.total?'disabled':''} onclick="${fn}(${p+1})">다음</button></div>`;
 function csv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders.csv?'+q}
 function optcsv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders-options.csv?'+q}
+// 입금기한 만료 정리 — 항상 미리보기(dry)로 대상을 보여준 뒤 확인을 받고 실행한다.
+//   돈이 움직이지 않는 상태정리(WAITING_DEPOSIT → CANCELLED + 재고복원)지만,
+//   되돌릴 수 없으므로 건수·주문번호를 먼저 눈으로 확인시킨다.
+async function vbSweep(){const b=$('#vbsweepbtn');const old=b.textContent;
+ try{b.disabled=true;b.textContent='확인 중…';
+  const p=await api('/admin/api/orders/vbank-sweep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry:1})});
+  const pend=p.pending_stuck?('\n\n※ 결제 미완료(PENDING)로 재고가 묶인 주문이 '+p.pending_stuck+'건 있습니다. 이 버튼으로는 정리하지 않습니다 — 환경변수 VBANK_EXPIRE_PENDING_H 로 활성화할 수 있습니다.'):'';
+  if(!p.expired){toast('기한이 지난 입금대기 주문이 없습니다 (입금대기 '+p.checked+'건)'+(p.pending_stuck?' · PENDING 누수 '+p.pending_stuck+'건':''));if(p.pending_stuck)alert('기한 만료 대상은 없습니다.'+pend);return}
+  const lst=p.orders.slice(0,12).map(o=>'· '+o.order_id+' · '+(o.amount||0).toLocaleString('ko-KR')+'원 · 기한 '+o.due).join('\n');
+  if(!confirm('입금기한이 지난 가상계좌 주문 '+p.expired+'건을 취소하고 재고를 복원합니다.\n(입금대기 전체 '+p.checked+'건 · 기한 후 '+p.grace_min+'분 유예 적용)\n\n'+lst+(p.orders.length>12?'\n… 외 '+(p.orders.length-12)+'건':'')+'\n\n되돌릴 수 없습니다. 진행할까요?'+pend))return;
+  b.textContent='정리 중…';
+  const r=await api('/admin/api/orders/vbank-sweep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+  toast('만료 '+r.cancelled+'건 취소 · 재고 '+r.restored+'라인 복원'+(r.errors&&r.errors.length?' · 실패 '+r.errors.length+'건':''));
+  if(r.errors&&r.errors.length)alert('일부 주문을 정리하지 못했습니다:\n\n'+r.errors.join('\n'));
+  loadOrders(1);
+ }catch(e){alert(e.message)}finally{b.disabled=false;b.textContent=old}}
 
 let TPLCACHE=[];
 async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeURIComponent(oid));
@@ -10885,7 +11058,7 @@ def _checkout_apply(html):
         '<span class="rd"><b>실시간 계좌이체</b><small>이체 즉시 결제완료</small></span></label>\n'
         '          <label class="radio-item"><input type="radio" name="pay" value="VBank">'
         '<span class="rd"><b>가상계좌 (무통장입금)</b>'
-        '<small>전용 계좌 발급 · 입금 확인 시 결제완료 (입금기한 3일) · 환불계좌 입력 필수</small></span></label>\n'
+        '<small>전용 계좌 발급 · 입금 확인 시 결제완료 · <b>입금기한 당일 23:59</b> · 환불계좌 입력 필수</small></span></label>\n'
         '          <label class="radio-item"><input type="radio" name="pay" value="HPP">'
         '<span class="rd"><b>휴대폰 결제</b><small>통신사 소액결제</small></span></label>')
     if 'value="VBank"' not in html:
@@ -10899,6 +11072,11 @@ def _checkout_apply(html):
             '<span class="rd"><b>신용·체크카드 · 간편결제</b>'
             '<small>카카오페이 · 네이버페이 · 페이코 · 삼성페이 · 국내 전 카드사</small></span></label>',
             _MP_PAY_RADIOS, 1)
+    # 입금기한 정책 변경(3일 → 당일 23:59) — 이전 문구가 베이크된 사본(page_edits
+    #   오버라이드·정적 파일)까지 서빙 시점에 갱신한다. 이미 새 문구면 무변화(멱등).
+    html = html.replace(
+        '전용 계좌 발급 · 입금 확인 시 결제완료 (입금기한 3일) · 환불계좌 입력 필수',
+        '전용 계좌 발급 · 입금 확인 시 결제완료 · <b>입금기한 당일 23:59</b> · 환불계좌 입력 필수')
     # 중복된 간편결제 라디오 제거 (위 통합 항목에 포함)
     html = html.replace(
         '<label class="radio-item"><input type="radio" name="pay"><span class="rd"><b>카카오페이 · 네이버페이 · 토스페이</b></span></label>',

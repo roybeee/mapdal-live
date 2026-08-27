@@ -871,7 +871,16 @@ async def inicis_return(req: Request):
         vdate = (str(res.get('VACT_Date') or '') + str(res.get('VACT_Time') or '')).strip()
         return _vbank_finalize(oid, tid, vact_num, vbank, vname, vdate)
 
-    _pay_log(oid, 'PAID', '%s · TID …%s' % (method or 'Card', str(tid)[-6:]))
+    # 어떤 카드·어떤 페이로 결제됐는지는 이 승인응답에만 실려 온다(CARD_Code·CARD_Num·
+    # applNum·CARD_SrcCode 등). 여기서 받아 두지 않으면 나중에는 이니시스 거래조회를
+    # 따로 돌려야 알 수 있다. 돈이 움직이는 경로라 실패는 전부 삼킨다.
+    _pdet = ''
+    try:
+        import admin_v2 as _av; _pdet = _av.pay_detail_save(oid, res, 'STEP3') or ''
+    except Exception:
+        _pdet = ''
+    _pay_log(oid, 'PAID', '%s · TID …%s%s' % (method or 'Card', str(tid)[-6:],
+                                              (' · ' + _pdet) if _pdet else ''))
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
@@ -1009,7 +1018,13 @@ async def inicis_mobile_return(req: Request):
         vdate = (str(res.get('P_VACT_DATE') or '') + str(res.get('P_VACT_TIME') or '')).strip()
         return _vbank_finalize(oid, pay_tid, vnum, vbank, vname, vdate)
 
-    _pay_log(oid, 'PAID', '%s · TID …%s' % (method or 'Card', str(pay_tid)[-6:]))
+    _pdet = ''                                        # 카드사·간편결제 상세 적재 (PC 분기와 동일)
+    try:
+        import admin_v2 as _av; _pdet = _av.pay_detail_save(oid, res, 'STEP3M') or ''
+    except Exception:
+        _pdet = ''
+    _pay_log(oid, 'PAID', '%s · TID …%s%s' % (method or 'Card', str(pay_tid)[-6:],
+                                              (' · ' + _pdet) if _pdet else ''))
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
@@ -1261,7 +1276,13 @@ async def inicis_mobile_noti(req: Request):
                 except Exception:
                     pass
             if _paid:
-                _pay_log(oid, 'PAID', '%s · 모바일 승인통보 · TID …%s' % (ptype or 'Card', tid[-6:]))
+                _pdet = ''                            # 카드사·간편결제 상세 적재 (노티 전문에도 P_CARD_* 가 실린다)
+                try:
+                    import admin_v2 as _av; _pdet = _av.pay_detail_save(oid, dict(form), 'NOTI') or ''
+                except Exception:
+                    _pdet = ''
+                _pay_log(oid, 'PAID', '%s · 모바일 승인통보 · TID …%s%s'
+                         % (ptype or 'Card', tid[-6:], (' · ' + _pdet) if _pdet else ''))
                 _award_purchase_points(oid)
                 _ga4_mp_purchase(oid)                 # 서버사이드 purchase 백업
                 try:

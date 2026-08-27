@@ -75,6 +75,233 @@ def _inicis_cred_for_tid(tid):
         if m and m in t:
             return (m, k, lbl)
     return None
+# ── 결제 상세(어떤 카드 · 어떤 페이) ─────────────────────────────────────
+#   이니시스 승인응답에는 카드사·카드번호(마스킹)·할부·승인번호·간편결제 구분이
+#   전부 들어오는데, 종전에는 payMethod('Card') 와 TID 만 저장하고 나머지를 버렸다.
+#   그래서 주문 상세에 '카드'까지만 보이고 어느 카드사·어느 페이인지 알 수 없어
+#   CS 응대와 카드사 정산 대조를 상점관리자(iniweb)에서 따로 해야 했다.
+#     ① 승인 시점: app.py 의 /inicis/return · /inicis/mobile-return 이
+#        pay_detail_save(oid, 승인응답) 을 호출해 orders.pay_detail 에 적재한다.
+#        (돈이 움직이는 경로를 건드리지 않도록 전부 try 안에서 호출 — 실패해도 승인은 유지)
+#     ② 과거 주문: INIAPI 거래조회(POST https://iniapi.inicis.com/v2/pg/inquiry)로
+#        뒤늦게 채운다. 주문 상세를 열 때 자동 1회 조회하고 결과를 캐시한다.
+#   코드표 출처: manual.inicis.com/pay/code.html (승인응답 시 카드코드 / 발급사코드)
+_INI_CARD_NAME = {
+    '01': '하나카드', '02': '우리카드', '03': '롯데카드', '04': '현대카드', '06': '국민카드',
+    '11': '비씨카드', '12': '삼성카드', '14': '신한카드', '15': '한미카드', '16': 'NH카드',
+    '17': '하나SK카드', '21': 'VISA', '22': 'MASTER', '23': 'JCB', '24': 'AMEX',
+    '25': '다이너스', '26': '은련카드',
+    '91': '네이버포인트', '93': '토스머니', '94': 'SSG머니', '96': '엘포인트',
+    '97': '카카오머니', '98': '페이코포인트',
+}
+# 카드가 아니라 간편결제 머니·포인트로 결제된 코드 — 어떤 '페이'인지가 여기서 확정된다.
+_INI_EASY_NAME = {
+    '91': '네이버페이', '93': '토스페이', '94': 'SSGPAY', '96': 'L.POINT',
+    '97': '카카오페이', '98': 'PAYCO',
+}
+_INI_BANK_NAME = {
+    '02': '한국산업은행', '03': '기업은행', '04': '국민은행', '05': '하나은행(구 외환)',
+    '06': '국민은행(구 주택)', '07': '수협중앙회', '11': '농협중앙회', '12': '단위농협',
+    '16': '축협중앙회', '20': '우리은행', '23': 'SC제일은행', '27': '한국씨티은행',
+    '31': '대구은행', '32': '부산은행', '34': '광주은행', '35': '제주은행', '37': '전북은행',
+    '39': '경남은행', '45': '새마을금고', '48': '신협중앙회', '50': '상호저축은행',
+    '53': '한국씨티은행', '54': '홍콩상하이은행', '64': '산림조합', '71': '우체국',
+    '81': '하나은행', '87': '신세계', '88': '신한은행', '89': '케이뱅크', '90': '카카오뱅크',
+    '91': '네이버포인트', '92': '토스뱅크', '93': '토스머니', '94': 'SSG머니',
+    '96': '엘포인트', '97': '카카오머니', '98': '페이코포인트',
+}
+_PD_CHECK = {'0': '신용카드', '1': '체크카드', '2': '기프트카드'}
+_PD_CORP = {'0': '개인', '1': '법인'}
+# 승인응답 원문 보관 화이트리스트 접두 — 라벨 매핑이 못 따라가는 신규 코드가 와도
+# 관리자가 원문에서 직접 확인할 수 있어야 한다(간편결제 코드는 수시로 추가된다).
+_PD_RAW_PREFIX = ('CARD_', 'P_CARD_', 'P_FN_', 'P_SRC', 'P_APPL', 'P_TYPE', 'applNum',
+                  'payMethod', 'EventCode', 'P_EVENT', 'VACT_', 'P_VACT_')
+
+def _pd_get(src, *names):
+    for n in names:
+        v = src.get(n)
+        if v not in (None, ''):
+            return str(v).strip()
+    return ''
+
+def _pd_quota(v):
+    q = re.sub(r'\D', '', str(v or ''))
+    if q == '':
+        return ''
+    n = int(q)
+    return '일시불' if n <= 1 else ('%d개월' % n)
+
+def pay_detail_norm(src, origin='STEP3'):
+    """이니시스 응답(PC JSON · 모바일 NVP · 거래조회 v2) → 화면용 결제 상세 dict.
+
+    세 규격이 필드명만 다르고 의미는 같아 하나로 흡수한다. 카드 정보가 전혀
+    없으면 {} 를 돌려주고 저장하지 않는다(가상계좌 채번 등)."""
+    if not isinstance(src, dict):
+        return {}
+    ci = src.get('cardInfo') if isinstance(src.get('cardInfo'), dict) else {}
+    ai = src.get('acctInfo') if isinstance(src.get('acctInfo'), dict) else {}
+    vi = src.get('vacctInfo') if isinstance(src.get('vacctInfo'), dict) else {}
+    flat = dict(src)
+    for sub in (ci, ai, vi):
+        for k, v in sub.items():
+            flat.setdefault('_' + k, v)
+    code = _pd_get(flat, 'CARD_Code', 'P_FN_CD1', '_cardCode')
+    brand = _pd_get(flat, 'P_FN_NM', '_cardName') or _INI_CARD_NAME.get(code, '')
+    issuer = _pd_get(flat, 'P_CARD_ISSUER_NAME', '_issuerName')
+    icode = _pd_get(flat, 'CARD_BankCode', 'P_CARD_ISSUER_CODE', '_issuerCode')
+    if not issuer and icode not in ('', '00'):
+        issuer = _INI_BANK_NAME.get(icode, '')
+    d = {
+        'origin': origin,
+        'method': _pd_get(flat, 'payMethod', 'P_TYPE', 'paymethod'),
+        'code': code, 'brand': brand, 'issuer': issuer,
+        'num': _pd_get(flat, 'CARD_Num', 'P_CARD_NUM', '_cardNumber'),
+        'quota': _pd_quota(_pd_get(flat, 'CARD_Quota', 'P_CARD_QUOTA', 'P_QUOTABASE', '_cardQuota')),
+        'kind': _PD_CHECK.get(_pd_get(flat, 'CARD_CheckFlag', 'P_CARD_CHECKFLAG'), ''),
+        'corp': _PD_CORP.get(_pd_get(flat, 'CARD_CorpFlag'), ''),
+        'appl': _pd_get(flat, 'applNum', 'P_APPL_NO', '_approvedNumber'),
+        'amount': num(re.sub(r'[^\d]', '', _pd_get(flat, 'CARD_ApplPrice', 'P_CARD_APPLPRICE',
+                                                   '_approvedAmount', 'TotPrice', 'P_AMT', 'price')) or 0),
+        'point': num(re.sub(r'[^\d]', '', _pd_get(flat, 'CARD_UsePoint', 'P_CARD_USEPOINT', '_pointAmount')) or 0),
+        'discount': num(re.sub(r'[^\d]', '', _pd_get(flat, 'CARD_CouponDiscount', 'P_CARD_COUPON_DISCOUNT',
+                                                     '_instantDiscountAmount')) or 0),
+        'bank': _pd_get(flat, '_bankName') or _INI_BANK_NAME.get(_pd_get(flat, '_bankCode'), ''),
+        'at': now_iso(),
+    }
+    # 간편결제 판정 — ① 머니·포인트 코드는 그 자체가 페이 브랜드,
+    #                ② 카드를 태운 간편결제는 CARD_SrcCode/P_SRC_CODE 로만 구분된다.
+    src_code = _pd_get(flat, 'CARD_SrcCode', 'P_SRC_CODE')
+    if code in _INI_EASY_NAME:
+        d['easy'] = _INI_EASY_NAME[code]
+    elif src_code:
+        d['easy'] = '간편결제(앱)'
+        d['easy_code'] = src_code
+    if _pd_get(flat, 'CARD_Interest', '') == '1' or flat.get('_isInterestFree') is True:
+        d['interest'] = '무이자'
+    raw = {}
+    for k, v in src.items():
+        if isinstance(v, (str, int, float)) and str(k).startswith(_PD_RAW_PREFIX):
+            raw[str(k)[:40]] = str(v)[:80]
+    for k, v in (ci or {}).items():
+        if isinstance(v, (str, int, float, bool)):
+            raw[('cardInfo.' + str(k))[:40]] = str(v)[:80]
+    d['raw'] = dict(list(raw.items())[:40])
+    if not (d['brand'] or d['num'] or d['appl'] or d.get('easy') or d['bank']):
+        return {}
+    return d
+
+def pay_detail_text(d):
+    """결제 상세 dict → 주문 상세 한 줄 표기."""
+    if not isinstance(d, dict) or not d:
+        return ''
+    p = []
+    if d.get('easy'):
+        p.append(d['easy'])
+    if d.get('brand'):
+        p.append(d['brand'] + (('(%s)' % d['kind']) if d.get('kind') else ''))
+    elif d.get('bank'):
+        p.append(d['bank'])
+    if d.get('issuer') and d.get('issuer') != d.get('brand'):
+        p.append('발급 ' + d['issuer'])
+    if d.get('num'):
+        p.append(d['num'])
+    if d.get('quota'):
+        p.append(d['quota'] + (' · ' + d['interest'] if d.get('interest') else ''))
+    if d.get('corp') == '법인':
+        p.append('법인카드')
+    if d.get('appl'):
+        p.append('승인 ' + d['appl'])
+    if num(d.get('point')):
+        p.append('포인트 %s원' % format(num(d['point']), ','))
+    if num(d.get('discount')):
+        p.append('즉시할인 %s원' % format(num(d['discount']), ','))
+    return ' · '.join(x for x in p if x)
+
+def _pay_detail_write(oid, d):
+    if not d or 'pay_detail' not in _state['ocols']:
+        return False
+    try:
+        run('UPDATE orders SET pay_detail=? WHERE order_id=?',
+            (json.dumps(d, ensure_ascii=False)[:4000], oid))
+        return True
+    except Exception:
+        return False
+
+def pay_detail_save(oid, src, origin='STEP3'):
+    """승인응답에서 결제 상세를 뽑아 저장하고 한 줄 요약을 돌려준다 (app.py 승인부에서 호출).
+
+    돈이 움직이는 경로에서 불리므로 어떤 예외도 밖으로 내보내지 않는다."""
+    try:
+        ensure_ready()
+        d = pay_detail_norm(src, origin)
+        if not d:
+            return ''
+        _pay_detail_write(oid, d)
+        return pay_detail_text(d)
+    except Exception:
+        return ''
+
+def _inicis_inquiry(mid, key, tid, oid=''):
+    """INIAPI 거래조회(v2) — 승인 당시 저장하지 못한 과거 주문의 카드 정보를 되찾는다.
+
+    규격: POST https://iniapi.inicis.com/v2/pg/inquiry (JSON)
+          hashData = SHA512(INIAPIKey + mid + type + timestamp + data)
+    data 평문의 해석이 매뉴얼에 명시돼 있지 않아, 전송하는 data JSON 문자열을
+    그대로 이어붙인 형태를 먼저 시도하고 해시 불일치면 data 없이 재시도한다."""
+    ts = kst_naive().strftime('%Y%m%d%H%M%S')
+    try: ip = socket.gethostbyname(socket.gethostname())
+    except Exception: ip = '127.0.0.1'
+    data_str = json.dumps({'tid': tid} if tid else {'oid': oid}, separators=(',', ':'))
+    last = ''
+    for plain in (key + mid + 'inquiry' + ts + data_str, key + mid + 'inquiry' + ts):
+        h = hashlib.sha512(plain.encode('utf-8')).hexdigest()
+        body = ('{"mid":%s,"type":"inquiry","timestamp":%s,"clientIp":%s,"hashData":%s,"data":%s}'
+                % (json.dumps(mid), json.dumps(ts), json.dumps(ip), json.dumps(h), data_str)).encode('utf-8')
+        req = urllib.request.Request('https://iniapi.inicis.com/v2/pg/inquiry', data=body,
+                                     headers={'Content-Type': 'application/json'}, method='POST')
+        res = None
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                res = json.loads(resp.read().decode('utf-8', 'replace'))
+        except urllib.error.HTTPError as e:
+            try: res = json.loads(e.read().decode('utf-8', 'replace'))
+            except Exception: res = None
+            if res is None:
+                last = 'HTTP %s' % getattr(e, 'code', '?')
+                continue
+        except Exception:
+            raise HTTPException(400, '이니시스 거래조회 통신 오류 — 잠시 후 다시 시도하세요.')
+        if str(res.get('resultCode') or '').upper() in ('SUCCESS', '00', '0000'):
+            return res
+        last = ('[%s] %s' % (res.get('resultCode') or '', res.get('resultMsg') or '')).strip()
+        if 'hash' not in last.lower() and 'ERR205' not in last:
+            break                                     # 해시 문제가 아니면 재시도해도 같다
+    raise HTTPException(400, '이니시스 거래조회 실패: ' + (last or '알 수 없는 오류'))
+
+def pay_detail_lookup(oid, force=False):
+    """주문의 결제 상세를 확보한다 — 저장돼 있으면 그대로, 없으면 거래조회로 채운다."""
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not r:
+        raise HTTPException(404, '주문을 찾을 수 없습니다')
+    cur = jload(r.get('pay_detail'), {}) or {}
+    if cur and not force:
+        return cur
+    tid = (r.get(_state['paykey']) if _state['paykey'] else '') or ''
+    if not tid:
+        raise HTTPException(400, '거래번호(TID)가 없어 조회할 수 없습니다 (미결제·수동처리 주문)')
+    cred = _inicis_cred_for_tid(tid)
+    if not cred:
+        raise HTTPException(400,
+            '이 주문의 상점아이디(%s)에 대한 INIAPI key 가 설정돼 있지 않아 조회할 수 없습니다 — '
+            'Render 환경변수 INICIS_MID_OLD / INICIS_INIAPI_OLD 를 확인하세요.'
+            % (_inicis_mid_of_tid(tid) or '판별 불가'))
+    mid, key, _lbl = cred
+    d = pay_detail_norm(_inicis_inquiry(mid, key, tid, oid), origin='INQUIRY')
+    if not d:
+        raise HTTPException(400, '거래조회는 성공했으나 카드 상세가 응답에 없습니다 (지불수단 미지원)')
+    _pay_detail_write(oid, d)
+    return d
+
 def _genv(k):
     return (os.environ.get(k) or '').strip()
 
@@ -420,7 +647,7 @@ def ensure_ready():
     oc = _cols('orders')
     if oc:
         for col, typ in (('fulfill', "TEXT DEFAULT 'NEW'"), ('tracking', 'TEXT'), ('admin_memo', 'TEXT'),
-                         ('pay_log', 'TEXT'), ('courier', 'TEXT')):
+                         ('pay_log', 'TEXT'), ('courier', 'TEXT'), ('pay_detail', 'TEXT')):
             if col not in oc:
                 try: run("ALTER TABLE orders ADD COLUMN %s %s" % (col, typ))
                 except Exception: pass
@@ -990,6 +1217,8 @@ def api_order_detail(oid: str, request: Request):
     if not r: raise HTTPException(404, 'not found')
     b = jload(r.get('buyer'), {})
     plog, preason = _pay_log_view(r)
+    _pd = jload(r.get('pay_detail'), {}) or {}
+    _ptid = (r.get(_state['paykey']) if _state['paykey'] else '') or ''
     items = [{'id': it.get('id', ''), 'name': it.get('n') or it.get('name') or it.get('id', ''),
               'qty': num(it.get('q') or 1), 'price': num(it.get('p') or it.get('price') or 0)}
              for it in jload(r.get('items'), [])]
@@ -1009,6 +1238,11 @@ def api_order_detail(oid: str, request: Request):
             'admin_memo': r.get('admin_memo') or '', 'receipt': r.get('receipt_url') or '',
             'method': r.get('method') or '',
             'pay_method': r.get('pay_method') or '',
+            # 결제 상세(어떤 카드 · 어떤 페이) — 승인 시 적재분. 비어 있고 TID 가 있으면
+            # 화면이 열릴 때 거래조회로 1회 채운다(can_pay_lookup).
+            'pay_detail': _pd, 'pay_detail_text': pay_detail_text(_pd),
+            'pay_detail_rows': sorted((_pd.get('raw') or {}).items()),
+            'can_pay_lookup': bool(_ptid and _inicis_cred_for_tid(_ptid)),
             'paid_at': (r.get('paid_at') or '')[:19].replace('T', ' '),
             'pay_log': plog, 'pending_reason': preason,
             'member_id': r.get('member_id') or '',
@@ -1024,6 +1258,17 @@ def api_order_detail(oid: str, request: Request):
             'pay_mid': _inicis_mid_of_tid(r.get(_state['paykey']) if _state['paykey'] else ''),
             'pay_mid_current': inicis_mid(),
             'pay_mid_known': bool(_inicis_cred_for_tid(r.get(_state['paykey']) if _state['paykey'] else ''))}
+
+@admin_router.post('/admin/api/orders/{oid}/pay-detail')
+def api_order_pay_detail(oid: str, request: Request, force: int = 0):
+    """결제 상세(어떤 카드 · 어떤 페이) 조회 — 저장분 우선, 없으면 이니시스 거래조회로 채움.
+
+    승인 시 pay_detail 을 적재하기 이전에 결제된 과거 주문을 위한 경로다.
+    한 번 성공하면 DB 에 캐시되므로 같은 주문을 다시 열어도 외부 호출이 없다."""
+    a = get_actor(request); need(a, 0)
+    d = pay_detail_lookup(oid, force=bool(force))
+    return {'ok': True, 'order_id': oid, 'detail': d, 'text': pay_detail_text(d),
+            'rows': sorted((d.get('raw') or {}).items()), 'origin': d.get('origin') or ''}
 
 @admin_router.post('/admin/api/orders/{oid}/mark-paid')
 def api_order_mark_paid(oid: str, request: Request):
@@ -3628,9 +3873,13 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  const midOld=o.pay_mid&&o.pay_mid_current&&o.pay_mid!==o.pay_mid_current;
  const vbPaid=o.can_refund&&String(o.pay_method||'').toLowerCase().indexOf('v')===0;
  const midStuck=o.can_refund&&!vbPaid&&o.pay_mid_known===false;
+ const pdHtml=o.pay_detail_text?(esc(o.pay_detail_text)+pdMore(o.pay_detail_rows,o.pay_detail&&o.pay_detail.origin)+pdBtn(o.order_id,'다시 조회'))
+  :(o.can_pay_lookup?'<span style="color:#999">이니시스 조회 중…</span>'
+   :'<span style="color:#999">카드 상세 없음 — 거래번호(TID)가 없는 주문입니다</span>');
  $('#mbox').innerHTML=`<h3>주문 ${esc(o.order_id)} <span class="st ${esc(o.status)}">${esc(o.status)}</span></h3>
  <div class="kv"><b>일시</b><span class="mono">${esc((o.created||'').slice(0,19).replace('T',' '))}</span>
  <b>금액</b><span class="mono">${won(o.amount)}${o.method?' · '+esc(o.method):(pmName?' · '+esc(pmName):'')}${o.pay_mid?' · MID '+esc(o.pay_mid)+(midOld?'<b style="color:#b5443c">(구)</b>':''):''}</span>
+ <b>결제수단</b><span id="mpaydet">${pdHtml}</span>
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
  <b>이메일</b><span>${o.buyer.email?`<a href="mailto:${esc(o.buyer.email)}" class="mono">${esc(o.buyer.email)}</a>`:'<span style="color:#999">미기재 (이메일 필수화 이전 주문)</span>'}</span>
  <b>회원 연결</b><span>${o.member_id?('연결됨 · '+esc(o.member_email||o.member_id)):(can(2)?`미연결(비회원) <button class="btn sm" onclick="linkMember('${esc(o.order_id)}')">회원 연결</button>`:'미연결(비회원)')}</span>
@@ -3666,7 +3915,20 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  ${vbPaid&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>가상계좌 입금완료 건</b> — 자동 환불이 지원되지 않습니다. 결제 상점아이디 <b class="mono">${esc(o.pay_mid||'?')}</b>${midOld?' <b>(구 MID — 현재 설정과 다름)</b>':''} 의 이니시스 상점관리자에서 고객 환불계좌로 직접 환불한 뒤 [수동환불 완료처리]를 누르세요. 재고 복원·적립 회수·감사로그가 함께 처리됩니다.${o.refund&&o.refund.acct?' 고객이 주문 시 입력한 환불계좌는 위 <b>[환불 계좌]</b> 행에 있습니다.':''}</div>`:''}
  ${midStuck&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>구 상점아이디 결제 건</b> — MID <b class="mono">${esc(o.pay_mid||'판별 불가')}</b> 로 결제되어 현재 설정으로는 자동 환불이 실패합니다. Render 환경변수 <b class="mono">INICIS_MID_OLD / INICIS_INIAPI_OLD</b> 에 해당 MID·key 를 추가하면 [결제취소(환불)]이 그대로 동작합니다. key 확보가 불가하면 이니시스에서 환불 후 [수동환불 완료처리]를 사용하세요.</div>`:''}
  ${o.can_refund&&can(2)&&!vbPaid&&!midStuck?'<div class="hint">결제취소 시 이니시스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
- $('#mbg').style.display='flex';}catch(e){toast(e.message)}}
+ $('#mbg').style.display='flex';
+ if(o.can_pay_lookup&&!o.pay_detail_text)payDetailLoad(o.order_id);}catch(e){toast(e.message)}}
+// ── 결제 상세(어떤 카드 · 어떤 페이) ──────────────────────────────────
+//   승인 시 저장된 값이 있으면 그대로 그리고, 없으면(구 주문) 상세를 열 때
+//   이니시스 거래조회를 1회 호출해 채운다. 성공하면 서버가 캐시하므로 재호출 없음.
+function pdBtn(oid,label){return ' <button class="btn sm ghost" onclick="payDetailLoad(\''+oid+'\',1)">'+label+'</button>'}
+function pdMore(rows,origin){if(!rows||!rows.length)return '';
+ return '<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--steel);font-size:11px">승인응답 원문 '+rows.length+'항목'+(origin==='INQUIRY'?' · 이니시스 거래조회':'')+'</summary>'
+  +'<table style="margin-top:6px">'+rows.map(function(kv){return '<tr><td style="width:190px">'+esc(kv[0])+'</td><td class="mono">'+esc(kv[1])+'</td></tr>'}).join('')+'</table></details>'}
+async function payDetailLoad(oid,force){const el=document.getElementById('mpaydet');if(!el)return;
+ el.innerHTML='<span style="color:#999">이니시스 조회 중…</span>';
+ try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/pay-detail'+(force?'?force=1':''),{method:'POST'});
+  el.innerHTML=(r.text?esc(r.text):'<span style="color:#999">카드 상세 없음</span>')+pdMore(r.rows,r.origin)+pdBtn(oid,'다시 조회');
+ }catch(e){el.innerHTML='<span style="color:#b5443c">조회 실패 — '+esc(e.message)+'</span>'+pdBtn(oid,'재시도')}}
 function closeM(){$('#mbg').style.display='none';$('#mbox').classList.remove('wide')}
 $('#mbg').addEventListener('click',e=>{if(e.target.id==='mbg')closeM()});
 async function saveFulfill(oid){try{const f=$('#mff').value;

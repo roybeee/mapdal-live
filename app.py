@@ -280,7 +280,8 @@ def _has_ga_cols() -> bool:
 # orders 확장 컬럼 단일 목록 — seed()·_migrate_columns()·자가치유가 전부 이것만 본다.
 _ORDER_EXTRA_COLS = ('customer_id', 'member_id', 'contact_phone_norm',
                      'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
-                     'ga_cid', 'ga_sid', 'ga_mp_sent', 'pay_log')
+                     'ga_cid', 'ga_sid', 'ga_mp_sent', 'pay_log',
+                     'client_ip', 'country', 'geo')      # 구매 국가(접속 국가) 2026-09-01 — admin_v2 가 기록
 
 def _add_order_col(col: str) -> bool:
     """컬럼 1개 = 트랜잭션 1개. 반드시 이 단위를 유지한다.
@@ -732,6 +733,14 @@ async def create_order(req: Request):
         import admin_v2
         for pid in changed_stock_ids:
             admin_v2.catalog_inventory_from_legacy(pid)
+    except Exception:
+        pass
+    # ── 구매 국가(접속 국가) 기록 (2026-09-01) ───────────────────────────────
+    #   요청 스레드에서는 헤더(CF-IPCountry · X-Forwarded-For)·체크아웃 기기 힌트(body.client)만
+    #   뽑고, DB 기록과 외부 GeoIP 조회는 admin_v2 가 백그라운드 스레드로 처리한다 —
+    #   결제창(클릭 제스처 내 동기 XHR) 응답 지연 0. 실패해도 주문·결제에 영향 없음.
+    try:
+        import admin_v2 as _av; _av.order_geo_capture(req, body, order_id)
     except Exception:
         pass
     name0 = resolved[0]['n'][:28]

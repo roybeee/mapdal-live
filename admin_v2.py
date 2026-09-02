@@ -302,6 +302,488 @@ def pay_detail_lookup(oid, force=False):
     _pay_detail_write(oid, d)
     return d
 
+# ── 구매 국가(접속 국가) ─────────────────────────────────────────────────
+#   '이 주문을 어느 나라에서 결제했는가'를 주문 단위로 기록·표시한다 (2026-09-01).
+#   글로벌 확장 지표(국가별 매출)·구매대행/VPN 식별·CS 응대(시차·언어)에 쓴다.
+#
+#   판정 소스와 우선순위 (orders.country = 대표값, orders.geo = 근거 JSON)
+#     hdr    엣지 프록시 국가 헤더 (CF-IPCountry 등) — 있으면 즉시 확정, 외부 호출 없음
+#     ip     접속 IP(CF-Connecting-IP → X-Forwarded-For 첫 IP) → GeoIP 조회
+#            ipwho.is → ipapi.co → ipinfo.io → api.country.is 순 폴백 (전부 무키·무료 구간)
+#            GEOIP_URL 환경변수('{ip}' 치환)로 유료 공급자를 최우선에 끼울 수 있다.
+#     form   해외배송 주문 폼의 국가(buyer.country) — 해외배송 오픈 대비
+#     tz     체크아웃 기기 시간대(Intl.timeZone → zone1970.tab) — VPN/구매대행과 무관한 기기 위치
+#     phone  전화 국가번호(+81 …)
+#     nation 응모 입력 '국적' 답변
+#     addr   국내 주소·연락처만 있는 과거 주문 → KR '추정' (표시 전용, 저장하지 않음)
+#
+#   지연 0 원칙: /api/orders 요청 스레드에서는 헤더·힌트만 뽑고(네트워크 없음),
+#   DB 기록·GeoIP 조회는 백그라운드 스레드가 한다. 결제창은 클릭 제스처 안의 동기
+#   XHR 응답 직후 열려야 하므로 외부 호출 1ms 도 요청 경로에 넣지 않는다.
+#   조회 실패분은 관리자가 주문 상세를 열 때 1회 자동 재시도(pay_detail 과 동일 패턴).
+import ipaddress
+
+_GEO_HDR_COUNTRY = ('cf-ipcountry', 'x-vercel-ip-country', 'cloudfront-viewer-country',
+                    'x-appengine-country', 'x-country-code', 'x-geo-country')
+_GEO_HDR_IP = ('cf-connecting-ip', 'true-client-ip', 'x-real-ip')
+_GEO_SRC_LABEL = {'hdr': '접속 국가(엣지 판정)', 'ip': 'IP 기준', 'form': '해외배송 주문 국가',
+                  'tz': '기기 시간대 기준', 'phone': '전화 국가번호 기준', 'nation': '응모 국적 답변',
+                  'addr': '국내 주소 기준'}
+_GEO_SURE = ('hdr', 'ip', 'form')                    # 확정으로 취급하는 출처
+_GEO_PROVIDERS = (
+    ('ipwho.is',   'https://ipwho.is/{ip}'),
+    ('ipapi.co',   'https://ipapi.co/{ip}/json/'),
+    ('ipinfo.io',  'https://ipinfo.io/{ip}/json'),
+    ('country.is', 'https://api.country.is/{ip}'),
+)
+_GEO_CACHE, _GEO_CACHE_MAX, _GEO_LOCK = {}, 3000, threading.Lock()
+_GEO_TZ_CC = {}
+
+COUNTRY_KO = {
+    'AD': '안도라', 'AE': '아랍에미리트', 'AF': '아프가니스탄', 'AG': '앤티가바부다', 'AI': '앵귈라', 'AL': '알바니아',
+    'AM': '아르메니아', 'AO': '앙골라', 'AQ': '남극', 'AR': '아르헨티나', 'AS': '아메리칸사모아', 'AT': '오스트리아',
+    'AU': '호주', 'AW': '아루바', 'AX': '올란드제도', 'AZ': '아제르바이잔', 'BA': '보스니아헤르체고비나', 'BB': '바베이도스',
+    'BD': '방글라데시', 'BE': '벨기에', 'BF': '부르키나파소', 'BG': '불가리아', 'BH': '바레인', 'BI': '부룬디', 'BJ': '베냉',
+    'BL': '생바르텔레미', 'BM': '버뮤다', 'BN': '브루나이', 'BO': '볼리비아', 'BQ': '카리브네덜란드', 'BR': '브라질',
+    'BS': '바하마', 'BT': '부탄', 'BV': '부베섬', 'BW': '보츠와나', 'BY': '벨라루스', 'BZ': '벨리즈', 'CA': '캐나다',
+    'CC': '코코스제도', 'CD': '콩고민주공화국', 'CF': '중앙아프리카공화국', 'CG': '콩고공화국', 'CH': '스위스',
+    'CI': '코트디부아르', 'CK': '쿡제도', 'CL': '칠레', 'CM': '카메룬', 'CN': '중국', 'CO': '콜롬비아', 'CR': '코스타리카',
+    'CU': '쿠바', 'CV': '카보베르데', 'CW': '퀴라소', 'CX': '크리스마스섬', 'CY': '키프로스', 'CZ': '체코', 'DE': '독일',
+    'DJ': '지부티', 'DK': '덴마크', 'DM': '도미니카연방', 'DO': '도미니카공화국', 'DZ': '알제리', 'EC': '에콰도르',
+    'EE': '에스토니아', 'EG': '이집트', 'EH': '서사하라', 'ER': '에리트레아', 'ES': '스페인', 'ET': '에티오피아',
+    'FI': '핀란드', 'FJ': '피지', 'FK': '포클랜드제도', 'FM': '미크로네시아', 'FO': '페로제도', 'FR': '프랑스', 'GA': '가봉',
+    'GB': '영국', 'GD': '그레나다', 'GE': '조지아', 'GF': '프랑스령기아나', 'GG': '건지', 'GH': '가나', 'GI': '지브롤터',
+    'GL': '그린란드', 'GM': '감비아', 'GN': '기니', 'GP': '과들루프', 'GQ': '적도기니', 'GR': '그리스', 'GS': '사우스조지아',
+    'GT': '과테말라', 'GU': '괌', 'GW': '기니비사우', 'GY': '가이아나', 'HK': '홍콩', 'HM': '허드맥도널드제도',
+    'HN': '온두라스', 'HR': '크로아티아', 'HT': '아이티', 'HU': '헝가리', 'ID': '인도네시아', 'IE': '아일랜드',
+    'IL': '이스라엘', 'IM': '맨섬', 'IN': '인도', 'IO': '영국령인도양지역', 'IQ': '이라크', 'IR': '이란', 'IS': '아이슬란드',
+    'IT': '이탈리아', 'JE': '저지', 'JM': '자메이카', 'JO': '요르단', 'JP': '일본', 'KE': '케냐', 'KG': '키르기스스탄',
+    'KH': '캄보디아', 'KI': '키리바시', 'KM': '코모로', 'KN': '세인트키츠네비스', 'KP': '북한', 'KR': '대한민국',
+    'KW': '쿠웨이트', 'KY': '케이맨제도', 'KZ': '카자흐스탄', 'LA': '라오스', 'LB': '레바논', 'LC': '세인트루시아',
+    'LI': '리히텐슈타인', 'LK': '스리랑카', 'LR': '라이베리아', 'LS': '레소토', 'LT': '리투아니아', 'LU': '룩셈부르크',
+    'LV': '라트비아', 'LY': '리비아', 'MA': '모로코', 'MC': '모나코', 'MD': '몰도바', 'ME': '몬테네그로', 'MF': '생마르탱',
+    'MG': '마다가스카르', 'MH': '마셜제도', 'MK': '북마케도니아', 'ML': '말리', 'MM': '미얀마', 'MN': '몽골', 'MO': '마카오',
+    'MP': '북마리아나제도', 'MQ': '마르티니크', 'MR': '모리타니', 'MS': '몬트세랫', 'MT': '몰타', 'MU': '모리셔스',
+    'MV': '몰디브', 'MW': '말라위', 'MX': '멕시코', 'MY': '말레이시아', 'MZ': '모잠비크', 'NA': '나미비아',
+    'NC': '뉴칼레도니아', 'NE': '니제르', 'NF': '노퍽섬', 'NG': '나이지리아', 'NI': '니카라과', 'NL': '네덜란드',
+    'NO': '노르웨이', 'NP': '네팔', 'NR': '나우루', 'NU': '니우에', 'NZ': '뉴질랜드', 'OM': '오만', 'PA': '파나마',
+    'PE': '페루', 'PF': '프랑스령폴리네시아', 'PG': '파푸아뉴기니', 'PH': '필리핀', 'PK': '파키스탄', 'PL': '폴란드',
+    'PM': '생피에르미클롱', 'PN': '핏케언제도', 'PR': '푸에르토리코', 'PS': '팔레스타인', 'PT': '포르투갈', 'PW': '팔라우',
+    'PY': '파라과이', 'QA': '카타르', 'RE': '레위니옹', 'RO': '루마니아', 'RS': '세르비아', 'RU': '러시아', 'RW': '르완다',
+    'SA': '사우디아라비아', 'SB': '솔로몬제도', 'SC': '세이셸', 'SD': '수단', 'SE': '스웨덴', 'SG': '싱가포르',
+    'SH': '세인트헬레나', 'SI': '슬로베니아', 'SJ': '스발바르얀마옌', 'SK': '슬로바키아', 'SL': '시에라리온',
+    'SM': '산마리노', 'SN': '세네갈', 'SO': '소말리아', 'SR': '수리남', 'SS': '남수단', 'ST': '상투메프린시페',
+    'SV': '엘살바도르', 'SX': '신트마르턴', 'SY': '시리아', 'SZ': '에스와티니', 'TC': '터크스케이커스제도', 'TD': '차드',
+    'TF': '프랑스령남방', 'TG': '토고', 'TH': '태국', 'TJ': '타지키스탄', 'TK': '토켈라우', 'TL': '동티모르',
+    'TM': '투르크메니스탄', 'TN': '튀니지', 'TO': '통가', 'TR': '튀르키예', 'TT': '트리니다드토바고', 'TV': '투발루',
+    'TW': '대만', 'TZ': '탄자니아', 'UA': '우크라이나', 'UG': '우간다', 'UM': '미국령군소제도', 'US': '미국',
+    'UY': '우루과이', 'UZ': '우즈베키스탄', 'VA': '바티칸', 'VC': '세인트빈센트그레나딘', 'VE': '베네수엘라',
+    'VG': '영국령버진아일랜드', 'VI': '미국령버진아일랜드', 'VN': '베트남', 'VU': '바누아투', 'WF': '왈리스푸투나',
+    'WS': '사모아', 'XK': '코소보', 'YE': '예멘', 'YT': '마요트', 'ZA': '남아프리카공화국', 'ZM': '잠비아', 'ZW': '짐바브웨',
+}
+# 전화 국가번호 → 국가 (3자리 우선 대조). '1' 은 북미번호계획(미국·캐나다 공용) — 미국으로 둔다.
+_PHONE_CC = {
+    '1': 'US', '7': 'RU', '20': 'EG', '27': 'ZA', '30': 'GR', '31': 'NL', '32': 'BE', '33': 'FR', '34': 'ES',
+    '36': 'HU', '39': 'IT', '40': 'RO', '41': 'CH', '43': 'AT', '44': 'GB', '45': 'DK', '46': 'SE', '47': 'NO',
+    '48': 'PL', '49': 'DE', '51': 'PE', '52': 'MX', '53': 'CU', '54': 'AR', '55': 'BR', '56': 'CL', '57': 'CO',
+    '58': 'VE', '60': 'MY', '61': 'AU', '62': 'ID', '63': 'PH', '64': 'NZ', '65': 'SG', '66': 'TH', '81': 'JP',
+    '82': 'KR', '84': 'VN', '86': 'CN', '90': 'TR', '91': 'IN', '92': 'PK', '93': 'AF', '94': 'LK', '95': 'MM',
+    '98': 'IR', '212': 'MA', '213': 'DZ', '216': 'TN', '218': 'LY', '234': 'NG', '254': 'KE', '255': 'TZ',
+    '256': 'UG', '351': 'PT', '352': 'LU', '353': 'IE', '354': 'IS', '355': 'AL', '356': 'MT', '357': 'CY',
+    '358': 'FI', '359': 'BG', '370': 'LT', '371': 'LV', '372': 'EE', '373': 'MD', '374': 'AM', '375': 'BY',
+    '376': 'AD', '377': 'MC', '380': 'UA', '381': 'RS', '385': 'HR', '386': 'SI', '387': 'BA', '389': 'MK',
+    '420': 'CZ', '421': 'SK', '423': 'LI', '501': 'BZ', '502': 'GT', '503': 'SV', '504': 'HN', '505': 'NI',
+    '506': 'CR', '507': 'PA', '591': 'BO', '593': 'EC', '595': 'PY', '598': 'UY', '673': 'BN', '675': 'PG',
+    '679': 'FJ', '852': 'HK', '853': 'MO', '855': 'KH', '856': 'LA', '880': 'BD', '886': 'TW', '960': 'MV',
+    '961': 'LB', '962': 'JO', '963': 'SY', '964': 'IQ', '965': 'KW', '966': 'SA', '967': 'YE', '968': 'OM',
+    '970': 'PS', '971': 'AE', '972': 'IL', '973': 'BH', '974': 'QA', '975': 'BT', '976': 'MN', '977': 'NP',
+    '992': 'TJ', '993': 'TM', '994': 'AZ', '995': 'GE', '996': 'KG', '998': 'UZ',
+}
+# 응모 '국적' 자유입력 → 국가코드 (소문자 부분일치 · 앞쪽이 우선)
+_NATION_CC = (
+    ('KP', ('북한', 'north korea')), ('KR', ('대한민국', '한국', 'korea', '韓国')), ('JP', ('일본', 'japan', '日本')),
+    ('TW', ('대만', 'taiwan', '台灣', '台湾')), ('HK', ('홍콩', 'hong kong', '香港')), ('MO', ('마카오', 'macau', 'macao')),
+    ('CN', ('중국', 'china', 'chinese', '中国', '中國')), ('US', ('미국', 'usa', 'united states', 'america')),
+    ('CA', ('캐나다', 'canada')), ('TH', ('태국', 'thailand', 'thai')), ('VN', ('베트남', 'vietnam', 'viet nam')),
+    ('ID', ('인도네시아', 'indonesia')), ('PH', ('필리핀', 'philippines', 'filipino')), ('MY', ('말레이시아', 'malaysia')),
+    ('SG', ('싱가포르', '싱가폴', 'singapore')), ('AU', ('호주', 'australia')), ('NZ', ('뉴질랜드', 'new zealand')),
+    ('GB', ('영국', 'united kingdom', 'britain', 'england', 'uk')), ('FR', ('프랑스', 'france')), ('DE', ('독일', 'germany')),
+    ('ES', ('스페인', 'spain')), ('IT', ('이탈리아', 'italy')), ('NL', ('네덜란드', 'netherlands')), ('PL', ('폴란드', 'poland')),
+    ('SE', ('스웨덴', 'sweden')), ('NO', ('노르웨이', 'norway')), ('DK', ('덴마크', 'denmark')), ('FI', ('핀란드', 'finland')),
+    ('CH', ('스위스', 'switzerland')), ('AT', ('오스트리아', 'austria')), ('BE', ('벨기에', 'belgium')), ('PT', ('포르투갈', 'portugal')),
+    ('IE', ('아일랜드', 'ireland')), ('CZ', ('체코', 'czech')), ('HU', ('헝가리', 'hungary')), ('RO', ('루마니아', 'romania')),
+    ('GR', ('그리스', 'greece')), ('UA', ('우크라이나', 'ukraine')), ('RU', ('러시아', 'russia')), ('TR', ('튀르키예', '터키', 'turkey', 'türkiye')),
+    ('BR', ('브라질', 'brazil', 'brasil')), ('MX', ('멕시코', 'mexico', 'méxico')), ('AR', ('아르헨티나', 'argentina')),
+    ('CL', ('칠레', 'chile')), ('PE', ('페루', 'peru')), ('CO', ('콜롬비아', 'colombia')), ('IN', ('인도', 'india')),
+    ('MN', ('몽골', 'mongolia')), ('KZ', ('카자흐스탄', 'kazakhstan')), ('UZ', ('우즈베키스탄', 'uzbekistan')),
+    ('KH', ('캄보디아', 'cambodia')), ('LA', ('라오스', 'laos')), ('MM', ('미얀마', 'myanmar')), ('NP', ('네팔', 'nepal')),
+    ('LK', ('스리랑카', 'sri lanka')), ('BD', ('방글라데시', 'bangladesh')), ('PK', ('파키스탄', 'pakistan')),
+    ('AE', ('아랍에미리트', 'uae', 'emirates', '두바이', 'dubai')), ('SA', ('사우디', 'saudi')), ('IL', ('이스라엘', 'israel')),
+    ('EG', ('이집트', 'egypt')), ('ZA', ('남아공', '남아프리카', 'south africa')),
+)
+
+def flag_emoji(cc):
+    """ISO2 → 국기 이모지 (지역 표시 기호 조합). 잘못된 코드는 ''."""
+    cc = str(cc or '').strip().upper()
+    if not re.fullmatch(r'[A-Z]{2}', cc): return ''
+    return ''.join(chr(0x1F1E6 + ord(ch) - 65) for ch in cc)
+
+def country_name_ko(cc):
+    return COUNTRY_KO.get(str(cc or '').strip().upper(), '')
+
+def _ip_ok(ip):
+    """공인 IP 만 통과 — 사설(10.x=Render 내부 프록시)·루프백·형식 오류는 ''."""
+    s = str(ip or '').strip().strip('[]')
+    if not s: return ''
+    if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}:\d+', s): s = s.rsplit(':', 1)[0]     # IPv4:port
+    try:
+        a = ipaddress.ip_address(s)
+    except ValueError:
+        return ''
+    if a.is_private or a.is_loopback or a.is_link_local or a.is_multicast or a.is_unspecified or a.is_reserved:
+        return ''
+    return str(a)
+
+def _ip_mask(ip):
+    s = str(ip or '')
+    if not s: return ''
+    if ':' in s: return ':'.join(s.split(':')[:3]) + ':…'
+    p = s.split('.')
+    return '.'.join(p[:3]) + '.x' if len(p) == 4 else s
+
+def client_ip_of(request):
+    """실제 접속 IP — Cloudflare 헤더 → X-Forwarded-For 첫 공인 IP → 소켓 주소.
+    Render 는 X-Forwarded-For 첫 IP 를 실제 클라이언트로 설정한다(request.client.host 는 10.x 프록시)."""
+    try:
+        h = request.headers
+        for k in _GEO_HDR_IP:
+            v = _ip_ok(h.get(k))
+            if v: return v
+        for part in str(h.get('x-forwarded-for') or '').split(','):
+            v = _ip_ok(part)
+            if v: return v
+        return _ip_ok(request.client.host if request.client else '')
+    except Exception:
+        return ''
+
+def _req_ip(request):
+    """감사 기록·레이트리밋 키용 접속 IP — 실제 클라이언트 IP(프록시 헤더) 우선, 없으면 소켓 주소(로컬), 그래도 없으면 '-'.
+
+    종전 request.client.host 는 Render 내부 프록시(10.x)라 모든 이용자가 같은 값이었다 —
+    로그인·인증번호·비밀번호 재설정 제한 버킷을 전 이용자가 공유했고, 회원 '로그인 기기' 화면의
+    IP 도 전부 10.x 였다(2026-09-01 운영 DB 실측 73/73건). 이 헬퍼로 일원화한다."""
+    try:
+        return (client_ip_of(request) or (request.client.host if request and request.client else '') or '-')[:80]
+    except Exception:
+        return '-'
+
+def _geo_hdr_country(request):
+    """엣지 프록시가 판정한 국가 — Cloudflare 경유가 확인될 때(cf-ray/cf-connecting-ip 동반)만 신뢰한다.
+    임의 클라이언트가 붙인 헤더로 국가를 위조하지 못하게 하는 최소 방어(Cloudflare 는 CF-* 를 덮어쓴다)."""
+    try:
+        h = request.headers
+        via_cf = bool(h.get('cf-ray') or h.get('cf-connecting-ip'))
+        for k in _GEO_HDR_COUNTRY:
+            if k == 'cf-ipcountry' and not via_cf: continue
+            if k != 'cf-ipcountry' and not _genv('GEOIP_TRUST_HEADERS'): continue   # 타 플랫폼 헤더는 명시 옵트인
+            v = str(h.get(k) or '').strip().upper()
+            if re.fullmatch(r'[A-Z]{2}', v) and v not in ('XX', 'T1'):   # XX=미상, T1=Tor
+                return v
+    except Exception:
+        pass
+    return ''
+
+def _tz_country(tz):
+    """IANA 시간대 → 국가코드. zone1970.tab/zone.tab(시스템 tzdata) + 구 별칭 폴백."""
+    tz = str(tz or '').strip()
+    if not tz or '/' not in tz: return ''
+    if not _GEO_TZ_CC:
+        m = {'Asia/Seoul': 'KR', 'Asia/Tokyo': 'JP', 'Asia/Shanghai': 'CN', 'Asia/Chongqing': 'CN', 'Asia/Harbin': 'CN',
+             'Asia/Taipei': 'TW', 'Asia/Hong_Kong': 'HK', 'Asia/Macau': 'MO', 'Asia/Macao': 'MO', 'Asia/Bangkok': 'TH',
+             'Asia/Jakarta': 'ID', 'Asia/Makassar': 'ID', 'Asia/Manila': 'PH', 'Asia/Singapore': 'SG',
+             'Asia/Kuala_Lumpur': 'MY', 'Asia/Ho_Chi_Minh': 'VN', 'Asia/Saigon': 'VN', 'Asia/Calcutta': 'IN',
+             'Asia/Kolkata': 'IN', 'Asia/Katmandu': 'NP', 'Asia/Kathmandu': 'NP', 'Asia/Rangoon': 'MM', 'Asia/Yangon': 'MM',
+             'Asia/Ulan_Bator': 'MN', 'Asia/Ulaanbaatar': 'MN', 'Asia/Dubai': 'AE', 'Asia/Riyadh': 'SA', 'Asia/Almaty': 'KZ',
+             'Asia/Tashkent': 'UZ', 'Asia/Phnom_Penh': 'KH', 'Asia/Vientiane': 'LA', 'Asia/Dhaka': 'BD', 'Asia/Karachi': 'PK',
+             'Asia/Colombo': 'LK', 'Asia/Jerusalem': 'IL', 'Asia/Tel_Aviv': 'IL', 'Europe/Istanbul': 'TR', 'Asia/Istanbul': 'TR',
+             'Australia/Sydney': 'AU', 'Australia/Melbourne': 'AU', 'Australia/Brisbane': 'AU', 'Australia/Perth': 'AU',
+             'Pacific/Auckland': 'NZ', 'Europe/London': 'GB', 'Europe/Paris': 'FR', 'Europe/Berlin': 'DE', 'Europe/Madrid': 'ES',
+             'Europe/Rome': 'IT', 'Europe/Amsterdam': 'NL', 'Europe/Warsaw': 'PL', 'Europe/Stockholm': 'SE', 'Europe/Oslo': 'NO',
+             'Europe/Copenhagen': 'DK', 'Europe/Helsinki': 'FI', 'Europe/Zurich': 'CH', 'Europe/Vienna': 'AT', 'Europe/Brussels': 'BE',
+             'Europe/Lisbon': 'PT', 'Europe/Dublin': 'IE', 'Europe/Prague': 'CZ', 'Europe/Budapest': 'HU', 'Europe/Bucharest': 'RO',
+             'Europe/Athens': 'GR', 'Europe/Kiev': 'UA', 'Europe/Kyiv': 'UA', 'Europe/Moscow': 'RU', 'Asia/Vladivostok': 'RU',
+             'America/New_York': 'US', 'America/Chicago': 'US', 'America/Denver': 'US', 'America/Phoenix': 'US',
+             'America/Los_Angeles': 'US', 'America/Anchorage': 'US', 'Pacific/Honolulu': 'US', 'America/Detroit': 'US',
+             'America/Toronto': 'CA', 'America/Vancouver': 'CA', 'America/Edmonton': 'CA', 'America/Montreal': 'CA',
+             'America/Mexico_City': 'MX', 'America/Sao_Paulo': 'BR', 'America/Buenos_Aires': 'AR', 'America/Argentina/Buenos_Aires': 'AR',
+             'America/Santiago': 'CL', 'America/Lima': 'PE', 'America/Bogota': 'CO', 'Africa/Cairo': 'EG', 'Africa/Johannesburg': 'ZA'}
+        for fn in ('/usr/share/zoneinfo/zone1970.tab', '/usr/share/zoneinfo/zone.tab'):
+            try:
+                with open(fn, encoding='utf-8') as f:
+                    for line in f:
+                        if line.startswith('#'): continue
+                        parts = line.rstrip('\n').split('\t')
+                        if len(parts) >= 3 and parts[2]:
+                            m.setdefault(parts[2].strip(), parts[0].split(',')[0].strip().upper())
+            except Exception:
+                pass
+        _GEO_TZ_CC.update(m)
+    return _GEO_TZ_CC.get(tz, '')
+
+def _phone_country(phone):
+    """전화번호 → 국가코드 힌트. 국내 형식(01x/02~06x)은 KR, +국가번호는 대조표, 그 외 ''."""
+    s = str(phone or '').strip()
+    d = re.sub(r'\D', '', s)
+    if not d: return ''
+    if s.startswith('+') or (d.startswith('00') and len(d) > 10):
+        d = d[2:] if (d.startswith('00') and not s.startswith('+')) else d
+        for n in (3, 2, 1):
+            cc = _PHONE_CC.get(d[:n])
+            if cc: return cc
+        return ''
+    if re.fullmatch(r'01[016789]\d{7,8}', d) or re.fullmatch(r'0[2-6]\d{7,9}', d) or re.fullmatch(r'070\d{7,8}', d):
+        return 'KR'
+    if d.startswith('82') and 11 <= len(d) <= 13: return 'KR'         # 821012345678
+    return ''
+
+def _nation_hint(b):
+    """buyer.selections 의 '국적' 답변 → (원문, 국가코드)."""
+    try:
+        for s in (b or {}).get('selections') or []:
+            if not isinstance(s, dict): continue
+            q = str(s.get('q') or '')
+            if not re.search(r'국적|nation', q, re.I): continue
+            a = re.sub(r'\s+', ' ', str(s.get('a') or '')).strip()[:40]
+            if not a: continue
+            al = a.lower()
+            for cc, keys in _NATION_CC:
+                if any(k in al for k in keys): return a, cc
+            return a, ''
+    except Exception:
+        pass
+    return '', ''
+
+def _order_cc_infer(b):
+    """국가 기록이 없는 과거 주문의 표시용 추정 → (cc, src). 저장하지 않는다."""
+    b = b or {}
+    fc = str(b.get('country') or '').strip().upper()
+    if re.fullmatch(r'[A-Z]{2}', fc): return fc, 'form'
+    pc = _phone_country(b.get('phone'))
+    if pc and pc != 'KR': return pc, 'phone'               # 국제 국가번호(+81 …)만 강한 신호
+    _t, nc = _nation_hint(b)
+    if nc and nc != 'KR': return nc, 'nation'
+    if nc == 'KR': return 'KR', 'nation'                    # 응모 국적 '한국' — 명시 답변
+    # 국내 휴대폰(010)·우편번호·한글 주소는 전부 '국내 주소 기준' 등급 (국내 거주 외국인도 같은 형식)
+    if pc == 'KR' or re.fullmatch(r'\d{5}', str(b.get('zip') or '').strip()) or re.search(r'[가-힣]', str(b.get('addr1') or '')):
+        return 'KR', 'addr'
+    return '', ''
+
+def _geo_http(url, timeout):
+    req = urllib.request.Request(url, headers={'User-Agent': 'mapdal-seoul/1.0 (+https://mapdal.kr)',
+                                               'Accept': 'application/json'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read(65536).decode('utf-8', 'replace'))
+
+def _geo_parse(name, j):
+    """공급자별 응답 → 공통 dict {cc, name_en, city, region, tz, org, provider}."""
+    if not isinstance(j, dict): return {}
+    g = lambda *ks: next((j.get(k) for k in ks if j.get(k) not in (None, '')), '')
+    if name == 'ipwho.is':
+        if j.get('success') is False: return {}
+        tzv = j.get('timezone'); tz = tzv.get('id') if isinstance(tzv, dict) else tzv
+        con = j.get('connection') if isinstance(j.get('connection'), dict) else {}
+        cc, nm, city, region, org = j.get('country_code'), j.get('country'), j.get('city'), j.get('region'), (con.get('org') or con.get('isp'))
+    elif name == 'ipapi.co':
+        if j.get('error'): return {}
+        cc, nm, city, region, tz, org = g('country_code', 'country'), j.get('country_name'), j.get('city'), j.get('region'), j.get('timezone'), j.get('org')
+    elif name == 'ipinfo.io':
+        if j.get('bogon'): return {}
+        cc, nm, city, region, tz, org = j.get('country'), '', j.get('city'), j.get('region'), j.get('timezone'), j.get('org')
+    else:                                                     # api.country.is · GEOIP_URL 범용
+        cc = g('country_code', 'countryCode', 'country_iso', 'iso_code', 'country')
+        nm, city, region = g('country_name', 'countryName'), g('city', 'cityName'), g('region', 'regionName', 'region_name')
+        tz, org = g('timezone', 'time_zone'), g('org', 'isp', 'as')
+        if isinstance(tz, dict): tz = tz.get('id') or tz.get('name') or ''
+    cc = str(cc or '').strip().upper()
+    if not re.fullmatch(r'[A-Z]{2}', cc): return {}
+    return {'cc': cc, 'name_en': str(nm or '')[:60], 'city': str(city or '')[:60], 'region': str(region or '')[:60],
+            'tz': str(tz or '')[:40], 'org': str(org or '')[:80], 'provider': name}
+
+def geo_lookup_ip(ip, timeout=2.5):
+    """IP → 국가·도시 (공급자 폴백 체인, 프로세스 캐시 7일). 실패 시 {} — 예외를 밖으로 내지 않는다."""
+    ip = _ip_ok(ip)
+    if not ip: return {}
+    now = time.time()
+    with _GEO_LOCK:
+        hit = _GEO_CACHE.get(ip)
+        if hit and now - hit[1] < 7 * 86400: return dict(hit[0])
+    provs = list(_GEO_PROVIDERS)
+    custom = _genv('GEOIP_URL')
+    if custom and '{ip}' in custom: provs.insert(0, ('custom', custom))
+    out = {}
+    for name, tpl in provs:
+        try:
+            out = _geo_parse(name, _geo_http(tpl.replace('{ip}', urllib.parse.quote(ip)), timeout))
+        except Exception:
+            out = {}
+        if out: break
+    if out:
+        with _GEO_LOCK:
+            if len(_GEO_CACHE) >= _GEO_CACHE_MAX: _GEO_CACHE.clear()
+            _GEO_CACHE[ip] = (dict(out), now)
+    return out
+
+def _geo_cols_ok():
+    need = ('client_ip', 'country', 'geo')
+    if all(c in _state['ocols'] for c in need): return True
+    try:
+        oc = _cols('orders')
+        if oc: _state['ocols'] = oc
+    except Exception:
+        pass
+    return all(c in _state['ocols'] for c in need)
+
+def order_geo_hints(request, body):
+    """요청 헤더·체크아웃 힌트 → 근거 dict. 네트워크 호출 없음 — 요청 스레드에서 호출해도 지연 0."""
+    h = {}
+    try:
+        ip = client_ip_of(request)
+        if ip: h['ip'] = ip
+        hc = _geo_hdr_country(request)
+        if hc: h['hdr_cc'] = hc
+        al = str(request.headers.get('accept-language') or '').strip()[:60]
+        if al: h['accept_lang'] = al
+    except Exception:
+        pass
+    try:
+        cl = body.get('client') if isinstance(body, dict) else None
+        if isinstance(cl, dict):
+            tz = str(cl.get('tz') or '').strip()[:40]
+            if re.fullmatch(r'[A-Za-z][A-Za-z0-9_+\-]*(/[A-Za-z0-9_+\-]+){1,2}', tz): h['tz'] = tz
+            lang = str(cl.get('lang') or '').strip()[:20]
+            if re.fullmatch(r'[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*', lang): h['lang'] = lang
+            langs = cl.get('langs')
+            if isinstance(langs, list):
+                ls = [str(x)[:12] for x in langs[:5] if isinstance(x, str) and re.fullmatch(r'[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*', str(x))]
+                if ls: h['langs'] = ls
+        b = body.get('buyer') if isinstance(body, dict) else None
+        if isinstance(b, dict):
+            pc = _phone_country(b.get('phone'))
+            if pc: h['phone_cc'] = pc
+            nt, nc = _nation_hint(b)
+            if nt: h['nation'] = nt
+            if nc: h['nation_cc'] = nc
+            fc = str(b.get('country') or '').strip().upper()
+            if re.fullmatch(r'[A-Z]{2}', fc): h['form_cc'] = fc
+    except Exception:
+        pass
+    return h
+
+def _geo_decide(h):
+    """근거 dict → (대표 국가코드, 출처). 우선순위: hdr > ip > form > tz > phone > nation."""
+    look = h.get('look') if isinstance(h.get('look'), dict) else {}
+    for cc, src in ((h.get('hdr_cc'), 'hdr'), (look.get('cc'), 'ip'), (h.get('form_cc'), 'form'),
+                    (_tz_country(h.get('tz')), 'tz'), (h.get('phone_cc'), 'phone'), (h.get('nation_cc'), 'nation')):
+        if cc: return str(cc).upper(), src
+    return '', ''
+
+def _geo_write(oid, h):
+    """orders.client_ip / country / geo 기록. 컬럼이 없으면 조용히 건너뛴다(구형 DB)."""
+    if not _geo_cols_ok(): return False
+    cc, src = _geo_decide(h)
+    h = dict(h); h['cc'] = cc; h['src'] = src; h['at'] = now_iso()
+    try:
+        run('UPDATE orders SET client_ip=?, country=?, geo=? WHERE order_id=?',
+            ((h.get('ip') or '')[:60], cc or None, json.dumps(h, ensure_ascii=False)[:2500], oid))
+        return True
+    except Exception:
+        return False
+
+def _geo_apply(oid, h, lookup=True, timeout=2.5):
+    """근거 기록 → (헤더 확정이 없을 때) IP 조회 → 최종 기록. 백그라운드·관리자 조회 공통."""
+    if not _geo_cols_ok(): return h
+    if lookup and h.get('ip') and not h.get('hdr_cc'):
+        _geo_write(oid, h)                                   # 조회 전 힌트 선기록 (조회 실패 대비)
+        look = geo_lookup_ip(h['ip'], timeout=timeout)
+        if look: h['look'] = look
+    _geo_write(oid, h)
+    return h
+
+def order_geo_capture(request, body, oid):
+    """app.py /api/orders 에서 호출 — 요청 스레드에서 힌트만 뽑고, DB 기록·외부 조회는 백그라운드.
+    돈이 움직이는 경로에서 불리므로 어떤 예외도 밖으로 내보내지 않는다."""
+    try:
+        h = order_geo_hints(request, body)
+    except Exception:
+        return
+    def _bg():
+        try:
+            ensure_ready()
+            _geo_apply(oid, h, lookup=True)
+        except Exception:
+            pass
+    try:
+        threading.Thread(target=_bg, name='geo-' + str(oid)[:24], daemon=True).start()
+    except Exception:
+        pass
+
+def geo_view(r, level=0):
+    """orders 행 → 화면용 dict. 기록이 없는 과거 주문은 buyer 로 추정(저장 안 함).
+    level(관리자 등급) 2 미만은 접속 IP 마지막 옥텟을 가린다."""
+    g = jload(r.get('geo'), {}) or {}
+    b = jload(r.get('buyer'), {}) or {}
+    look = g.get('look') if isinstance(g.get('look'), dict) else {}
+    cc = str(r.get('country') or g.get('cc') or '').strip().upper()
+    src = str(g.get('src') or '') if cc else ''
+    if not cc:
+        cc, src = _order_cc_infer(b)
+    ip = str(r.get('client_ip') or g.get('ip') or '')
+    tz = str(g.get('tz') or ''); tz_cc = _tz_country(tz)
+    phone_cc = str(g.get('phone_cc') or _phone_country(b.get('phone')) or '')
+    nation = str(g.get('nation') or _nation_hint(b)[0] or '')
+    name = country_name_ko(cc) or look.get('name_en') or cc
+    inferred = bool(cc) and src not in _GEO_SURE
+    return {'cc': cc, 'name': name, 'flag': flag_emoji(cc), 'src': src,
+            'src_label': _GEO_SRC_LABEL.get(src, src), 'inferred': inferred,
+            'city': look.get('city') or '', 'region': look.get('region') or '', 'org': look.get('org') or '',
+            'provider': look.get('provider') or '', 'has_ip': bool(ip),
+            'ip': ip if level >= 2 else _ip_mask(ip),
+            'tz': tz, 'tz_name': country_name_ko(tz_cc), 'lang': str(g.get('lang') or g.get('accept_lang') or '')[:24],
+            'phone_cc': phone_cc, 'phone_name': country_name_ko(phone_cc), 'nation': nation,
+            'mismatch': bool(tz_cc and cc and tz_cc != cc and src in _GEO_SURE),
+            'at': str(g.get('at') or '')[:19].replace('T', ' '),
+            'ip_purged': str(g.get('ip_purged') or '')[:19].replace('T', ' '),
+            'can_lookup': bool(_ip_ok(ip)),
+            'auto_lookup': bool(_ip_ok(ip)) and not look and src != 'hdr',
+            'text': country_text(cc, src)}
+
+def country_text(cc, src=''):
+    """CSV·목록용 한 줄: '일본 (JP)' / '대한민국 (KR, 추정)'."""
+    cc = str(cc or '').upper()
+    if not cc: return ''
+    nm = country_name_ko(cc) or cc
+    return '%s (%s%s)' % (nm, cc, '' if (not src or src in _GEO_SURE) else ', 추정')
+
+def order_geo_resolve(oid, force=False, level=0):
+    """관리자 요청 — 저장분이 확정이면 그대로, 아니면 접속 IP 로 GeoIP 조회해 채운다."""
+    r = one('SELECT order_id, buyer, client_ip, country, geo FROM orders WHERE order_id=?', (oid,)) \
+        if _geo_cols_ok() else one('SELECT order_id, buyer FROM orders WHERE order_id=?', (oid,))
+    if not r:
+        raise HTTPException(404, '주문을 찾을 수 없습니다')
+    g = jload(r.get('geo'), {}) or {}
+    ip = _ip_ok(r.get('client_ip') or g.get('ip') or '')
+    if not ip:
+        raise HTTPException(400, '접속 IP 기록이 없어 조회할 수 없습니다 (국가 기록 기능 배포 이전 주문 — 주소·연락처 기준 추정만 표시)')
+    if not force and isinstance(g.get('look'), dict) and g['look'].get('cc'):
+        return geo_view(r, level)
+    look = geo_lookup_ip(ip, timeout=6)
+    if not look:
+        raise HTTPException(400, 'IP 국가 조회 실패 — GeoIP 공급자 응답 없음. 잠시 후 다시 시도하세요.')
+    g['ip'] = ip; g['look'] = look
+    _geo_write(oid, g)
+    r = one('SELECT order_id, buyer, client_ip, country, geo FROM orders WHERE order_id=?', (oid,)) or r
+    return geo_view(r, level)
+
 def _genv(k):
     return (os.environ.get(k) or '').strip()
 
@@ -647,7 +1129,8 @@ def ensure_ready():
     oc = _cols('orders')
     if oc:
         for col, typ in (('fulfill', "TEXT DEFAULT 'NEW'"), ('tracking', 'TEXT'), ('admin_memo', 'TEXT'),
-                         ('pay_log', 'TEXT'), ('courier', 'TEXT'), ('pay_detail', 'TEXT')):
+                         ('pay_log', 'TEXT'), ('courier', 'TEXT'), ('pay_detail', 'TEXT'),
+                         ('client_ip', 'TEXT'), ('country', 'TEXT'), ('geo', 'TEXT')):
             if col not in oc:
                 try: run("ALTER TABLE orders ADD COLUMN %s %s" % (col, typ))
                 except Exception: pass
@@ -924,6 +1407,8 @@ def ensure_ready():
     except Exception as e: print('account migration skipped:', e)
     try: vbank_sweep_start()  # 가상계좌 입금기한 만료 자동정리 스레드 (프로세스당 1회)
     except Exception as e: print('vbank sweep start skipped:', e)
+    try: geo_retention_start()  # 주문 접속 IP 보유기간(90일) 파기 스레드 (프로세스당 1회)
+    except Exception as e: print('geo retention start skipped:', e)
 
 # ── 인증 + 역할 ─────────────────────────────────────────────────────────
 RANK = {'VIEWER': 0, 'STAFF': 1, 'MANAGER': 2, 'OWNER': 3}
@@ -998,7 +1483,7 @@ def esc_csv(v):
 def api_login(request: Request, body: dict = Body(...)):
     try: ensure_ready()
     except Exception: pass
-    ip = (request.client.host if request.client else '') or '-'
+    ip = _req_ip(request)
     tok = (body.get('token') or '').strip()
     if tok:  # 마스터 토큰 비상 로그인
         key = 'tk:' + ip; guard(key)
@@ -1137,6 +1622,18 @@ def api_summary(request: Request):
             'low_stock': [{'id': r['id'], 'name': r.get('name') or r['id'], 'stock': num(r.get('stock')), 'soldout': num(r.get('soldout'))} for r in low],
             'latest': latest, 'pending_cs': cs}
 
+def _country_where(p):
+    """주문 목록·CSV 공통 국가 필터 — KR=국내, INTL=해외(KR 외 확정분), NONE=기록 없음, 그 외 ISO2 코드.
+    country 컬럼이 없는 구형 DB 에서는 필터를 무시한다."""
+    if 'country' not in _state['ocols']: return '', []
+    v = str(p.get('country') or '').strip().upper()
+    if not v: return '', []
+    if v == 'KR': return "COALESCE(country,'')='KR'", []
+    if v == 'INTL': return "COALESCE(country,'') NOT IN ('','KR')", []
+    if v == 'NONE': return "COALESCE(country,'')=''", []
+    if re.fullmatch(r'[A-Z]{2}', v): return 'country = ?', [v]
+    return '', []
+
 @admin_router.get('/admin/api/orders')
 def api_orders(request: Request):
     a = get_actor(request); need(a, 0)
@@ -1147,6 +1644,8 @@ def api_orders(request: Request):
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
     if p.get('fulfill') and 'fulfill' in _state['ocols']:
         where.append("COALESCE(fulfill,'NEW') = ?"); args.append(p['fulfill'])
+    _cw, _ca = _country_where(p)
+    if _cw: where.append(_cw); args += _ca
     if p.get('from'): where.append('created >= ?'); args.append(p['from'])
     if p.get('to'):
         _hi = _day_after(p['to'])          # 상한: '<= 종료일~'(콜레이션 의존) → '< 익일'
@@ -1155,13 +1654,16 @@ def api_orders(request: Request):
     page = max(1, int(p.get('page', 1) or 1)); size = 20
     total = num((one('SELECT COUNT(*) AS c FROM orders' + w, tuple(args)) or {}).get('c'))
     sel = ['order_id', 'created', 'status', 'amount', 'items', 'buyer', 'ship_method']
-    sel += [c for c in ('fulfill', 'tracking', 'courier', 'receipt_url') if c in _state['ocols']]
+    sel += [c for c in ('fulfill', 'tracking', 'courier', 'receipt_url', 'country', 'geo') if c in _state['ocols']]
     rs = rows('SELECT %s FROM orders%s ORDER BY created DESC LIMIT %d OFFSET %d' % (', '.join(sel), w, size, (page - 1) * size), tuple(args))
     out = []
     for r in rs:
         b = jload(r.get('buyer'), {}); its = jload(r.get('items'), [])
         first = (its[0].get('n') or its[0].get('name') or its[0].get('id') or '') if its else ''
+        gv = geo_view(r)                                  # 구매 국가 (기록 없으면 주소·연락처 추정)
         out.append({'order_id': r['order_id'], 'created': (r.get('created') or '')[:16].replace('T', ' '),
+                    'cc': gv['cc'], 'flag': gv['flag'], 'country_name': gv['name'],
+                    'geo_src': gv['src'], 'inferred': gv['inferred'],
                     'status': r.get('status'), 'fulfill': r.get('fulfill') or 'NEW', 'amount': num(r.get('amount')),
                     'items_label': first[:24] + (' 외 %d' % (len(its) - 1) if len(its) > 1 else ''),
                     'buyer_name': b.get('name', ''), 'phone': b.get('phone', ''),
@@ -1245,6 +1747,8 @@ def api_order_detail(oid: str, request: Request):
             'can_pay_lookup': bool(_ptid and _inicis_cred_for_tid(_ptid)),
             'paid_at': (r.get('paid_at') or '')[:19].replace('T', ' '),
             'pay_log': plog, 'pending_reason': preason,
+            # 구매 국가(접속 국가) — 저장분 또는 과거 주문 추정. 미조회분은 화면이 열릴 때 1회 조회(auto_lookup).
+            'geo': geo_view(r, RANK.get(a.get('role'), 0)),
             'member_id': r.get('member_id') or '',
             'member_email': (((one('SELECT email FROM members WHERE id=?', (r.get('member_id'),)) or {}).get('email')) or '') if r.get('member_id') else '',
             'vbank': {'num': r.get('vbank_num') or '', 'bank': r.get('vbank_name') or '',
@@ -1269,6 +1773,15 @@ def api_order_pay_detail(oid: str, request: Request, force: int = 0):
     d = pay_detail_lookup(oid, force=bool(force))
     return {'ok': True, 'order_id': oid, 'detail': d, 'text': pay_detail_text(d),
             'rows': sorted((d.get('raw') or {}).items()), 'origin': d.get('origin') or ''}
+
+@admin_router.post('/admin/api/orders/{oid}/geo')
+def api_order_geo(oid: str, request: Request, force: int = 0):
+    """구매 국가(접속 국가) 조회 — 저장분 우선, 미조회·force 면 접속 IP 로 GeoIP 조회 후 DB 캐시.
+
+    주문 생성 직후의 백그라운드 조회가 실패한 건과, 도시 정보를 새로 받고 싶을 때 쓴다."""
+    a = get_actor(request); need(a, 0)
+    return {'ok': True, 'order_id': oid,
+            'geo': order_geo_resolve(oid, force=bool(force), level=RANK.get(a.get('role'), 0))}
 
 @admin_router.post('/admin/api/orders/{oid}/mark-paid')
 def api_order_mark_paid(oid: str, request: Request):
@@ -1814,6 +2327,44 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
                  out['restored']), flush=True)
     return out
 
+# ── 주문 접속 IP 보유기간 파기 ───────────────────────────────────────────
+#   개인정보처리방침 제2조 '접속 기록 3개월'에 맞춰 orders.client_ip 와 geo.ip 를 기간 경과 후 지운다.
+#   국가·도시·시간대·언어(개인 식별 불가 수준)는 국가별 통계용으로 남긴다.
+#   GEO_IP_RETENTION_DAYS 환경변수로 조정(7~3650, 기본 90). 6시간마다 최대 500건씩.
+_geo_scrub = {'last': 0.0, 'on': False}
+
+def geo_ip_retention_sweep(limit=500, force=False):
+    now = time.time()
+    if not force and now - _geo_scrub['last'] < 6 * 3600: return 0
+    _geo_scrub['last'] = now
+    if not _geo_cols_ok(): return 0
+    days = _env_int_av('GEO_IP_RETENTION_DAYS', 90, 7, 3650)
+    cutoff = (kst_naive() - datetime.timedelta(days=days)).isoformat(timespec='seconds')
+    rs = rows("SELECT order_id, geo FROM orders WHERE COALESCE(client_ip,'')<>'' AND created < ? ORDER BY created ASC LIMIT %d" % int(limit), (cutoff,))
+    n = 0
+    for r in rs:
+        g = jload(r.get('geo'), {}) or {}
+        g['ip'] = ''; g['ip_purged'] = now_iso()
+        try:
+            run('UPDATE orders SET client_ip=NULL, geo=? WHERE order_id=?', (json.dumps(g, ensure_ascii=False)[:2500], r['order_id']))
+            n += 1
+        except Exception:
+            pass
+    if n: print('[geo] 접속 IP 보유기간(%d일) 경과 파기 %d건' % (days, n), flush=True)
+    return n
+
+def geo_retention_start():
+    """접속 IP 파기 스레드 1회 기동 (프로세스당 단일 · 멱등) — 가상계좌 스윕과 독립."""
+    if _geo_scrub['on']: return
+    _geo_scrub['on'] = True
+    def _loop():
+        time.sleep(300)                      # 부팅·마이그레이션이 끝난 뒤 시작
+        while True:
+            try: geo_ip_retention_sweep()
+            except Exception as e: print('[geo] IP 파기 스윕 실패:', e, flush=True)
+            time.sleep(6 * 3600)
+    threading.Thread(target=_loop, daemon=True, name='geo-ip-retention').start()
+
 _sweep_started = {'on': False}
 
 def vbank_sweep_start():
@@ -2356,12 +2907,16 @@ def api_orders_csv(request: Request):
         _hi = _day_after(p['to'])          # 상한: '<= 종료일~'(콜레이션 의존) → '< 익일'
         if _hi: where.append('created < ?'); args.append(_hi)
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
+    _cw, _ca = _country_where(p)
+    if _cw: where.append(_cw); args += _ca
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
-    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '이메일', '우편번호', '주소', '품목', '총수량', '배송방식', '택배사', '송장번호', '관리자메모', '영수증URL', '응모정보']
+    head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '이메일', '우편번호', '주소', '품목', '총수량', '배송방식', '택배사', '송장번호', '관리자메모', '영수증URL', '응모정보',
+            '구매국가', '국가코드', '국가판정']            # 2026-09-01 — 뒤에 붙여 기존 열 위치를 유지
     lines = [','.join(head)]
     for r in rs:
         b = jload(r.get('buyer'), {}); its = jload(r.get('items'), [])
+        _gv = geo_view(r)
         names = ' / '.join('%s x%d' % ((it.get('n') or it.get('name') or it.get('id') or ''), num(it.get('q') or 1)) for it in its)
         lines.append(','.join(esc_csv(v) for v in [
             r.get('order_id'), (r.get('created') or '')[:19].replace('T', ' '), r.get('status'), r.get('fulfill') or 'NEW',
@@ -2371,7 +2926,8 @@ def api_orders_csv(request: Request):
             sum(num(it.get('q') or 1) for it in its), r.get('ship_method', ''),
             courier_name(r.get('courier') or '') if (r.get('courier') or '') else '', r.get('tracking') or '',
             r.get('admin_memo') or '', r.get('receipt_url') or '',
-            _sel_text(b.get('selections'))]))
+            _sel_text(b.get('selections')),
+            _gv['text'], _gv['cc'], _gv['src_label']]))
     audit(a, 'CSV다운로드', 'orders', '%d건' % len(rs))
     return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
                     headers={'Content-Disposition': 'attachment; filename="mapdal_orders_%s.csv"' % kst_today().strftime('%Y%m%d')})
@@ -2466,6 +3022,8 @@ def api_orders_options_csv(request: Request):
         _hi = _day_after(p['to'])          # 상한: '<= 종료일~'(콜레이션 의존) → '< 익일'
         if _hi: where.append('created < ?'); args.append(_hi)
     if p.get('status'): where.append('status = ?'); args.append(p['status'])
+    _cw, _ca = _country_where(p)
+    if _cw: where.append(_cw); args += _ca
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
     scope_all = (p.get('scope') == 'all')
@@ -2631,8 +3189,9 @@ def _stats_detail_compute(p):
     #   상한은 '< 익일' — '<= 종료일~' 는 PostgreSQL 콜레이션에서 종료일 당일을 누락시킨다.
     where, args = ['created >= ?', 'created < ?'], [d_from.isoformat(),
                    (d_to + datetime.timedelta(days=1)).isoformat()]
-    rs = rows('SELECT order_id, created, status, amount, items, buyer FROM orders WHERE %s ORDER BY created ASC LIMIT 50001'
-              % ' AND '.join(where), tuple(args))
+    _ccol = ', country' if 'country' in _state['ocols'] else ''      # 구매 국가(국가별 집계) — 구형 DB 호환
+    rs = rows('SELECT order_id, created, status, amount, items, buyer%s FROM orders WHERE %s ORDER BY created ASC LIMIT 50001'
+              % (_ccol, ' AND '.join(where)), tuple(args))
     truncated = len(rs) > 50000
     if truncated: rs = rs[:50000]
 
@@ -2642,6 +3201,7 @@ def _stats_detail_compute(p):
     sacc = {}                                            # 같은 필터 조건의 상태별 금액(제외분 노출용)
     b_rev, b_ord = {}, {}                                # 버킷별 품목매출 · 주문번호 set
     prod, evts, ord_amt, buyers = {}, {}, {}, set()
+    ctry = {}                                            # 국가별 {ords, amt, rev, qty, est}
     for r in rs:
         try:
             dd = datetime.date.fromisoformat(str(r.get('created') or '')[:10])
@@ -2652,6 +3212,7 @@ def _stats_detail_compute(p):
         ost = str(r.get('status') or '') or '(없음)'
         keep = (not status) or (ost == status)
         hit = False
+        o_rev = o_qty = 0                                 # 이 주문의 집계 포함 라인 합계(국가별용)
         for it in jload(r.get('items'), []):
             if not isinstance(it, dict): continue
             pid = str(it.get('id') or '')
@@ -2666,6 +3227,7 @@ def _stats_detail_compute(p):
             sa = sacc.setdefault(ost, {'rev': 0, 'qty': 0, 'ords': set(), 'amt': 0})
             sa['rev'] += line; sa['qty'] += qty
             if not keep: continue
+            o_rev += line; o_qty += qty
             b_rev[bk] = b_rev.get(bk, 0) + line
             b_ord.setdefault(bk, set()).add(oid)
             pr = prod.setdefault(nm, {'qty': 0, 'rev': 0, 'ords': set(), 'event': evt or ''})
@@ -2683,6 +3245,11 @@ def _stats_detail_compute(p):
                 ord_amt[oid] = num(r.get('amount'))
                 b = jload(r.get('buyer'), {}) or {}
                 buyers.add(_entry_phone_norm(b.get('phone')) or str(b.get('name') or oid))
+                cc_r = str(r.get('country') or '').strip().upper(); est = 0
+                if not cc_r:                                  # 기록 없는 과거 주문 → 주소·연락처 추정
+                    cc_r = _order_cc_infer(b)[0]; est = 1 if cc_r else 0
+                cg = ctry.setdefault(cc_r or '--', {'ords': 0, 'amt': 0, 'rev': 0, 'qty': 0, 'est': 0})
+                cg['ords'] += 1; cg['amt'] += num(r.get('amount')); cg['rev'] += o_rev; cg['qty'] += o_qty; cg['est'] += est
     total_rev = sum(x['rev'] for x in prod.values())
     total_qty = sum(x['qty'] for x in prod.values())
     n_ord, amt_sum = len(ord_amt), sum(ord_amt.values())
@@ -2700,6 +3267,10 @@ def _stats_detail_compute(p):
                   'on': (not status) or (k == status)}
                  for k, v in sorted(sacc.items(),
                                     key=lambda kv: (_ST_ORDER.index(kv[0]) if kv[0] in _ST_ORDER else 99, kv[0]))]
+    by_country = [{'cc': '' if k == '--' else k, 'name': '(미확인)' if k == '--' else (country_name_ko(k) or k),
+                   'flag': '' if k == '--' else flag_emoji(k), 'orders': v['ords'], 'amt': v['amt'],
+                   'rev': v['rev'], 'qty': v['qty'], 'est': v['est'], 'share': share(v['rev'])}
+                  for k, v in sorted(ctry.items(), key=lambda kv: (kv[1]['rev'], kv[1]['ords']), reverse=True)]
     ev_names = set()
     for d in _drops_all():
         if isinstance(d, dict):
@@ -2717,6 +3288,7 @@ def _stats_detail_compute(p):
                         'aov': (amt_sum // n_ord) if n_ord else 0},
             'series': series, 'by_product': by_product, 'by_event': by_event,
             'by_status': by_status,
+            'by_country': by_country,                    # 국가별(접속 국가 · 과거 주문은 추정, est=추정 건수)
             'all_status': {'rev': sum(x['rev'] for x in by_status),
                            'amt': sum(x['s'] for x in by_status),
                            'cnt': sum(x['c'] for x in by_status)},
@@ -2755,6 +3327,11 @@ def api_stats_detail_csv(request: Request):
         row(x['k'], 'O' if x['on'] else '-', x['c'], x['s'], x['rev'], x['qty'])
     A = d.get('all_status') or {}
     row('전체 상태 합계', '', A.get('cnt', 0), A.get('amt', 0), A.get('rev', 0), '')
+    row()
+    row('[국가별]', '구매 접속 국가 기준 · 기록 없는 과거 주문은 주소·연락처·응모 국적으로 추정')
+    row('국가', '코드', '주문수', '결제액', '품목매출', '수량', '비중%', '추정건수')
+    for x in d.get('by_country', []):
+        row(x['name'], x['cc'], x['orders'], x['amt'], x['rev'], x['qty'], x['share'], x['est'])
     row()
     row('[상품별 TOP %d]' % len(d['by_product']))
     row('순위', '상품', '행사', '수량', '품목매출', '주문수', '비중%')
@@ -3032,7 +3609,7 @@ def api_drops_backfill(request: Request, body: dict = Body(...)):
     mem = None
     try: mem = member_of(request)
     except Exception: pass
-    ip = ((request.client.host if request.client else '') or '-')[:80]
+    ip = _req_ip(request)
     matched = []
     since = (kst_naive() - datetime.timedelta(days=90)).isoformat(timespec='seconds')
     pset = set(pids)
@@ -3554,6 +4131,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="toolbar"><input id="oq" placeholder="주문번호 · 이름 · 전화" style="width:200px">
   <select id="ost"><option value="">결제상태 전체</option><option>PAID</option><option value="WAITING_DEPOSIT">WAITING_DEPOSIT (입금대기)</option><option>PENDING</option><option>FAILED</option><option>CANCELLED</option></select>
   <select id="off"><option value="">처리상태 전체</option><option value="NEW">신규</option><option value="PREPARING">상품준비중</option><option value="SHIPPED">발송완료</option><option value="DONE">배송완료</option><option value="CANCELLED">취소</option></select>
+  <select id="octry" title="구매 국가 — 주문 시 접속 국가 기준 (기록 없는 과거 주문은 추정값이라 필터에서 '기록 없음'으로 분류)"><option value="">국가 전체</option><option value="KR">국내 (KR)</option><option value="INTL">해외 (KR 외)</option><option value="NONE">기록 없음</option></select>
   <input id="ofrom" type="date"><input id="oto" type="date">
   <button class="btn" onclick="loadOrders(1)">검색</button>
   <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button>
@@ -3808,7 +4386,14 @@ function dxRender(d){const s=d.summary,S=d.series,mx=Math.max(1,...S.map(x=>x.v)
  ${d.by_event.map((r,i)=>{const has=r.opts&&r.opts.length;
   return `<tr${has?' style="cursor:pointer" onclick="dxTgl('+i+')"':''}><td>${has?'▸ ':''}${esc(r.event)}</td><td class="right mono">${Number(r.qty).toLocaleString('ko-KR')}</td><td class="right mono">${won(r.rev)}</td><td class="right mono">${r.orders}</td><td class="right mono">${r.share}%</td><td><button class="btn sm ghost" data-e="${esc(r.is_drop?r.event:'__general__')}" onclick="event.stopPropagation();dxEvt(this)">필터</button></td></tr>`
   +(has?r.opts.map(o=>`<tr class="dxo${i}" style="display:none;background:#faf9f5"><td style="padding-left:22px;color:#555">└ ${esc(o.name)}</td><td class="right mono">${Number(o.qty).toLocaleString('ko-KR')}</td><td class="right mono">${won(o.rev)}</td><td></td><td></td><td></td></tr>`).join(''):'')
- }).join('')||'<tr><td colspan="6" class="loading">데이터 없음</td></tr>'}</table></div></div>`}
+ }).join('')||'<tr><td colspan="6" class="loading">데이터 없음</td></tr>'}</table></div></div>
+ ${dxCountryHtml(d)}`}
+function dxCountryHtml(d){const C=d.by_country||[];if(!C.length)return '';
+ const est=C.reduce((a,x)=>a+(x.est||0),0);
+ return `<div style="margin-top:14px"><h3>국가별 <span class="tag">구매 접속 국가 · ${esc(d.status)}</span></h3>
+ <table><tr><th>국가</th><th class="right">주문</th><th class="right">결제액</th><th class="right">품목매출</th><th class="right">수량</th><th class="right">비중</th></tr>
+ ${C.slice(0,30).map(x=>`<tr><td>${x.flag?esc(x.flag)+' ':''}${esc(x.name)}${x.cc?' <span class="mono" style="color:#999">'+esc(x.cc)+'</span>':''}${x.est?' <span style="color:#b58900;font-size:11px">추정 '+Number(x.est).toLocaleString('ko-KR')+'건</span>':''}</td><td class="right mono">${Number(x.orders).toLocaleString('ko-KR')}</td><td class="right mono">${won(x.amt)}</td><td class="right mono">${won(x.rev)}</td><td class="right mono">${Number(x.qty).toLocaleString('ko-KR')}</td><td class="right mono">${x.share}%</td></tr>`).join('')}</table>
+ ${est?`<div class="hint" style="margin-top:6px">국가 기록 기능(2026-09-01) 이전 주문 ${Number(est).toLocaleString('ko-KR')}건은 주소·연락처·응모 국적으로 추정한 값입니다. 이후 주문은 접속 IP·엣지 판정 기준으로 확정됩니다.</div>`:''}</div>`}
 function dxStatusHtml(d){const B=d.by_status||[],A=d.all_status||{};if(!B.length)return '';
  const cur=d.status||'ALL',excl=B.filter(x=>!x.on),ex=excl.reduce((a,x)=>a+x.s,0);
  const chip=(k,lb,amt,cnt,on)=>`<button class="btn sm ${on?'':'ghost'}" data-s="${esc(k)}" onclick="dxSt(this)" style="font-size:11px">${esc(lb)} ${won(amt)}<span style="color:${on?'#ffd9d6':'#aaa'};margin-left:5px">${Number(cnt||0).toLocaleString('ko-KR')}건</span></button>`;
@@ -3830,17 +4415,17 @@ function dxCsv(){const qs=new URLSearchParams({from:dxQ.from,to:dxQ.to,unit:dxQ.
 
 let opage=1;
 async function loadOrders(p){opage=p;const q=new URLSearchParams({page:p});
- ['oq|query','ost|status','off|fulfill','ofrom|from','oto|to'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});
+ ['oq|query','ost|status','off|fulfill','ofrom|from','oto|to','octry|country'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});
  try{const d=await api('/admin/api/orders?'+q);
  $('#olist').innerHTML=`<table><tr><th>주문번호</th><th>일시</th><th>결제</th><th>처리</th><th class="right">금액</th><th>품목</th><th>주문자</th><th>송장</th><th></th></tr>
  ${d.rows.map(o=>`<tr><td class="mono">${esc(o.order_id)}</td><td class="mono">${esc(o.created)}</td>
  <td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td><span class="ff ${esc(o.fulfill)}">${FF[o.fulfill]||esc(o.fulfill)}</span></td>
- <td class="right mono">${won(o.amount)}</td><td>${esc(o.items_label)}</td><td>${esc(o.buyer_name)}</td><td class="mono" style="font-size:11.5px">${o.courier?'<span style="color:#888">'+esc(CO[o.courier]||o.courier)+'</span><br>':''}${esc(o.tracking)}</td>
+ <td class="right mono">${won(o.amount)}</td><td>${esc(o.items_label)}</td><td>${oFlag(o)}${esc(o.buyer_name)}</td><td class="mono" style="font-size:11.5px">${o.courier?'<span style="color:#888">'+esc(CO[o.courier]||o.courier)+'</span><br>':''}${esc(o.tracking)}</td>
  <td><button class="btn sm ghost" onclick="openOrder('${esc(o.order_id)}')">상세</button></td></tr>`).join('')||'<tr><td colspan=9 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadOrders')}`;}catch(e){$('#olist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 const pager=(p,d,fn)=>`<div class="pager"><button class="btn sm ghost" ${p<=1?'disabled':''} onclick="${fn}(${p-1})">이전</button><span>${p} / ${Math.max(1,Math.ceil(d.total/d.size))} · 총 ${d.total}</span><button class="btn sm ghost" ${p*d.size>=d.total?'disabled':''} onclick="${fn}(${p+1})">다음</button></div>`;
-function csv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders.csv?'+q}
-function optcsv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders-options.csv?'+q}
+function csv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status','octry|country'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders.csv?'+q}
+function optcsv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status','octry|country'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders-options.csv?'+q}
 // 입금기한 만료 정리 — 항상 미리보기(dry)로 대상을 보여준 뒤 확인을 받고 실행한다.
 //   돈이 움직이지 않는 상태정리(WAITING_DEPOSIT → CANCELLED + 재고복원)지만,
 //   되돌릴 수 없으므로 건수·주문번호를 먼저 눈으로 확인시킨다.
@@ -3881,6 +4466,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>금액</b><span class="mono">${won(o.amount)}${o.method?' · '+esc(o.method):(pmName?' · '+esc(pmName):'')}${o.pay_mid?' · MID '+esc(o.pay_mid)+(midOld?'<b style="color:#b5443c">(구)</b>':''):''}</span>
  <b>결제수단</b><span id="mpaydet">${pdHtml}</span>
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
+ <b>구매 국가</b><span id="mgeo">${geoHtml(o.geo,o.order_id)}</span>
  <b>이메일</b><span>${o.buyer.email?`<a href="mailto:${esc(o.buyer.email)}" class="mono">${esc(o.buyer.email)}</a>`:'<span style="color:#999">미기재 (이메일 필수화 이전 주문)</span>'}</span>
  <b>회원 연결</b><span>${o.member_id?('연결됨 · '+esc(o.member_email||o.member_id)):(can(2)?`미연결(비회원) <button class="btn sm" onclick="linkMember('${esc(o.order_id)}')">회원 연결</button>`:'미연결(비회원)')}</span>
  <b>주소</b><span>[${esc(o.buyer.zip)}] ${esc(o.buyer.addr)}${can(1)?` <button class="btn sm ghost" onclick="shipAddrEdit('${esc(o.order_id)}')" title="배송지 변경 — 이전 주소는 이력으로 보존됩니다">변경</button>`:''}</span>
@@ -3916,10 +4502,42 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  ${midStuck&&can(2)?`<div class="hint" style="background:#fff7e0;border-left:3px solid #b58900;padding:9px 11px;color:#6b4e00"><b>구 상점아이디 결제 건</b> — MID <b class="mono">${esc(o.pay_mid||'판별 불가')}</b> 로 결제되어 현재 설정으로는 자동 환불이 실패합니다. Render 환경변수 <b class="mono">INICIS_MID_OLD / INICIS_INIAPI_OLD</b> 에 해당 MID·key 를 추가하면 [결제취소(환불)]이 그대로 동작합니다. key 확보가 불가하면 이니시스에서 환불 후 [수동환불 완료처리]를 사용하세요.</div>`:''}
  ${o.can_refund&&can(2)&&!vbPaid&&!midStuck?'<div class="hint">결제취소 시 이니시스 환불 실행 + 재고 자동 복원. 감사로그에 기록됩니다.</div>':''}`;
  $('#mbg').style.display='flex';
- if(o.can_pay_lookup&&!o.pay_detail_text)payDetailLoad(o.order_id);}catch(e){toast(e.message)}}
+ if(o.can_pay_lookup&&!o.pay_detail_text)payDetailLoad(o.order_id);
+ if(o.geo&&o.geo.auto_lookup)geoLoad(o.order_id);}catch(e){toast(e.message)}}
 // ── 결제 상세(어떤 카드 · 어떤 페이) ──────────────────────────────────
 //   승인 시 저장된 값이 있으면 그대로 그리고, 없으면(구 주문) 상세를 열 때
 //   이니시스 거래조회를 1회 호출해 채운다. 성공하면 서버가 캐시하므로 재호출 없음.
+// ── 구매 국가(접속 국가) ──────────────────────────────────────────────
+//   주문 생성 시 서버가 접속 IP·엣지 국가 헤더·기기 시간대를 기록하고 백그라운드로 GeoIP 를
+//   조회한다. 미조회분(auto_lookup)은 상세를 열 때 1회 조회하고 결과를 서버가 캐시한다.
+//   기록 없는 과거 주문은 주소·연락처·응모 국적으로 추정해 '(추정)'을 붙인다.
+function oFlag(o){if(!o||!o.flag)return '';
+ if(o.inferred&&o.geo_src==='addr')return '';                       // 국내주소 추정은 목록에서 생략(잡음)
+ return '<span title="'+esc(o.country_name||o.cc)+(o.inferred?' (추정)':'')+'" style="margin-right:3px'+(o.inferred?';opacity:.55':'')+'">'+esc(o.flag)+'</span>'}
+function geoHtml(g,oid){if(!g)return '<span style="color:#999">-</span>';
+ var p=[],sub=[];
+ if(g.cc)p.push('<b>'+esc(g.flag)+' '+esc(g.name)+'</b> <span class="mono" style="color:#999">'+esc(g.cc)+'</span>'+(g.inferred?' <span style="color:#b58900">(추정)</span>':''));
+ else p.push('<span style="color:#999">미확인</span>');
+ if(g.city||g.region)p.push(esc([g.city,g.region].filter(Boolean).join(', ')));
+ if(g.src_label)p.push(esc(g.src_label)+(g.provider?' · '+esc(g.provider):''));
+ if(g.has_ip)sub.push('접속 IP <span class="mono">'+esc(g.ip)+'</span>'+(g.org?' ('+esc(g.org)+')':''));
+ if(g.tz)sub.push('기기 시간대 '+esc(g.tz)+(g.tz_name?' ('+esc(g.tz_name)+')':''));
+ if(g.lang)sub.push('브라우저 언어 '+esc(g.lang));
+ if(g.phone_cc&&g.phone_cc!==g.cc)sub.push('전화 국가번호 '+esc(g.phone_name||g.phone_cc));
+ if(g.nation)sub.push('응모 국적 답변 "'+esc(g.nation)+'"');
+ if(g.mismatch)sub.push('<b style="color:#b5443c">기기 시간대('+esc(g.tz_name)+')와 접속 국가가 다릅니다 — VPN·구매대행 가능성</b>');
+ if(!g.has_ip&&g.ip_purged)sub.push('접속 IP 보유기간(90일) 경과 파기 '+esc(g.ip_purged));
+ if(!g.has_ip&&!g.at)sub.push('접속 기록 없음 — 국가 기록 기능(2026-09-01) 이전 주문');
+ if(g.at)sub.push('기록 '+esc(g.at));
+ var s=p.join(' · ');
+ if(sub.length)s+='<br><span style="color:var(--steel);font-size:11px">'+sub.join(' · ')+'</span>';
+ if(g.can_lookup)s+=' <button class="btn sm ghost" onclick="geoLoad(\''+esc(oid)+'\',1)">'+(g.city?'다시 조회':'IP 국가 조회')+'</button>';
+ return s}
+async function geoLoad(oid,force){const el=document.getElementById('mgeo');if(!el)return;
+ el.innerHTML='<span style="color:#999">IP 국가 조회 중…</span>';
+ try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/geo'+(force?'?force=1':''),{method:'POST'});
+  el.innerHTML=geoHtml(r.geo,oid);
+ }catch(e){el.innerHTML='<span style="color:#b5443c">조회 실패 — '+esc(e.message)+'</span> <button class="btn sm ghost" onclick="geoLoad(\''+esc(oid)+'\',1)">재시도</button>'}}
 function pdBtn(oid,label){return ' <button class="btn sm ghost" onclick="payDetailLoad(\''+oid+'\',1)">'+label+'</button>'}
 function pdMore(rows,origin){if(!rows||!rows.length)return '';
  return '<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--steel);font-size:11px">승인응답 원문 '+rows.length+'항목'+(origin==='INQUIRY'?' · 이니시스 거래조회':'')+'</summary>'
@@ -7011,7 +7629,7 @@ def account_security(member, event_type, request=None, detail=''):
     try:
         run('INSERT INTO account_security_events VALUES(?,?,?,?,?,?,?,?)',
             (uid(), member.get('customer_id') or '', member.get('id') or '', event_type,
-             ((request.client.host if request and request.client else '') or '-')[:80],
+             _req_ip(request),
              ((request.headers.get('user-agent') if request else '') or '')[:240],
              str(detail or '')[:300], now_iso()))
     except Exception: pass
@@ -7068,7 +7686,7 @@ def point_revoke_purchase(order_id, by_admin=''):
 def consent_record(customer_id, member_id, consent_type, granted, version, source, request=None):
     run('INSERT INTO consent_history VALUES(?,?,?,?,?,?,?,?,?)',
         (uid(), customer_id, member_id, consent_type, version, 1 if granted else 0,
-         source, ((request.client.host if request and request.client else '') or '-')[:80], now_iso()))
+         source, _req_ip(request), now_iso()))
     if consent_type == 'MARKETING':
         try: run('UPDATE customer_profiles SET marketing_ok=?, updated_at=? WHERE id=?',
                  (1 if granted else 0, now_iso(), customer_id))
@@ -7213,6 +7831,14 @@ def _account_migrate():
                             '<tr><td>회원가입(필수)</td><td>이름, 이메일 주소, 비밀번호(이메일 가입 시, 일방향 암호화 저장), 이용약관·개인정보 동의 이력</td><td>회원 식별·관리, 로그인, 고객 문의 처리, 최초 가입 혜택 제공</td><td>회원가입 화면, 카카오·Google·Apple 계정 연동(동의 항목에 한함)</td></tr>')
             new=new.replace('<tr><td>선택</td><td>배송지 정보(수령인, 주소, 연락처), 환불계좌(은행·계좌번호·예금주), 마케팅 수신 동의 여부</td><td>배송지 자동 입력 편의, 환불 처리, 이벤트·혜택 안내</td><td>마이페이지, 카카오 배송지 연동(동의 시)</td></tr>',
                             '<tr><td>회원정보(선택)</td><td>성별, 생년월일, 휴대폰 번호, 배송지 정보(수령인, 주소, 연락처), 마케팅 수신 동의 여부</td><td>휴대폰 본인확인·계정복구·기존 주문 연결, 배송지 자동 입력, 이벤트·신상품 안내</td><td>회원가입 화면, 마이페이지, 카카오 배송지 연동(동의 시)</td></tr>')
+            # ── 2026-09-08 시행: 구매 국가(접속 국가) 기록 — 제1조 자동 수집 항목·제2조 IP 보유기간·제9조 쿠키 (privacy.html 만) ──
+            if r.get('path')=='privacy.html' and '접속 국가·도시(IP 기반 추정)' not in new:
+                new=new.replace('<tr><td>자동 수집</td><td>접속 기록, 쿠키(로그인 세션 유지 목적)</td><td>서비스 제공 및 부정 이용 방지</td><td>서비스 이용 과정에서 자동 생성</td></tr></table>','<tr><td>자동 수집</td><td>접속 IP, 접속 국가·도시(IP 기반 추정), 접속 일시, 브라우저·기기 정보(기기 시간대·언어 설정 포함), 로그인 세션 쿠키, 웹 분석(Google Analytics) 쿠키·식별자</td><td>서비스 제공, 계정 보안, 부정 이용 방지, 서비스 이용 통계(국가별 이용 분석 포함)</td><td>서비스 이용 과정에서 자동 생성</td></tr></table>')
+                new=new.replace('<tr><td>자동 수집</td><td>접속 IP, 접속 일시, 브라우저·기기 정보, 로그인 세션 쿠키</td><td>서비스 제공, 계정 보안, 부정 이용 방지</td><td>서비스 이용 과정에서 자동 생성</td></tr></table>','<tr><td>자동 수집</td><td>접속 IP, 접속 국가·도시(IP 기반 추정), 접속 일시, 브라우저·기기 정보(기기 시간대·언어 설정 포함), 로그인 세션 쿠키, 웹 분석(Google Analytics) 쿠키·식별자</td><td>서비스 제공, 계정 보안, 부정 이용 방지, 서비스 이용 통계(국가별 이용 분석 포함)</td><td>서비스 이용 과정에서 자동 생성</td></tr></table>')
+                if '주문에 기록된 접속 IP는' not in new: new=new.replace('소비자 불만·분쟁처리 기록 3년(전자상거래법), 접속 기록 3개월(통신비밀보호법)</li></ul>','소비자 불만·분쟁처리 기록 3년(전자상거래법), 접속 기록 3개월(통신비밀보호법)</li><li>주문에 기록된 접속 IP는 주문일로부터 90일 경과 시 자동 파기하며, 이후에는 개인을 식별할 수 없는 국가·도시 단위 정보만 통계 목적으로 보유합니다</li></ul>')
+                new=new.replace('회사는 로그인 세션 유지를 위한 필수 쿠키만 사용하며, 광고 목적의 추적 쿠키를 사용하지 않습니다.','회사는 로그인 세션 유지를 위한 필수 쿠키와 서비스 이용 통계를 위한 웹 분석(Google Analytics) 쿠키를 사용하며, 광고 목적의 추적 쿠키를 사용하지 않습니다.')
+                new=new.replace('공고일: 2026년 7월 21일 · 시행일: 2026년 7월 29일','공고일: 2026년 9월 1일 · 시행일: 2026년 9월 8일 <span style="color:#888">(최초 시행 2026년 7월 15일 · 이번 개정: 제1조 자동 수집 항목, 제2조 접속 IP 보유기간, 제9조 쿠키)</span>')
+                new=new.replace('공고일: 2026년 7월 15일 · 시행일: 2026년 7월 15일','공고일: 2026년 9월 1일 · 시행일: 2026년 9월 8일 <span style="color:#888">(최초 시행 2026년 7월 15일 · 이번 개정: 제1조 자동 수집 항목, 제2조 접속 IP 보유기간, 제9조 쿠키)</span>')
             if new!=old: run('UPDATE page_edits SET html=?,updated=?,by_admin=? WHERE path=?',(new,now_iso(),'SYSTEM_POLICY',r['path']))
     except Exception: pass
 
@@ -7223,7 +7849,7 @@ def member_session_make(mid, request=None):
     except Exception: pass
     run('INSERT INTO member_sessions(id,member_id,created,expires,ip,user_agent,last_seen) VALUES(?,?,?,?,?,?,?)',
         (hashlib.sha256(sid.encode()).hexdigest(), mid, now_iso(), exp,
-         ((request.client.host if request and request.client else '') or '-')[:80],
+         _req_ip(request),
          ((request.headers.get('user-agent') if request else '') or '')[:240], now_iso()))
     return sid
 
@@ -8391,7 +9017,7 @@ def api_member_me(request: Request):
 @admin_router.post('/api/member/password-reset/send')
 def api_member_password_reset_send(request: Request, body: dict=Body(...)):
     email=(body.get('email') or '').strip().lower(); phone=kphone_norm(body.get('phone') or '')
-    ip=(request.client.host if request.client else '') or '-'; key='pr:'+ip; guard(key, '재설정 요청이 너무 잦습니다 — 10분 후 다시 시도해 주세요'); fail_hit(key)
+    ip=_req_ip(request); key='pr:'+ip; guard(key, '재설정 요청이 너무 잦습니다 — 10분 후 다시 시도해 주세요'); fail_hit(key)
     m=one("SELECT * FROM members WHERE provider='email' AND lower(email)=? AND phone=? AND phone_verified=1 AND status='ACTIVE'",(email,phone))
     if not m: raise HTTPException(400,'이메일과 인증된 휴대폰 정보를 확인해 주세요')
     rid=uid(); code=str(secrets.randbelow(900000)+100000); ch=hashlib.sha256((rid+':'+code).encode()).hexdigest()
@@ -8416,7 +9042,7 @@ def api_member_password_reset_verify(request: Request, body: dict=Body(...)):
     run('UPDATE members SET pw=?,updated_at=? WHERE id=?',(pw_hash(new),now_iso(),m['id']))
     run('UPDATE password_resets SET used=1 WHERE id=?',(rid,)); run('DELETE FROM member_sessions WHERE member_id=?',(m['id'],))
     account_security(m,'PASSWORD_RESET',request,'all sessions revoked')
-    fail_clear('pr:'+(((request.client.host if request.client else '') or '-')))
+    fail_clear('pr:'+_req_ip(request))
     return {'ok':True}
 
 @admin_router.post('/api/member/signup')
@@ -8464,7 +9090,7 @@ def api_member_login(request: Request, body: dict = Body(...)):
     email = (body.get('email') or '').strip().lower()
     pw = body.get('password') or ''
     if not email or not pw: raise HTTPException(400, '이메일과 비밀번호를 입력하세요')
-    ip = (request.client.host if request.client else '') or '-'
+    ip = _req_ip(request)
     key = 'ml:' + email + ':' + ip; guard(key)
     row = one("SELECT * FROM members WHERE provider='email' AND email=?", (email,))
     if not row or not pw_verify(pw, row.get('pw') or ''):
@@ -8531,7 +9157,7 @@ th,td{border:1px solid #ddd;padding:7px 9px;text-align:left}th{background:#14141
 PRIVACY_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>개인정보처리방침 — MAPDAL SEOUL</title>''' + _POLICY_CSS + '''</head><body>
 <header><a href="/">MAPDAL<span>SEOUL</span></a></header><main>
 <h1>개인정보처리방침</h1>
-<div class="meta">맵달서울성수(이하 "회사")는 「개인정보 보호법」 제30조에 따라 정보주체의 개인정보를 보호하고 관련 고충을 신속하게 처리하기 위하여 다음과 같이 개인정보처리방침을 수립·공개합니다.<br>공고일: 2026년 7월 15일 · 시행일: 2026년 7월 15일</div>
+<div class="meta">맵달서울성수(이하 "회사")는 「개인정보 보호법」 제30조에 따라 정보주체의 개인정보를 보호하고 관련 고충을 신속하게 처리하기 위하여 다음과 같이 개인정보처리방침을 수립·공개합니다.<br>공고일: 2026년 9월 1일 · 시행일: 2026년 9월 8일 <span style="color:#888">(최초 시행 2026년 7월 15일 · 이번 개정: 제1조 자동 수집 항목, 제2조 접속 IP 보유기간, 제9조 쿠키)</span></div>
 
 <h2>제1조 (개인정보의 처리 목적 및 수집 항목)</h2>
 <p>회사는 다음 목적을 위해 개인정보를 처리하며, 목적이 변경되는 경우 별도 동의를 받습니다.</p>
@@ -8539,12 +9165,12 @@ PRIVACY_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><me
 <tr><td>회원가입(필수)</td><td>이름, 이메일 주소, 비밀번호(이메일 가입 시, 일방향 암호화 저장), 이용약관·개인정보 동의 이력</td><td>회원 식별·관리, 로그인, 고객 문의 처리, 최초 가입 혜택 제공</td><td>회원가입 화면, 카카오·Google·Apple 계정 연동(동의 항목에 한함)</td></tr>
 <tr><td>회원정보(선택)</td><td>성별, 생년월일, 휴대폰 번호, 배송지 정보(수령인, 주소, 연락처), 마케팅 수신 동의 여부</td><td>휴대폰 본인확인·계정복구·기존 주문 연결, 배송지 자동 입력, 이벤트·신상품 안내</td><td>회원가입 화면, 마이페이지, 카카오 배송지 연동(동의 시)</td></tr>
 <tr><td>주문/결제</td><td>주문자·수령인 정보(이름, 연락처, 주소), 주문·결제 내역</td><td>계약 이행(상품 배송), 결제·환불 처리, 고객 상담</td><td>주문서 작성 화면</td></tr>
-<tr><td>자동 수집</td><td>접속 IP, 접속 일시, 브라우저·기기 정보, 로그인 세션 쿠키</td><td>서비스 제공, 계정 보안, 부정 이용 방지</td><td>서비스 이용 과정에서 자동 생성</td></tr></table>
+<tr><td>자동 수집</td><td>접속 IP, 접속 국가·도시(IP 기반 추정), 접속 일시, 브라우저·기기 정보(기기 시간대·언어 설정 포함), 로그인 세션 쿠키, 웹 분석(Google Analytics) 쿠키·식별자</td><td>서비스 제공, 계정 보안, 부정 이용 방지, 서비스 이용 통계(국가별 이용 분석 포함)</td><td>서비스 이용 과정에서 자동 생성</td></tr></table>
 <p>※ 회사는 주민등록번호, CI(연계정보) 등 고유식별정보를 수집하지 않습니다. 만 14세 미만 아동의 회원가입은 받지 않습니다.</p>
 
 <h2>제2조 (개인정보의 보유 및 이용 기간)</h2>
 <ul><li>회원 정보: 회원 탈퇴 시까지 (탈퇴 즉시 파기)</li>
-<li>다만 관계 법령에 따라 다음 기간 동안 보존합니다 — 계약·청약철회 기록 5년, 대금결제·재화공급 기록 5년, 소비자 불만·분쟁처리 기록 3년(전자상거래법), 접속 기록 3개월(통신비밀보호법)</li></ul>
+<li>다만 관계 법령에 따라 다음 기간 동안 보존합니다 — 계약·청약철회 기록 5년, 대금결제·재화공급 기록 5년, 소비자 불만·분쟁처리 기록 3년(전자상거래법), 접속 기록 3개월(통신비밀보호법)</li><li>주문에 기록된 접속 IP는 주문일로부터 90일 경과 시 자동 파기하며, 이후에는 개인을 식별할 수 없는 국가·도시 단위 정보만 통계 목적으로 보유합니다</li></ul>
 
 <h2>제3조 (개인정보 처리의 위탁)</h2>
 <table><tr><th>수탁자</th><th>위탁 업무</th></tr>
@@ -8572,7 +9198,7 @@ PRIVACY_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><me
 <li>개인정보 취급 인원 최소화 및 교육</li></ul>
 
 <h2>제9조 (쿠키의 운용)</h2>
-<p>회사는 로그인 세션 유지를 위한 필수 쿠키만 사용하며, 광고 목적의 추적 쿠키를 사용하지 않습니다. 브라우저 설정에서 쿠키를 거부할 수 있으나 로그인 서비스 이용이 제한됩니다.</p>
+<p>회사는 로그인 세션 유지를 위한 필수 쿠키와 서비스 이용 통계를 위한 웹 분석(Google Analytics) 쿠키를 사용하며, 광고 목적의 추적 쿠키를 사용하지 않습니다. 브라우저 설정에서 쿠키를 거부할 수 있으나 로그인 서비스 이용이 제한됩니다.</p>
 
 <h2>제10조 (개인정보 보호책임자)</h2>
 <table><tr><th>구분</th><th>내용</th></tr>
@@ -11643,6 +12269,16 @@ def _checkout_apply(html):
             "xhr.send(JSON.stringify({items:items.map(i=>({id:i.id,q:i.q})),buyer,shipMethod:shipMethod(),intl,"
             "payMethod:(window.mpPaySel?window.mpPaySel():''),refund:(window.mpRefund?window.mpRefund():null)}));", 1)
 
+    # ── [6-6] 구매 국가 기기 힌트 부착 (2026-09-01, 멱등 · 원본·베이크 사본 공통) ──
+    #   브라우저 시간대·언어를 주문 요청에 실어 서버가 접속 IP(VPN·구매대행 가능)와 별개로
+    #   '기기 위치'를 추정한다. mpClientHint 는 mpGeoHintJs([11-2])가 정의 — 미로딩이어도
+    #   window 가드로 null 이 전송되어 결제가 죽지 않는다(서버는 힌트 없이도 IP 로 판정).
+    if 'client:(window.mpClientHint' not in html:
+        html = html.replace(
+            "refund:(window.mpRefund?window.mpRefund():null)}));",
+            "refund:(window.mpRefund?window.mpRefund():null),"
+            "client:(window.mpClientHint?window.mpClientHint():null)}));", 1)
+
     # ── [6-3] 가상계좌 환불계좌 사전검증 — 결제창을 열기 전에 막는다 (서버도 재검증) ──
     if 'var _rerr' not in html:
         html = html.replace(
@@ -11815,6 +12451,20 @@ def _checkout_apply(html):
             "    fillEmail();}\n"
             "  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind);\n"
             "  else bind();\n"
+            "})();</script></body>", 1)
+
+    # ── [11-2] 구매 국가 기기 힌트 런타임 (mpGeoHintJs, 멱등 · 독립 가드) ──
+    #   mpClientHint(): {tz: IANA 시간대, lang, langs, off: UTC 오프셋(분)} — [6-6]이 /api/orders 에 부착.
+    #   위치 권한·외부 호출 없음. 개인정보 최소수집: 시간대·언어만(좌표 없음).
+    if 'id="mpGeoHintJs"' not in html:
+        html = html.replace('</body>',
+            "<script id=\"mpGeoHintJs\">(function(){\n"
+            "  if(window.mpClientHint)return;\n"
+            "  window.mpClientHint=function(){var o={};\n"
+            "    try{o.tz=Intl.DateTimeFormat().resolvedOptions().timeZone||'';}catch(e){}\n"
+            "    try{o.lang=navigator.language||'';o.langs=(navigator.languages||[]).slice(0,5);}catch(e){}\n"
+            "    try{o.off=new Date().getTimezoneOffset();}catch(e){}\n"
+            "    return o;};\n"
             "})();</script></body>", 1)
 
     # ── [11-0] 결제창 취소 복구 런타임 (mpPayResetJs, 멱등 · mpPayVbJs 와 독립 가드) ──
@@ -13495,7 +14145,7 @@ def api_m_claim_send(request: Request, body: dict = Body(...)):
     entered = kphone_norm(body.get('phone') or '')
     if len(phone) < 9 or not hmac.compare_digest(phone, entered):
         raise HTTPException(400, '주문번호와 주문 당시 연락처를 확인해 주세요')
-    ip = (request.client.host if request.client else '') or '-'; key='oc:'+m['id']+':'+ip; guard(key, '인증번호 요청이 너무 잦습니다 — 10분 후 다시 시도해 주세요'); fail_hit(key)
+    ip = _req_ip(request); key='oc:'+m['id']+':'+ip; guard(key, '인증번호 요청이 너무 잦습니다 — 10분 후 다시 시도해 주세요'); fail_hit(key)
     code = str(secrets.randbelow(900000) + 100000); cid = uid()
     exp = (kst_naive() + datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
     ch = hashlib.sha256((cid + ':' + code).encode()).hexdigest()
@@ -13523,7 +14173,7 @@ def api_m_claim_verify(request: Request, body: dict = Body(...)):
              (c['order_id'], m.get('customer_id'), m['id'], 'ORDER_PHONE_OTP', now_iso(), now_iso()))
     except Exception: run('UPDATE account_order_links SET customer_id=?,member_id=?,link_source=?,linked_at=?,verified_at=? WHERE order_id=?',
                           (m.get('customer_id'),m['id'],'ORDER_PHONE_OTP',now_iso(),now_iso(),c['order_id']))
-    run('UPDATE order_claims SET used=1 WHERE id=?', (cid,)); fail_clear('oc:'+m['id']+':'+(((request.client.host if request.client else '') or '-')))
+    run('UPDATE order_claims SET used=1 WHERE id=?', (cid,)); fail_clear('oc:'+m['id']+':'+_req_ip(request))
     account_security(m, 'ORDER_CLAIM', request, c['order_id'])
     return {'ok': True, 'order_id': c['order_id']}
 
@@ -13725,7 +14375,7 @@ def api_m_phone_send(request: Request, body: dict = Body(...)):
     m = member_required(request)
     d = digits(body.get('phone'))
     if len(d) < 10: raise HTTPException(400, '휴대폰 번호를 확인해 주세요')
-    ip = (request.client.host if request.client else '') or '-'
+    ip = _req_ip(request)
     key = 'pv:' + m['id'] + ':' + ip; guard(key, '인증번호 요청이 너무 잦습니다 — 10분 후 다시 시도해 주세요'); fail_hit(key)
     code = str(secrets.randbelow(900000) + 100000)
     exp = (kst_naive() + datetime.timedelta(minutes=5)).isoformat(timespec='seconds')
@@ -13779,7 +14429,7 @@ def api_m_phone_verify(request: Request, body: dict = Body(...)):
     else:
         run('INSERT INTO customer_contacts VALUES(?,?,?,?,?,?,?,?,?)',
             (uid(),m.get('customer_id') or '','PHONE',v['phone'],v['phone'],1,1,now_iso(),now_iso()))
-    fail_clear('pv:' + m['id'] + ':' + (((request.client.host if request.client else '') or '-')))
+    fail_clear('pv:' + m['id'] + ':' + _req_ip(request))
     account_security(m, 'PHONE_VERIFIED', request, _mask_phone(v['phone']))
     return {'ok': True, 'phone': v['phone']}
 

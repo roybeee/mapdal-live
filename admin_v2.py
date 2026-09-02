@@ -3302,6 +3302,87 @@ def api_stats_detail(request: Request):
     a = get_actor(request); need(a, 0)
     return _stats_detail_compute(request.query_params)
 
+# ── 행사 선택 → 판매기간 자동 세팅 (dx-evt-period) ─────────────────────────
+#   [매출 상세 분석]에서 행사를 고르면(드롭다운·행사별 [필터]) 기간 입력을 그 행사의
+#   판매기간으로 맞춘 뒤 조회한다. 기본 30일 창 밖의 행사를 고르면 0으로만 보이던 문제 해결.
+#   판매기간 기준(KST 날짜):
+#     ① 해당 행사로 귀속되는 주문의 최초~최종 주문일 — 귀속 규칙(_evt_attr 4단 폴백)과
+#        상태 필터는 [매출 상세 분석]과 동일하게 적용한다(화면과 같은 주문이 들어오도록).
+#     ② 등록 드롭의 sales_start~sales_end 는 '이미 시작된 기간'만 ①과 합집합(오늘로 절삭).
+#        행사 레코드를 다음 회차에 재사용해 등록 기간이 미래로 바뀐 경우(7월 판매분인데
+#        등록 기간은 9월) 실제 판매일이 우선해야 조회 결과가 비지 않는다.
+#     ③ 주문이 전혀 없으면 등록 기간 그대로(판매예정이면 미래 구간이 그대로 들어간다).
+#   둘 다 없으면 None → 클라이언트는 현재 기간을 유지한 채 조회한다.
+def _stats_event_period(ev_raw, status='PAID'):
+    today = kst_today()
+    ev = re.sub(r'\s+', ' ', str(ev_raw or '')).strip()
+    if not ev or ev == '__general__':
+        return None
+    ek = ev.casefold()
+    st = str(status or 'PAID').strip().upper()
+    if st not in _STATS_STATUS_OK:
+        st = ''                                           # 'ALL'(및 알 수 없는 값) → 전체 상태
+    # ② 등록 판매기간 — event 필터와 같은 부분일치. 여러 건이면 합집합.
+    cfg_f = cfg_t = None
+    matched = []
+    for d in _drops_all():
+        if not isinstance(d, dict): continue
+        t = re.sub(r'\s+', ' ', str(d.get('title') or '')).strip()
+        if not t or ek not in t.casefold(): continue
+        matched.append(t)
+        s0, s1 = _drop_dt(d.get('sales_start')), _drop_dt(d.get('sales_end'))
+        if s0: cfg_f = s0.date() if cfg_f is None else min(cfg_f, s0.date())
+        if s1: cfg_t = s1.date() if cfg_t is None else max(cfg_t, s1.date())
+    # ① 실제 주문 범위 — 주문당 1회 집계(최초·최종 주문일 + 주문 수)
+    idx, mpdn, alias = _drop_opt_index(), _mpd_names(), _drop_alias()
+    w, args = ('WHERE status = ?', (st,)) if st else ('', ())
+    o_f = o_t = None; n = 0
+    for r in rows('SELECT created, items FROM orders %s ORDER BY created ASC LIMIT 50001' % w, args):
+        try:
+            dd = datetime.date.fromisoformat(str(r.get('created') or '')[:10])
+        except Exception:
+            continue
+        for it in jload(r.get('items'), []):
+            if not isinstance(it, dict): continue
+            pid = str(it.get('id') or '')
+            nm = re.sub(r'\s+', ' ', str(it.get('n') or it.get('name') or pid)).strip() or '(무명)'
+            evt = _evt_attr(pid, nm, idx, mpdn, alias)[0]
+            if ek in (evt or '').casefold():
+                n += 1
+                o_f = dd if o_f is None else min(o_f, dd)
+                o_t = dd if o_t is None else max(o_t, dd)
+                break
+    if o_f:
+        f, t = o_f, o_t
+        started = (cfg_f <= today) if cfg_f else bool(cfg_t)
+        if started:
+            if cfg_f: f = min(f, cfg_f)
+            t = max(t, min(cfg_t, today) if cfg_t else today)
+        src = 'orders'
+    elif cfg_f or cfg_t:
+        if cfg_f and cfg_t: f, t = cfg_f, cfg_t
+        elif cfg_f: f, t = cfg_f, max(cfg_f, today)      # 종료 미설정 = 진행 중 → 오늘까지
+        else: f, t = cfg_t - datetime.timedelta(days=29), cfg_t
+        if f > t: f, t = t, f
+        src = 'config'
+    else:
+        return None
+    return {'event': ev, 'from': f.isoformat(), 'to': t.isoformat(), 'src': src,
+            'status': st or 'ALL', 'today': today.isoformat(), 'matched': matched,
+            'orders': ({'from': o_f.isoformat(), 'to': o_t.isoformat(), 'n': n} if o_f else None),
+            'config': ({'from': cfg_f.isoformat() if cfg_f else '', 'to': cfg_t.isoformat() if cfg_t else ''}
+                       if (cfg_f or cfg_t) else None)}
+
+@admin_router.get('/admin/api/stats/event-period')
+def api_stats_event_period(request: Request):
+    """[매출 상세 분석] 행사 선택 → 그 행사의 판매기간 {from,to} (event 부분일치 · status 동일 적용).
+    판단 근거 없음(등록 기간·주문 모두 없음)이면 from/to 빈 값 → 클라이언트는 현재 기간 유지."""
+    a = get_actor(request); need(a, 0)
+    p = request.query_params
+    r = _stats_event_period(p.get('event'), p.get('status') or 'PAID')
+    return r or {'event': re.sub(r'\s+', ' ', str(p.get('event') or '')).strip(),
+                 'from': '', 'to': '', 'src': ''}
+
 @admin_router.get('/admin/api/stats/detail.csv')
 def api_stats_detail_csv(request: Request):
     """매출 상세 분석 CSV — [요약]·[기간별]·[상품별]·[행사별(옵션)] 4개 섹션 한 파일."""
@@ -4327,7 +4408,7 @@ async function loadDash(){try{const d=await api('/admin/api/summary');
 }catch(e){$('#t-dash').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 
 // ── 매출 상세 분석: 상품별·기간별·행사별 (dx*) ──
-let dxQ={from:'',to:'',unit:'day',q:'',event:'',status:'PAID'},dxEvents=[],dxBusy=false;
+let dxQ={from:'',to:'',unit:'day',q:'',event:'',status:'PAID'},dxEvents=[],dxBusy=false,dxPer=null,dxSeq=0; // dxPer: 행사 선택으로 자동 적용한 판매기간(dx-evt-period)
 const dxKst=off=>{const d=new Date(Date.now()+9*3600*1000);d.setUTCDate(d.getUTCDate()-(off||0));return d.toISOString().slice(0,10)};
 function dxPreset(k){const t=dxKst(0);
  if(k==='today'){dxQ.from=t;dxQ.to=t;dxQ.unit='day'}
@@ -4338,19 +4419,37 @@ function dxPreset(k){const t=dxKst(0);
  else if(k==='lm'){const d=new Date(Date.now()+9*3600*1000);d.setUTCDate(0);const e=d.toISOString().slice(0,10);dxQ.from=e.slice(0,8)+'01';dxQ.to=e;dxQ.unit='day'}
  else if(k==='all'){dxQ.from='all';dxQ.to=t;dxQ.unit='month'}
  dxRun()}
-function dxSel(id,opts,cur){return '<select id="'+id+'" onchange="dxApply()" style="font-size:12px">'+opts.map(o=>`<option value="${esc(o[0])}"${String(o[0])===String(cur)?' selected':''}>${esc(o[1])}</option>`).join('')+'</select>'}
+function dxSel(id,opts,cur,fn){return '<select id="'+id+'" onchange="'+(fn||'dxApply()')+'" style="font-size:12px">'+opts.map(o=>`<option value="${esc(o[0])}"${String(o[0])===String(cur)?' selected':''}>${esc(o[1])}</option>`).join('')+'</select>'}
 function dxBarHtml(){const P=[['today','오늘'],['7d','7일'],['30d','30일'],['90d','90일'],['tm','이번달'],['lm','지난달'],['all','전체']];
  const ev=[['','전체 행사'],['__general__','(일반 상품만)']].concat(dxEvents.map(t=>[t,t]));
  return P.map(x=>`<button class="btn sm ghost" onclick="dxPreset('${x[0]}')">${x[1]}</button>`).join('')
  +`<input type="date" id="dxFrom" value="${dxQ.from==='all'?'':esc(dxQ.from)}" style="padding:5px 7px;font-size:12px"><span style="color:#999">~</span><input type="date" id="dxTo" value="${esc(dxQ.to)}" style="padding:5px 7px;font-size:12px">`
  +dxSel('dxUnit',[['day','일별'],['week','주별'],['month','월별']],dxQ.unit)
- +dxSel('dxEvent',ev,dxQ.event)
+ +dxSel('dxEvent',ev,dxQ.event,'dxEvtSel()')
  +`<input id="dxProd" type="text" placeholder="상품명 검색" value="${esc(dxQ.q)}" style="min-width:140px;font-size:12px" onkeydown="if(event.key==='Enter')dxApply()">`
  +dxSel('dxStatus',[['PAID','PAID(결제완료)'],['ALL','전체 상태'],['WAITING_DEPOSIT','입금대기'],['PENDING','PENDING'],['FAILED','FAILED'],['CANCELLED','취소']],dxQ.status)
  +`<button class="btn sm" onclick="dxApply()">조회</button><button class="btn sm ghost" onclick="dxCsv()">CSV</button>`}
-function dxApply(){const f=$('#dxFrom'),t=$('#dxTo');
+function dxReadBar(){const f=$('#dxFrom'),t=$('#dxTo'),u=$('#dxUnit'),e=$('#dxEvent'),q=$('#dxProd'),s=$('#dxStatus');
  if(f&&f.value)dxQ.from=f.value;if(t&&t.value)dxQ.to=t.value;
- dxQ.unit=$('#dxUnit').value;dxQ.event=$('#dxEvent').value;dxQ.q=$('#dxProd').value.trim();dxQ.status=$('#dxStatus').value;dxRun()}
+ if(u)dxQ.unit=u.value;if(e)dxQ.event=e.value;if(q)dxQ.q=q.value.trim();if(s)dxQ.status=s.value}
+function dxApply(){dxReadBar();dxRun()}
+// 행사 선택 → 판매기간 자동 세팅 (dx-evt-period): 드롭다운(dxEvtSel)·행사별 [필터](dxEvt) 공통.
+//   /admin/api/stats/event-period 가 주문 최초~최종일 ∪ 등록 판매기간을 돌려주면 from/to/unit 을 그 값으로 바꾼 뒤 조회.
+//   판단 근거가 없으면(빈 from/to) 현재 기간 그대로 조회. '전체 행사'·'(일반 상품만)'은 기간을 건드리지 않는다.
+function dxEvtSel(){dxReadBar();dxEvtGo(dxQ.event,true)}
+async function dxEvtGo(ev,keepQ){const my=++dxSeq;let p=null;
+ if(ev&&ev!=='__general__'){const o=$('#dxOut');if(o)o.innerHTML='<div class="loading">행사 판매기간 확인 중…</div>';
+  try{p=await api('/admin/api/stats/event-period?'+new URLSearchParams({event:ev,status:dxQ.status}));if(!p||!p.from||!p.to)p=null}catch(e){p=null}}
+ while(dxBusy)await new Promise(r=>setTimeout(r,80));
+ if(my!==dxSeq)return;
+ dxQ.event=ev||'';if(!keepQ)dxQ.q='';dxPer=p;
+ if(p){dxQ.from=p.from;dxQ.to=p.to;dxQ.unit='day'}
+ dxRun()}
+function dxPerHtml(d){const p=dxPer;if(!p||!d.event||p.event!==d.event||p.from!==d.from||p.to!==d.to||(p.status||'')!==(d.status||''))return '';
+ const md=s=>String(s||'').slice(5),o=p.orders,c=p.config,x=[];
+ x.push(o?'주문 '+md(o.from)+'~'+md(o.to)+' · '+Number(o.n).toLocaleString('ko-KR')+'건':'주문 없음');
+ if(c)x.push('등록 '+(c.from?md(c.from):'?')+'~'+(c.to?md(c.to):'진행중')+(c.from&&c.from>p.today?' (판매예정)':''));
+ return ' <span class="tag">판매기간 자동</span> <span style="color:#888;font-size:11px">'+esc(x.join(' · '))+'</span>'}
 async function dxRun(){if(dxBusy)return;dxBusy=true;const o=$('#dxOut');if(o)o.innerHTML='<div class="loading">집계 중…</div>';
  try{const qs=new URLSearchParams({from:dxQ.from,to:dxQ.to,unit:dxQ.unit,status:dxQ.status});
   if(dxQ.q)qs.set('q',dxQ.q);if(dxQ.event)qs.set('event',dxQ.event);
@@ -4360,11 +4459,11 @@ async function dxRun(){if(dxBusy)return;dxBusy=true;const o=$('#dxOut');if(o)o.i
   dxRender(d)}
  catch(e){if(o)o.innerHTML='<div class="loading">'+esc(e.message)+'</div>'}
  finally{dxBusy=false}}
-function dxInit(){dxQ={from:dxKst(29),to:dxKst(0),unit:'day',q:'',event:'',status:'PAID'};const b=$('#dxBar');if(b)b.innerHTML=dxBarHtml();dxRun()}
+function dxInit(){dxQ={from:dxKst(29),to:dxKst(0),unit:'day',q:'',event:'',status:'PAID'};dxPer=null;const b=$('#dxBar');if(b)b.innerHTML=dxBarHtml();dxRun()}
 function dxRender(d){const s=d.summary,S=d.series,mx=Math.max(1,...S.map(x=>x.v)),n=S.length;
  const lb=i=>esc(((S[i]||{}).label)||'');
  const U={day:'일별',week:'주별',month:'월별'}[d.unit]||d.unit;
- const fl=[];if(d.q)fl.push('상품 "'+esc(d.q)+'"');if(d.event)fl.push('행사 "'+esc(d.event==='__general__'?'(일반 상품만)':d.event)+'"');
+ const fl=[];if(d.q)fl.push('상품 "'+esc(d.q)+'"');if(d.event)fl.push('행사 "'+esc(d.event==='__general__'?'(일반 상품만)':d.event)+'"'+dxPerHtml(d));
  $('#dxOut').innerHTML=`
  ${d.truncated?'<div class="hint" style="color:#c0392b;margin-bottom:8px">주문 50,000건 초과 — 앞쪽 50,000건만 집계했습니다. 기간을 좁혀 조회하세요.</div>':''}
  ${fl.length?`<div class="hint" style="margin:0 0 10px">필터: ${fl.join(' · ')} <button class="btn sm ghost" onclick="dxReset()">해제</button></div>`:''}
@@ -4407,7 +4506,7 @@ function dxStatusHtml(d){const B=d.by_status||[],A=d.all_status||{};if(!B.length
  <button class="btn sm ghost" data-s="ALL" onclick="dxSt(this)">전체 상태로 보기</button></div>`:''}`}
 function dxSt(el){dxQ.status=el.dataset.s||'PAID';const s=$('#dxStatus');if(s)s.value=dxQ.status;dxRun()}
 function dxProd(el){dxQ.q=el.dataset.n||'';const i=$('#dxProd');if(i)i.value=dxQ.q;dxRun()}
-function dxEvt(el){dxQ.event=el.dataset.e||'';dxQ.q='';dxRun()}
+function dxEvt(el){dxEvtGo(el.dataset.e||'',false)}
 function dxTgl(i){document.querySelectorAll('.dxo'+i).forEach(x=>{x.style.display=x.style.display==='none'?'':'none'})}
 function dxReset(){dxQ.q='';dxQ.event='';dxRun()}
 function dxCsv(){const qs=new URLSearchParams({from:dxQ.from,to:dxQ.to,unit:dxQ.unit,status:dxQ.status});if(dxQ.q)qs.set('q',dxQ.q);if(dxQ.event)qs.set('event',dxQ.event);location.href='/admin/api/stats/detail.csv?'+qs}

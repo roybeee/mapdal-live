@@ -1395,6 +1395,8 @@ def ensure_ready():
     except Exception: pass
     try: _migrate_contact_mail_db() # 대표 문의 이메일 단일화 — DB 편집본·설정값 멱등 치환
     except Exception: pass
+    try: _migrate_kpoptogether_db() # 파트너 표기 전환(→KPOPTOGETHER) — DB 편집본·설정·상품 멱등 치환
+    except Exception: pass
     try: _artists_migrate_ordinal() # 구버전이 만든 'N집' 서수 표기 팀 병합·정정 (멱등)
     except Exception: pass
     try: _artists_migrate_variants() # 구버전이 만든 역순 표기('있지 (ITZY)'류) 중복 팀 병합 (멱등)
@@ -5542,7 +5544,7 @@ const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_la
  <div class="hint" style="margin-top:5px">가격을 입력한 옵션은 사이트에서 <b>수량 선택 카드</b>(메이크스타형)로 표시되고, 저장하면 구매용 상품이 자동 생성·연동됩니다. 재고를 비우면 무제한 판매이며, <b>저장할 때마다 입력한 재고 수치로 재설정</b>됩니다. 가격 없이 이름만 넣으면 예전처럼 안내 목록으로만 표시됩니다. 구매형 옵션이 하나라도 있으면 [구매 링크] 버튼 대신 옵션 카드가 노출됩니다.</div></span>
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
  <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지·영상을 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_htmlvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_html')"><input id="dr_htmlvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_html','dr_htmlvurl')">링크로 영상 삽입</button></div><div class="hint" style="margin-top:4px;font-size:11px">영상 파일은 mp4·webm·mov, 최대 50MB (10~30초 클립 권장). 유튜브·비메오 링크는 16:9 반응형 플레이어로, 그 밖의 mp4 주소는 재생 컨트롤이 있는 플레이어로 삽입됩니다.</div></span>
- <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOP2GETHER X 맵달SEOUL 특전 섹션 HTML — 이미지·영상을 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_benefitvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_benefit')"><input id="dr_benefitvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_benefit','dr_benefitvurl')">링크로 영상 삽입</button></div></span>
+ <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOPTOGETHER X 맵달SEOUL 특전 섹션 HTML — 이미지·영상을 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_benefitvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_benefit')"><input id="dr_benefitvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_benefit','dr_benefitvurl')">링크로 영상 삽입</button></div></span>
  <b>응모 전 유의사항</b><span><span class="hint">입력한 내용이 그대로 표시됩니다 — 번호·기호를 직접 적어 주세요. 빈 줄은 문단 간격으로 표시됩니다.</span>
  <textarea id="dr_te_extra" rows="14" style="width:100%;margin-top:6px" placeholder="예)&#10;1) 본 이벤트는 맵달SEOUL 온라인몰 회원·비회원 모두 참여 가능합니다.&#10;2) 개인정보 기재 책임은 본인에게 있습니다.">${esc(v.entry_extra||'')}</textarea></span>
  <b>대면 팬사인회<br>당첨자 유의사항</b><span><span class="hint">유형에 [팬사인회]가 선택된 이벤트에 표시됩니다. 입력한 그대로 노출되며, 비우면 섹션이 표시되지 않습니다.</span>
@@ -6236,6 +6238,48 @@ def _migrate_contact_mail_db():
         for row in rows("SELECT id,body FROM notify_templates WHERE body LIKE ? OR body LIKE ?", L):
             old = row.get('body') or ''
             new = contact_mail_apply(old)
+            if new != old:
+                run('UPDATE notify_templates SET body=? WHERE id=?', (new, row['id']))
+    except Exception: pass
+
+def _kpoptogether_apply(s):
+    return (s or '').replace('KPOP2GETHER', 'KPOPTOGETHER')
+
+def _migrate_kpoptogether_db():
+    """DB에 남은 구 파트너 표기(KPOP2GETHER)를 KPOPTOGETHER로 멱등 치환한다.
+    page_edits 편집본은 배포 정적본보다 우선 서빙되므로 DB도 함께 정리해야 한다.
+    소문자 파트너 도메인(www.kpop2gether.com 이미지·상품 링크)은 대소문자 구분
+    치환이므로 건드리지 않는다. 치환 후에는 매칭 행이 사라져 자연 멱등.
+    (LIKE 패턴은 반드시 파라미터로 넘긴다 — PG에서 SQL 내 '%'는 플레이스홀더와 충돌)"""
+    L = ('%KPOP2GETHER%',)
+    for row in rows("SELECT path,html FROM page_edits WHERE html LIKE ?", L):
+        old = row.get('html') or ''
+        new = _kpoptogether_apply(old)
+        if new != old:
+            run('UPDATE page_edits SET html=?,updated=?,by_admin=? WHERE path=?',
+                (new, now_iso(), '\uc2dc\uc2a4\ud15c \ud45c\uae30\uc804\ud658', row['path']))
+    try:
+        for row in rows("SELECT key,value FROM site_settings WHERE value LIKE ?", L):
+            old = row.get('value') or ''
+            new = _kpoptogether_apply(old)
+            if new != old:
+                run('UPDATE site_settings SET value=?,updated=? WHERE key=?', (new, now_iso(), row['key']))
+    except Exception: pass
+    try:
+        pcx = _cols('products')
+        for col in ('name', 'descr', 'detail_html', 'info_rows', 'ship_rows'):
+            if col not in pcx: continue
+            sql = "SELECT id,%s AS v FROM products WHERE %s LIKE ?" % (col, col)
+            for row in rows(sql, L):
+                old = row.get('v') or ''
+                new = _kpoptogether_apply(old)
+                if new != old:
+                    run('UPDATE products SET %s=? WHERE id=?' % col, (new, row['id']))
+    except Exception: pass
+    try:
+        for row in rows("SELECT id,body FROM notify_templates WHERE body LIKE ?", L):
+            old = row.get('body') or ''
+            new = _kpoptogether_apply(old)
             if new != old:
                 run('UPDATE notify_templates SET body=? WHERE id=?', (new, row['id']))
     except Exception: pass
@@ -7086,7 +7130,7 @@ const INFO_LABELS=['판매','형태','발매/공급','차트 반영','랜덤 구
  '사이즈','소재','세탁 방법','제조사','품질보증기준','A/S 책임자'];
 const _SELLER=['판매','맵달서울성수 · MAPDAL SEOUL (성수)'];
 const INFO_PRESET={
- album:[_SELLER,['형태','음반 (CD) — 구성은 상세 참조'],['발매/공급','912엔터테인먼트 (KPOP2GETHER)'],
+ album:[_SELLER,['형태','음반 (CD) — 구성은 상세 참조'],['발매/공급','912엔터테인먼트 (KPOPTOGETHER)'],
         ['차트 반영','본 스토어 판매량은 한터차트에 집계됩니다'],
         ['랜덤 구성','버전/포토카드 랜덤 상품은 선택 불가 · 중복 발송 가능']],
  md:[_SELLER,['구성','상세 설명 참조'],['제조사','상세 설명 참조']],
@@ -7143,10 +7187,10 @@ init();
 _PDP_META = {
     'album': {
         'badges': [('영상통화', 'dream'), ('한터차트', 'best')],
-        'brand': 'KPOP2GETHER × 맵달SEOUL · 4F',
+        'brand': 'KPOPTOGETHER × 맵달SEOUL · 4F',
         'benefits': [
             ('차트반영', '한터차트 집계', ' · 4F = 온라인 동시',
-             'KPOP2GETHER × 맵달SEOUL 판매분은 한터차트에 집계됩니다'),
+             'KPOPTOGETHER × 맵달SEOUL 판매분은 한터차트에 집계됩니다'),
             ('가입혜택', '최초 가입 2,000P', '',
              '한 고객당 최초 가입 시 한 번만 지급됩니다'),
             ('맵달드림', '오늘 도착 또는 성수 픽업!', '',
@@ -7614,7 +7658,7 @@ def pdp(pid: str):
     flavor = _FLAVOR.get(cat, 'MAPDAL')
     if cat == 'album':
         inforows = ('<tr><th>형태</th><td>음반 (CD) — 구성은 상세 참조</td></tr>'
-                    '<tr><th>발매/공급</th><td>912엔터테인먼트 (KPOP2GETHER)</td></tr>'
+                    '<tr><th>발매/공급</th><td>912엔터테인먼트 (KPOPTOGETHER)</td></tr>'
                     '<tr><th>차트 반영</th><td>본 스토어 판매량은 한터차트에 집계됩니다</td></tr>'
                     '<tr><th>랜덤 구성</th><td>버전/포토카드 랜덤 상품은 선택 불가 · 중복 발송 가능</td></tr>')
     elif cat == 'kfood':
@@ -9930,7 +9974,7 @@ def _home_kpop_html():
             '</style>\n'
             '  <div class="sec-head">\n'
             '    <div>\n'
-            '      <div class="kicker">KPOP \u00b7 KPOP2GETHER \u00d7 \ub9f5\ub2ecSEOUL</div>\n'
+            '      <div class="kicker">KPOP \u00b7 KPOPTOGETHER \u00d7 \ub9f5\ub2ecSEOUL</div>\n'
             '      <h2>\uc0c8\ub85c \ub4e4\uc5b4\uc628 \uc568\ubc94</h2>\n'
             '    </div>\n'
             '    <a class="more" href="/kpop">KPOP \uc804\uccb4 \u2192</a>\n'
@@ -13057,7 +13101,7 @@ _SEO_HOME_ALIAS_FILES = {'mapdal_home_mockup_v1.html', 'index.html'}
 _SEO_PAGE_DESC = {
     '/home': '성수동 K-컬처 플래그십 맵달SEOUL 공식몰. K-POP 음반·굿즈, 컵떡볶이·김밥 K-FOOD, 국내외 배송(DDP).',
     '/shop': 'MAPDAL SEOUL 공식 SHOP — 굿즈/MD · K-FOOD · 어패럴 · 리빙/홈 전 카테고리. 성수 플래그십에서 전 세계로, 3만원 이상 무료배송.',
-    '/kpop': 'K-POP 최신 음반·앨범 온라인 구매 — 팬사인회·영상통화 이벤트 응모와 특전까지. KPOP2GETHER×맵달SEOUL 공식 앨범 스토어, 판매량 차트 집계 반영.',
+    '/kpop': 'K-POP 최신 음반·앨범 온라인 구매 — 팬사인회·영상통화 이벤트 응모와 특전까지. KPOPTOGETHER×맵달SEOUL 공식 앨범 스토어, 판매량 차트 집계 반영.',
     '/kfood': '맵달 K-FOOD — 컵떡볶이, 김밥 6종, BOWL 6종. 성수 매장의 맛을 콜드체인 배송으로 집앞까지. MAPDAL SEOUL 공식몰.',
     '/new-drops': '이번 주 신상 드롭 — 새로 나온 K-POP 앨범·굿즈·K-FOOD를 한눈에. MAPDAL SEOUL NEW/DROPS.',
     '/bestsellers': '지금 가장 많이 팔리는 맵달 베스트셀러 — 앨범·굿즈·K-FOOD 인기 상품 모음.',
@@ -13070,7 +13114,7 @@ _SEO_PAGE_DESC = {
     '/collection-sports-day': '스포츠 데이 컬렉션 — 볼캡·타월 등 응원 굿즈. MAPDAL SEOUL.',
     '/collection-archive': '지난 시즌 컬렉션 아카이브 — MAPDAL SEOUL.',
     '/journal': '맵달 저널 — 성수 플래그십 소식, 드롭 비하인드, K-컬처 스토리.',
-    '/mapdal-seoul': '맵달SEOUL 성수 플래그십 — 서울 성동구 성수이로16길 5, 825평 K-컬처 복합공간. 미디어홀·팬덤홀·KPOP2GETHER 앨범 스토어, 매일 11:00–21:00.',
+    '/mapdal-seoul': '맵달SEOUL 성수 플래그십 — 서울 성동구 성수이로16길 5, 825평 K-컬처 복합공간. 미디어홀·팬덤홀·KPOPTOGETHER 앨범 스토어, 매일 11:00–21:00.',
     '/gift-sets': '맵달 기프트 세트 — 선물하기 좋은 굿즈·K-FOOD 패키지 모음. MAPDAL SEOUL.',
     '/seongsu-limited': '성수 한정 — 맵달SEOUL 플래그십에서만 만나는 리미티드 에디션.',
     '/support': 'MAPDAL SEOUL 고객센터 — 주문·배송·교환/반품 안내와 1:1 문의.',
@@ -13078,7 +13122,7 @@ _SEO_PAGE_DESC = {
     '/returns': '교환/반품 안내 — 신청 방법, 가능 기간, 환불 절차 안내. MAPDAL SEOUL.',
     '/partnership': '파트너십·입점 문의 — K-culture IP 이벤트·커머스 협업 제안. MAPDAL SEOUL.',
     '/ir': 'IR·뉴스룸 — 맵달서울성수 투자 정보와 보도자료.',
-    '/album-detail': 'K-POP 앨범 상세 — KPOP2GETHER×맵달SEOUL 공식 앨범 스토어.',
+    '/album-detail': 'K-POP 앨범 상세 — KPOPTOGETHER×맵달SEOUL 공식 앨범 스토어.',
 }
 
 def seo_conf():
@@ -13193,11 +13237,11 @@ def _seo_album_block(uid):
     img = str(r.get('img') or '').strip()
     img_url = (_K2G_IMG_BASE + img) if img and not img.startswith('http') else (img or OG_IMAGE_URL)
     canonical = '%s/album-detail?uid=%s' % (SITE_ORIGIN, uid)
-    desc = '%s — 정품 K-POP 앨범. %sKPOP2GETHER×맵달SEOUL 공식 스토어, 판매량 차트 집계 반영.' % (
+    desc = '%s — 정품 K-POP 앨범. %sKPOPTOGETHER×맵달SEOUL 공식 스토어, 판매량 차트 집계 반영.' % (
         name[:80], ('판매가 ₩%s. ' % format(price, ',')) if price > 0 else '')
     prod = {'@context': 'https://schema.org', '@type': 'Product', 'name': name,
             'image': img_url, 'url': canonical, 'category': 'K-POP Album',
-            'brand': {'@type': 'Brand', 'name': 'KPOP2GETHER'}}
+            'brand': {'@type': 'Brand', 'name': 'KPOPTOGETHER'}}
     if price > 0:
         prod['offers'] = {'@type': 'Offer', 'priceCurrency': 'KRW', 'price': price,
                           'availability': _seo_avail(num(r.get('soldout'))), 'url': canonical}

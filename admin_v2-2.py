@@ -4027,7 +4027,7 @@ _SEO_HOME_ALIAS_FILES = {'mapdal_home_mockup_v1.html', 'index.html'}
 _SEO_PAGE_DESC = {
     '/home': '성수동 K-컬처 플래그십 맵달SEOUL 공식몰. K-POP 음반·굿즈, 컵떡볶이·김밥 K-FOOD, 국내외 배송(DDP).',
     '/shop': 'MAPDAL SEOUL 공식 SHOP — 굿즈/MD · K-FOOD · 어패럴 · 리빙/홈 전 카테고리. 성수 플래그십에서 전 세계로, 3만원 이상 무료배송.',
-    '/kpop': 'K-POP 최신 음반·앨범 온라인 구매 — 팬사인회·영상통화 이벤트 응모와 특전까지. KPOP2GETHER×맵달SEOUL 공식 앨범 스토어, 판매량 차트 집계 반영.',
+    '/kpop': 'K-POP 최신 음반·앨범 온라인 구매 — 팬사인회·영상통화 이벤트 응모와 특전까지. KPOPTOGETHER×맵달SEOUL 공식 앨범 스토어, 판매량 차트 집계 반영.',
     '/kfood': '맵달 K-FOOD — 컵떡볶이, 김밥 6종, BOWL 6종. 성수 매장의 맛을 콜드체인 배송으로 집앞까지. MAPDAL SEOUL 공식몰.',
     '/new-drops': '이번 주 신상 드롭 — 새로 나온 K-POP 앨범·굿즈·K-FOOD를 한눈에. MAPDAL SEOUL NEW/DROPS.',
     '/bestsellers': '지금 가장 많이 팔리는 맵달 베스트셀러 — 앨범·굿즈·K-FOOD 인기 상품 모음.',
@@ -4040,7 +4040,7 @@ _SEO_PAGE_DESC = {
     '/collection-sports-day': '스포츠 데이 컬렉션 — 볼캡·타월 등 응원 굿즈. MAPDAL SEOUL.',
     '/collection-archive': '지난 시즌 컬렉션 아카이브 — MAPDAL SEOUL.',
     '/journal': '맵달 저널 — 성수 플래그십 소식, 드롭 비하인드, K-컬처 스토리.',
-    '/mapdal-seoul': '맵달SEOUL 성수 플래그십 — 서울 성동구 성수이로16길 5, 825평 K-컬처 복합공간. 미디어홀·팬덤홀·KPOP2GETHER 앨범 스토어, 매일 11:00–21:00.',
+    '/mapdal-seoul': '맵달SEOUL 성수 플래그십 — 서울 성동구 성수이로16길 5, 825평 K-컬처 복합공간. 미디어홀·팬덤홀·KPOPTOGETHER 앨범 스토어, 매일 11:00–21:00.',
     '/gift-sets': '맵달 기프트 세트 — 선물하기 좋은 굿즈·K-FOOD 패키지 모음. MAPDAL SEOUL.',
     '/seongsu-limited': '성수 한정 — 맵달SEOUL 플래그십에서만 만나는 리미티드 에디션.',
     '/support': 'MAPDAL SEOUL 고객센터 — 주문·배송·교환/반품 안내와 1:1 문의.',
@@ -4048,7 +4048,7 @@ _SEO_PAGE_DESC = {
     '/returns': '교환/반품 안내 — 신청 방법, 가능 기간, 환불 절차 안내. MAPDAL SEOUL.',
     '/partnership': '파트너십·입점 문의 — K-culture IP 이벤트·커머스 협업 제안. MAPDAL SEOUL.',
     '/ir': 'IR·뉴스룸 — 맵달서울성수 투자 정보와 보도자료.',
-    '/album-detail': 'K-POP 앨범 상세 — KPOP2GETHER×맵달SEOUL 공식 앨범 스토어.',
+    '/album-detail': 'K-POP 앨범 상세 — KPOPTOGETHER×맵달SEOUL 공식 앨범 스토어.',
 }
 
 def seo_conf():
@@ -4163,11 +4163,11 @@ def _seo_album_block(uid):
     img = str(r.get('img') or '').strip()
     img_url = (_K2G_IMG_BASE + img) if img and not img.startswith('http') else (img or OG_IMAGE_URL)
     canonical = '%s/album-detail?uid=%s' % (SITE_ORIGIN, uid)
-    desc = '%s — 정품 K-POP 앨범. %sKPOP2GETHER×맵달SEOUL 공식 스토어, 판매량 차트 집계 반영.' % (
+    desc = '%s — 정품 K-POP 앨범. %sKPOPTOGETHER×맵달SEOUL 공식 스토어, 판매량 차트 집계 반영.' % (
         name[:80], ('판매가 ₩%s. ' % format(price, ',')) if price > 0 else '')
     prod = {'@context': 'https://schema.org', '@type': 'Product', 'name': name,
             'image': img_url, 'url': canonical, 'category': 'K-POP Album',
-            'brand': {'@type': 'Brand', 'name': 'KPOP2GETHER'}}
+            'brand': {'@type': 'Brand', 'name': 'KPOPTOGETHER'}}
     if price > 0:
         prod['offers'] = {'@type': 'Offer', 'priceCurrency': 'KRW', 'price': price,
                           'availability': _seo_avail(num(r.get('soldout'))), 'url': canonical}

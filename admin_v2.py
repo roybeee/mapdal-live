@@ -4280,7 +4280,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div id="tkbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-drops" style="display:none">
   <div class="panel"><h3>NEW/DROPS 이벤트 <span class="tag">메이크스타형 이벤트 허브 · 저장 즉시 반영</span></h3>
-  <div class="hint" style="margin-bottom:10px">판매 시작·종료·발표 시각만 입력하면 <b>판매예정 → 판매중 → 판매종료 → 당첨자발표</b> 상태가 시각 기준으로 자동 전환됩니다. 당첨자 명단은 한 줄에 한 명 — <b>주문번호,이름,휴대폰,뱃지</b> 순서(뒤쪽 항목은 생략 가능)이며, 사이트에는 주문번호는 그대로, 이름은 자동 마스킹(홍*동), 휴대폰은 <b>뒤 4자리만</b> 표시됩니다. 각 그룹의 <b>📄 엑셀 업로드</b> 버튼으로 파일(.xlsx)을 올리면 명단이 자동 입력됩니다.</div>
+  <div class="hint" style="margin-bottom:10px">판매 시작·종료·발표 시각만 입력하면 <b>판매예정 → 판매중 → 판매종료 → 당첨자발표</b> 상태가 시각 기준으로 자동 전환됩니다. 당첨자 명단은 한 줄에 한 명 — <b>주문번호,이름,휴대폰,뱃지</b> 순서(뒤쪽 항목은 생략 가능)이며, 사이트에는 주문번호는 그대로, 이름은 자동 마스킹(홍*동), 휴대폰은 <b>뒤 4자리만</b> 표시됩니다. 각 그룹의 <b>📄 엑셀 업로드</b> 버튼으로 파일(.xlsx)을 올리면 명단이 자동 입력됩니다. 이벤트마다 <b>공개 설정</b>(즉시 공개 · 예약 공개 · 비공개 초안)을 정할 수 있으며, 공개 전에는 관리자 로그인 또는 <b>🔗 미리보기 링크</b>로만 열리고 목록·홈·검색에는 노출되지 않습니다(구매·응모도 공개 후 가능). 새 이벤트는 <b>비공개 초안</b>으로 시작합니다.</div>
   <div class="toolbar" style="margin-bottom:12px"><button class="btn" onclick="dropEdit(0)">+ 새 이벤트</button><a class="btn ghost" href="/new-drops" target="_blank" style="text-decoration:none">사이트에서 확인</a></div>
   <div id="dropList" class="loading">불러오는 중…</div></div></section>
 <section id="t-seo" style="display:none">
@@ -5354,12 +5354,15 @@ async function loadDrops(){try{const d=await api('/admin/api/drops');DR=d.rows;D
         :r._announce==='RESERVED'?((r._wcount===0&&r.announce_at&&r.announce_at<=nowk)
           ?'<span class="tag" style="background:#B71F18;color:#fff;border-color:#B71F18" title="발표 시각이 지났지만 당첨 명단이 저장되지 않았습니다 — 명단을 저장해야 발표완료로 전환됩니다">⚠ 명단 미등록</span>'
           :'<span class="tag" style="background:#FFB000;color:#141414;border-color:#FFB000">발표예정</span>'):'';
-  return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #e4e1da;border-radius:6px;margin-bottom:8px;background:${r.on?'#fff':'#f4f2ec'}">
+  const lv=(r._live!==undefined)?!!r._live:(r.on!==false);
+  const pubTag=lv?'':(r._pub==='at'?`<span class="tag" style="background:#1E1E60;color:#fff;border-color:#1E1E60" title="공개 예약 시각(KST)에 자동 공개 · 그 전에는 관리자·미리보기 링크로만 열립니다">⏰ ${esc(r._pub_label||'예약 공개')}</span>`:`<span class="tag" style="background:#555;color:#fff;border-color:#555" title="관리자 로그인 또는 미리보기 링크로만 확인 · 목록·홈·검색 비노출">🔒 비공개</span>`);
+  return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #e4e1da;border-radius:6px;margin-bottom:8px;background:${lv?'#fff':'#f4f2ec'}">
    ${r.image?`<img src="${esc(r.image)}" style="width:74px;height:46px;object-fit:cover;border-radius:4px;flex:none">`:`<div style="width:74px;height:46px;border-radius:4px;background:linear-gradient(135deg,#3A3A3A,#141414);flex:none"></div>`}
-   <div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13.5px;${r.on?'':'color:#999'}">${esc(r.title)} ${r.on?'':'<span class="tag">숨김</span>'}</div>
+   <div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13.5px;${lv?'':'color:#666'}">${esc(r.title)} ${pubTag}</div>
     <div class="group-sub mono">#${r.id} · ${esc(r.artist||'-')} · ${esc(r.sales_start||'상시')} ~ ${esc(r.sales_end||'상시')}${r._wcount?` · 당첨 ${r._wcount}명`:''}</div></div>
    <span style="font:700 11px sans-serif;color:${s[1]};white-space:nowrap">${s[0]}</span>${an}
-   <a class="btn sm ghost" target="_blank" href="/new-drops?id=${r.id}" style="text-decoration:none">보기</a>
+   <a class="btn sm ghost" target="_blank" href="/new-drops?id=${r.id}" style="text-decoration:none" title="${lv?'사이트에서 보기':'공개 전 — 관리자 로그인 상태에서 미리보기'}">보기</a>
+   <button class="btn sm ghost" onclick="drPvLink(${r.id})" title="공개 전에도 열리는 공유용 링크 복사 (구매·응모는 공개 후 가능)">🔗 미리보기 링크</button>
    <button class="btn sm" onclick="dropEdit(${r.id})">편집</button>
    ${can(2)?`<button class="btn sm red" onclick="delDrop(${r.id})">삭제</button>`:''}
   </div>`}).join('')||'<div class="loading">등록된 이벤트가 없습니다 — [+ 새 이벤트]로 첫 이벤트를 만들어 보세요</div>';
@@ -5524,10 +5527,18 @@ const _lx=(_vv.winner_fansign_extra===undefined&&_vv.winner_videocall_extra===un
 const _lxV=(_lx&&((_vv.categories&&_vv.categories.length?_vv.categories:[_vv.category]).includes('VIDEOCALL')))?_lx:'';
 const _lxF=(_lx&&!_lxV)?_lx:'';
 const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_label:'구매하기',schedule:[],options:[],winners:[]};
+const _pub=r?(r._pub||(r.on===false?'off':'now')):'off';   /* 새 이벤트 기본값: 비공개 초안 — 저장이 곧 공개가 되는 사고 방지 */
  $('#mbox').classList.add('wide');
  $('#mbox').innerHTML=`<h3>${r?`이벤트 편집 <span class="tag">#${r.id}</span>`:'새 이벤트'}</h3>
  <div class="kv">
- <b>노출</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_on" ${v.on!==false?'checked':''}> 사이트에 표시</label></span>
+ <b>공개 설정</b><span>
+  <div style="display:grid;gap:7px">
+   <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;cursor:pointer"><input type="radio" name="dr_pub" value="now" ${_pub==='now'?'checked':''} onchange="drPubUI()"> <b>즉시 공개</b> <span class="hint">저장하면 바로 모든 방문자에게 표시</span></label>
+   <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;cursor:pointer"><input type="radio" name="dr_pub" value="at" ${_pub==='at'?'checked':''} onchange="drPubUI()"> <b>예약 공개</b> <input type="datetime-local" id="dr_pubat" value="${esc(v.publish_at||'')}" onfocus="drPubPick('at')" onchange="drPubUI()"> <span class="hint">KST · 시각 도달 시 자동 공개 — 그 전에는 관리자·미리보기 링크로만 열립니다</span></label>
+   <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;cursor:pointer"><input type="radio" name="dr_pub" value="off" ${_pub==='off'?'checked':''} onchange="drPubUI()"> <b>비공개 (초안)</b> <span class="hint">관리자 로그인 또는 미리보기 링크로만 확인 · 목록·홈·검색에 노출되지 않음</span></label>
+  </div>
+  <div id="dr_pvbox" style="margin-top:8px;padding:9px 11px;border:1px dashed #cfcabc;border-radius:6px;background:#fbfaf6;font-size:12px">${drPvBoxHTML(r)}</div>
+ </span>
  <b>제목 *</b><span><input id="dr_title" style="width:100%" value="${esc(v.title||'')}" placeholder="예) 스타라이트 1st MINI 발매 기념 대면 팬사인회 EVENT"></span>
  <b>아티스트</b><span><input id="dr_artist" style="width:100%" value="${esc(v.artist||'')}" placeholder="예) 스타라이트"></span>
  <b>유형</b><span><div id="dr_cats" style="display:flex;gap:6px;flex-wrap:wrap">${DRCATS.map(c=>{const on=(v.categories&&v.categories.length?v.categories:[v.category]).includes(c.id);return `<label class="drcat${on?' on':''}" style="display:inline-flex;align-items:center;padding:6px 12px;border:1.5px solid ${on?'#141414':'#ddd'};border-radius:999px;background:${on?'#141414':'#fff'};color:${on?'#fff':'#444'};cursor:pointer;font-size:12px;font-weight:700;user-select:none"><input type="checkbox" value="${c.id}" ${on?'checked':''} style="display:none" onchange="const l=this.parentElement,k=this.checked;l.style.background=k?'#141414':'#fff';l.style.color=k?'#fff':'#444';l.style.borderColor=k?'#141414':'#ddd'">${esc(c.label)}</label>`}).join('')}</div>
@@ -5560,13 +5571,30 @@ const r=id?DR.find(x=>x.id===id):null;const v=r||{on:true,chart_note:true,buy_la
  </div>
  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
   <button class="btn ghost" onclick="closeM()">닫기</button>
-  ${can(2)?`<button class="btn" onclick="saveDrop(${r?r.id:0})">저장 (사이트 즉시 반영)</button>`:''}
+  ${can(2)?`<button class="btn" id="dr_savebtn" onclick="saveDrop(${r?r.id:0})">저장</button>`:''}
  </div>`;
- $('#mbg').style.display='flex';drImgPrev();drOptInputInit();}
+ $('#mbg').style.display='flex';drImgPrev();drOptInputInit();drPubUI();}
+function drPvBoxHTML(r){if(!r)return '<b>미리보기 링크</b> <span class="hint">저장하면 자동 발급됩니다 — 공개 전에도 이 링크로는 누구나 확인 가능(구매·응모는 잠김)</span>';
+ if(r._preview_url)return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="white-space:nowrap">미리보기 링크</b><input readonly id="dr_pvurl" value="${esc(r._preview_url)}" style="flex:1;min-width:240px;font-family:'IBM Plex Mono',monospace;font-size:11.5px" onclick="this.select()"><button class="btn sm ghost" type="button" onclick="drPvCopy()">복사</button>${can(2)?`<button class="btn sm ghost" type="button" onclick="drPvIssue(${r.id},true)" title="이전 링크는 즉시 열리지 않게 됩니다">재발급</button>`:''}</div><div class="hint" style="margin-top:4px">공개 전에도 이 링크로는 누구나 페이지를 확인할 수 있습니다(구매·응모는 잠김). 외부에 알려졌다면 <b>재발급</b>하세요.</div>`;
+ return `<b>미리보기 링크</b> 아직 발급되지 않았습니다 — ${can(2)?`<button class="btn sm ghost" type="button" onclick="drPvIssue(${r.id},false)">지금 발급</button>`:'매니저 이상이 발급할 수 있습니다'}`}
+function drPubMode(){const x=document.querySelector('input[name=dr_pub]:checked');return x?x.value:'off'}
+function drPubPick(m){const x=document.querySelector('input[name=dr_pub][value='+m+']');if(x){x.checked=true;drPubUI()}}
+function drPubUI(){const m=drPubMode();const b=$('#dr_savebtn');if(b)b.textContent=m==='now'?'저장 → 즉시 공개':m==='at'?'저장 → 예약 공개':'저장 → 비공개 초안';
+ const t=$('#dr_pubat');if(t)t.style.outline=(m==='at'&&!t.value)?'2px solid #E8442E':''}
+function drPvCopy(u,msg){const url=u||(($('#dr_pvurl')||{}).value)||'';if(!url)return;const done=()=>toast(msg||'미리보기 링크를 복사했습니다');
+ if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(url).then(done,()=>prompt('링크를 복사하세요',url));else prompt('링크를 복사하세요',url)}
+async function drPvIssue(id,rotate){if(rotate&&!confirm('미리보기 링크를 재발급할까요? 이전 링크는 즉시 열리지 않게 됩니다.'))return;
+ try{const d=await api('/admin/api/drops/preview-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,rotate:!!rotate})});
+  const r=DR.find(x=>x.id===id);if(r)r._preview_url=d.url;
+  const box=$('#dr_pvbox');if(box&&r)box.innerHTML=drPvBoxHTML(r);
+  drPvCopy(d.url,(rotate?'재발급 완료':'발급 완료')+' — 링크를 복사했습니다')}catch(e){toast(e.message)}}
+function drPvLink(id){const r=DR.find(x=>x.id===id);if(!r)return;if(r._preview_url)return drPvCopy(r._preview_url);
+ if(can(2))return drPvIssue(id,false);toast('미리보기 링크가 아직 없습니다 — 매니저 이상이 편집 화면에서 발급할 수 있습니다')}
 async function saveDrop(id){try{
  const sched=[...document.querySelectorAll('#dr_sched .drsched')].map(x=>({name:x.querySelector('.ds-n').value,date:x.querySelector('.ds-d').value,time:x.querySelector('.ds-t').value,desc:x.querySelector('.ds-x').value}));
  const winners=[...document.querySelectorAll('#dr_wins .drwin')].map(x=>({title:x.querySelector('.dw-t').value,type:x.querySelector('.dw-y').value,list:x.querySelector('.dw-l').value}));
- const body={id:id||undefined,on:$('#dr_on').checked,title:$('#dr_title').value,artist:$('#dr_artist').value,
+ const _pm=drPubMode();if(_pm==='at'&&!$('#dr_pubat').value){drPubUI();$('#dr_pubat').focus();throw new Error('예약 공개 시각을 입력하세요')}
+ const body={id:id||undefined,pub:_pm,publish_at:$('#dr_pubat').value,on:_pm!=='off',title:$('#dr_title').value,artist:$('#dr_artist').value,
   categories:[...document.querySelectorAll('#dr_cats input:checked')].map(x=>x.value),
   image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
@@ -5578,7 +5606,7 @@ async function saveDrop(id){try{
   entry_extra:$('#dr_te_extra').value,
   announce_notice:$('#dr_annnotice').value,announce_body:$('#dr_annbody').value,winners:winners};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
- toast('저장 완료 — 사이트에 즉시 반영 (#'+d.id+')');closeM();loadDrops();
+ toast('저장 완료 — '+(d.pub_label||'사이트에 즉시 반영')+' (#'+d.id+')');closeM();loadDrops();
 }catch(e){toast(e.message)}}
 async function delDrop(id){if(!confirm('#'+id+' 이벤트를 삭제할까요? 되돌릴 수 없습니다.'))return;
  try{await api('/admin/api/drops/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});toast('삭제 완료');loadDrops()}catch(e){toast(e.message)}}
@@ -9840,7 +9868,7 @@ def _home_drops_html():
         ensure_ready()
         now = kst_now()
         cs = [_drop_card(d, now) for d in _drops_all()
-              if isinstance(d, dict) and d.get('on', True)]
+              if isinstance(d, dict) and _drop_is_live(d, now)]     # 공개 전 이벤트 제외
         on = sorted([c for c in cs if c['status'] == 'ON_SALE'], key=lambda c: c['sales_end'] or '9999')
         up = sorted([c for c in cs if c['status'] == 'UPCOMING'], key=lambda c: c['sales_start'] or '9999')
         an = sorted([c for c in cs if c['status'] == 'ENDED' and c['announce'] in ('ANNOUNCED', 'RESERVED')],
@@ -10283,6 +10311,102 @@ def _drop_state(d, now):
         has = any(str(g.get('list') or '').strip() for g in (d.get('winners') or []) if isinstance(g, dict))
         announce = 'ANNOUNCED' if (now >= an and has) else 'RESERVED'
     return status, announce
+
+# ── 공개 설정 (2026-09-17) — 비공개 초안 · 예약 공개 · 미리보기 링크 ──────────
+#   배경: 테스트용 이벤트가 저장 즉시 전체 공개됨(운영 요청) → 공개 전에는 관리자만
+#   보이고, 공유한 미리보기 링크로만 열리며, 지정 시각에 자동 공개되도록 한다.
+#   레코드 필드(추가 · 스키마 변경 없음 · 구버전 레코드는 기본값으로 동작):
+#     pub            'now'(즉시 공개) · 'at'(예약 공개) · 'off'(비공개 초안)
+#     publish_at     'YYYY-MM-DDTHH:MM' KST — pub='at' 일 때 자동 공개 시각
+#     preview_token  미리보기 링크 토큰(?pv=) — 저장 시 자동 발급 · 관리자에서 재발급 가능
+#     on             구버전 호환 스위치 — 저장 시 pub!='off' 와 동기화
+#   판정 원칙: 공개 여부를 저장하지 않고 KST 현재시각으로 매 요청 계산한다
+#   (판매예정→판매중 전환과 같은 방식) — 스케줄러·크론 없이 시각 도달 즉시 공개.
+#   공개 전 열람 = 관리자 세션(mp_sess) 또는 미리보기 토큰(?pv= · 쿠키 mp_pv_<id>).
+#   목록(/api/drops)·홈 코너·사이트맵·OG·관련 이벤트는 공개된 이벤트만 다룬다.
+#   공개 전 이벤트의 옵션 상품은 결제 생성(/api/orders)에서 차단한다(drop_purchase_gate).
+_DROP_PUB_MODES = ('now', 'at', 'off')
+_DROP_PV_COOKIE_AGE = 43200        # 미리보기 쿠키 12시간 — 링크 한 번 열면 상세↔발표 화면 이동에도 유지
+
+def _drop_pub_mode(d):
+    """'now' | 'at' | 'off' — 구버전 레코드(pub 없음)는 on=False 면 'off', 아니면 'now'."""
+    m = str((d or {}).get('pub') or '').strip().lower()
+    if m in _DROP_PUB_MODES:
+        return m
+    return 'now' if (d or {}).get('on', True) else 'off'
+
+def _drop_is_live(d, now=None):
+    """일반 방문자에게 공개된 상태인지 — 예약 공개는 시각 도달 시 자동 True."""
+    if not isinstance(d, dict) or not d.get('on', True):
+        return False
+    m = _drop_pub_mode(d)
+    if m == 'off':
+        return False
+    if m == 'at':
+        pa = _drop_dt(d.get('publish_at'))
+        return bool(pa) and (now or kst_now()) >= pa
+    return True
+
+def _drop_pub_label(d, now=None):
+    """관리자 표시용 공개 상태 문구."""
+    if _drop_is_live(d, now):
+        return '공개'
+    if _drop_pub_mode(d) == 'at':
+        pa = str(d.get('publish_at') or '')
+        return ('예약 공개 %s' % pa.replace('T', ' ')) if pa else '예약 공개 (시각 미지정)'
+    return '비공개 (초안)'
+
+def _actor_soft(request):
+    """관리자 세션이면 actor, 아니면 None (예외 없음) — 공개 전 열람 판정용."""
+    try:
+        return get_actor(request)
+    except Exception:
+        return None
+
+def _drop_preview_ok(d, request):
+    """공개 전 열람 허가: 유효한 미리보기 토큰(?pv= 또는 쿠키 mp_pv_<id>) 또는 관리자 세션."""
+    if request is None or not isinstance(d, dict):
+        return False
+    tok = str(d.get('preview_token') or '')
+    if tok:
+        q = (request.query_params.get('pv') or '').strip()
+        if q and hmac.compare_digest(q, tok):
+            return True
+        ck = (request.cookies.get('mp_pv_%d' % num(d.get('id'))) or '').strip()
+        if ck and hmac.compare_digest(ck, tok):
+            return True
+    return _actor_soft(request) is not None
+
+def _drop_visible(d, request, now=None):
+    return _drop_is_live(d, now) or _drop_preview_ok(d, request)
+
+def _drop_preview_url(d):
+    tok = str((d or {}).get('preview_token') or '')
+    if not tok or not num((d or {}).get('id')):
+        return ''
+    return '%s/new-drops?id=%d&pv=%s' % (SITE_ORIGIN, num(d.get('id')), tok)
+
+def _drop_new_token():
+    return secrets.token_urlsafe(18)
+
+def drop_purchase_gate(items):
+    """공개 전(비공개 초안·예약 공개 미도달) 이벤트의 옵션 상품이 주문에 섞이면 400.
+    미리보기 링크·관리자 세션으로 페이지가 열려도 결제는 공개 이후에만 가능하다(공개 전 선점 방지).
+    app.py /api/orders 가 재고 트랜잭션 직전에 호출한다 — 드롭 읽기 실패 시 조용히 통과(fail-open)."""
+    pids = {str((it or {}).get('id') or '').strip() for it in (items or []) if isinstance(it, dict)}
+    pids.discard('')
+    if not pids:
+        return
+    now = kst_now()
+    for d in _drops_all():
+        if not isinstance(d, dict) or _drop_is_live(d, now):
+            continue
+        for o in _drop_opts_norm(d.get('options')):
+            pid = str(o.get('product_id') or '')
+            if pid and pid in pids:
+                raise HTTPException(400, '아직 공개되지 않은 이벤트입니다 — 공개 후 구매·응모할 수 있습니다 (%s)'
+                                    % str(d.get('title') or '')[:40])
+
 
 def _drop_card(d, now):
     status, announce = _drop_state(d, now)
@@ -10869,7 +10993,7 @@ def api_drops_public(request: Request):
     try: ensure_ready()
     except Exception: pass
     now = kst_now()
-    cards = [_drop_card(d, now) for d in _drops_all() if isinstance(d, dict) and d.get('on', True)]
+    cards = [_drop_card(d, now) for d in _drops_all() if isinstance(d, dict) and _drop_is_live(d, now)]
     counts = {'ON_SALE': 0, 'WINNER_ANNOUNCEMENT': 0, 'UPCOMING': 0, 'ENDED': 0}
     for c in cards:
         if c['status'] in counts: counts[c['status']] += 1
@@ -10947,13 +11071,14 @@ def _drop_related_products(c):
              'soldout': it['soldout'], 'url': it['url']} for it in albums[:8]]
 
 @admin_router.get('/api/drops/{did}')
-def api_drop_public_detail(did: int):
+def api_drop_public_detail(did: int, request: Request):
     try: ensure_ready()
     except Exception: pass
     now = kst_now()
     ds = [d for d in _drops_all() if isinstance(d, dict)]
-    d = next((x for x in ds if num(x.get('id')) == did and x.get('on', True)), None)
-    if not d: raise HTTPException(404, '이벤트를 찾을 수 없습니다')
+    d = next((x for x in ds if num(x.get('id')) == did), None)
+    # 공개 전(비공개 초안·예약 공개 미도달)은 관리자 세션 또는 미리보기 토큰(?pv=·쿠키)만 열람 — 그 외 404
+    if not d or not _drop_visible(d, request, now): raise HTTPException(404, '이벤트를 찾을 수 없습니다')
     c = _drop_card(d, now)
     sched = []
     for s in (d.get('schedule') or [])[:10]:
@@ -10962,7 +11087,7 @@ def api_drop_public_detail(did: int):
                           'time': str(s.get('time') or '')[:20], 'desc': str(s.get('desc') or '')[:80]})
     rel, art = [], c['artist'].strip().lower()
     for x in ds:
-        if num(x.get('id')) == did or not x.get('on', True): continue
+        if num(x.get('id')) == did or not _drop_is_live(x, now): continue   # 관련 이벤트는 공개분만
         xc = _drop_card(x, now)
         xc['_rank'] = 0 if (art and xc['artist'].strip().lower() == art) else (1 if set(xc.get('cats') or []) & set(c.get('cats') or []) else 2)
         rel.append(xc)
@@ -10982,6 +11107,9 @@ def api_drop_public_detail(did: int):
               'winner_groups': (_drop_winner_groups(d, masked=True) if c['announce'] == 'ANNOUNCED' else []),
               'related': rel[:8],
               'related_products': _drop_related_products(c)})
+    _live = _drop_is_live(d, now)
+    c.update({'live': _live, 'preview': (not _live),          # preview=True → 프런트 구매·응모 잠금 표시
+              'pub': _drop_pub_mode(d), 'publish_at': str(d.get('publish_at') or '')})
     c['entry_terms_html'], wt = _drop_terms_for(d)
     c['winner_terms'] = wt
     c['winner_terms_html'] = next((w['html'] for k in ('VIDEOCALL', 'FANSIGN', 'DEFAULT')
@@ -11001,6 +11129,8 @@ def api_drops_admin(request: Request):
         if not isinstance(d, dict): continue
         st, an = _drop_state(d, now)
         e = dict(d); e['_status'] = st; e['_announce'] = an
+        e['_live'] = _drop_is_live(d, now); e['_pub'] = _drop_pub_mode(d)
+        e['_pub_label'] = _drop_pub_label(d, now); e['_preview_url'] = _drop_preview_url(d)
         e['_wcount'] = sum(len([x for x in str(g.get('list') or '').split('\n') if x.strip()])
                            for g in (d.get('winners') or []) if isinstance(g, dict))
         out.append(e)
@@ -11019,6 +11149,14 @@ def api_drops_save(request: Request, body: dict = Body(...)):
     if st and en and en < st: raise HTTPException(400, '판매 종료가 시작보다 빠릅니다')
     if not _drop_url_ok(body.get('buy_url')) or not _drop_url_ok(body.get('image')):
         raise HTTPException(400, '링크는 /경로 또는 https:// 주소만 가능합니다')
+    # ── 공개 설정 ── pub 미전송(구버전 편집기 캐시)이면 종전 on 스위치로 해석
+    pub = str(body.get('pub') or '').strip().lower()
+    if not pub:
+        pub = 'now' if body.get('on', True) else 'off'
+    if pub not in _DROP_PUB_MODES: raise HTTPException(400, '공개 설정 값이 올바르지 않습니다')
+    publish_at = str(body.get('publish_at') or '').strip().replace(' ', 'T')[:16]
+    if publish_at and not _drop_dt(publish_at): raise HTTPException(400, '공개 시각 형식이 올바르지 않습니다')
+    if pub == 'at' and not publish_at: raise HTTPException(400, '예약 공개 시각을 입력하세요')
     winners = []
     for g in (body.get('winners') or [])[:10]:
         if not isinstance(g, dict): continue
@@ -11040,7 +11178,9 @@ def api_drops_save(request: Request, body: dict = Body(...)):
     cats = _drop_cats({'categories': cats_in})
     rec = {'id': (did if cur else (max([num(d.get('id')) for d in ds] + [0]) + 1)),
            'created': ((cur or {}).get('created') or now_iso()), 'updated': now_iso(),
-           'on': bool(body.get('on', True)),
+           'on': (pub != 'off'),                     # 구버전 호환 스위치 — pub 과 동기화
+           'pub': pub, 'publish_at': publish_at,
+           'preview_token': (str((cur or {}).get('preview_token') or '') or _drop_new_token()),
            'title': title[:120],
            'artist': re.sub(r'\s+', ' ', str(body.get('artist') or '')).strip()[:60],
            'category': (cats[0] if cats else ''), 'categories': cats,
@@ -11082,8 +11222,30 @@ def api_drops_save(request: Request, body: dict = Body(...)):
                             % (_base_n, len(ds)))
     _setting_put('drops', ds, a['name'])
     _HOME_DROPS_CACHE['body'] = None          # 홈 NEW/DROPS 코너 즉시 갱신
-    audit(a, 'NEW/DROPS저장', '#%s' % rec['id'], title[:60])
-    return {'ok': True, 'id': rec['id']}
+    _now = kst_now()
+    audit(a, 'NEW/DROPS저장', '#%s' % rec['id'], '%s · %s' % (title[:50], _drop_pub_label(rec, _now)))
+    return {'ok': True, 'id': rec['id'], 'live': _drop_is_live(rec, _now), 'pub': pub,
+            'pub_label': _drop_pub_label(rec, _now), 'preview_url': _drop_preview_url(rec)}
+
+@admin_router.post('/admin/api/drops/preview-token')
+def api_drops_preview_token(request: Request, body: dict = Body(...)):
+    """미리보기 링크 발급/재발급 — 구버전 레코드(토큰 없음) 발급 · 링크 유출 시 재발급(이전 링크 즉시 무효).
+    저장 라우트와 같은 쓰기 안전장치(_drops_guard · 건수 검증 · 자동 백업)를 거친다."""
+    a = get_actor(request); need(a, 2, 'NEW/DROPS 관리')
+    did = num(body.get('id')); rotate = bool(body.get('rotate'))
+    ds = _drops_guard()                    # 읽기 실패 시 여기서 중단 — 덮어쓰기 금지
+    _base_n = len(ds)
+    cur = next((d for d in ds if num(d.get('id')) == did), None)
+    if not cur: raise HTTPException(404, '이벤트를 찾을 수 없습니다')
+    if cur.get('preview_token') and not rotate:
+        return {'ok': True, 'id': did, 'url': _drop_preview_url(cur), 'rotated': False}
+    cur['preview_token'] = _drop_new_token()
+    cur['updated'] = now_iso()
+    if len(ds) != _base_n:
+        raise HTTPException(409, '이벤트 건수가 예상과 다릅니다 — 저장을 중단했습니다.')
+    _setting_put('drops', ds, a['name'])
+    audit(a, 'NEW/DROPS미리보기링크', '#%d' % did, '재발급' if rotate else '발급')
+    return {'ok': True, 'id': did, 'url': _drop_preview_url(cur), 'rotated': rotate}
 
 @admin_router.post('/admin/api/drops/delete')
 def api_drops_delete(request: Request, body: dict = Body(...)):
@@ -13264,9 +13426,9 @@ def _seo_drop_block(key):
         return None
     did = int(did_s)
     d = next((x for x in _drops_all()
-              if isinstance(x, dict) and num(x.get('id')) == did and x.get('on', True)), None)
+              if isinstance(x, dict) and num(x.get('id')) == did and _drop_is_live(x)), None)
     if not d:
-        return None                                   # 없거나 비공개(on=False) → 사이트 기본 OG
+        return None                                   # 없거나 공개 전(초안·예약 미도달) → 사이트 기본 OG
     c = _drop_card(d, kst_now())
     title = re.sub(r'\s+', ' ', c['title']).strip()
     if not title:
@@ -13418,7 +13580,7 @@ def _sitemap_xml():
         pass                                          # DB 미준비 시 페이지만이라도 제공 (fail-open)
     try:
         for d in _drops_all():                        # 공개 드롭 상세 — 이벤트별 OG·제목 서버 렌더와 세트
-            if isinstance(d, dict) and d.get('on', True) and num(d.get('id')):
+            if isinstance(d, dict) and _drop_is_live(d) and num(d.get('id')):
                 locs.append(SITE_ORIGIN + '/new-drops?id=%d' % num(d.get('id')))
     except Exception:
         pass
@@ -16342,6 +16504,60 @@ mimetypes.add_type('image/avif', '.avif')
 #   재구축 전까지 /shop 으로 보낸다(재구축 시 이 항목만 제거하면 부활).
 _LEGACY_REDIRECTS = {'new-drops-2': '/new-drops', 'bestsellers': '/shop'}
 
+_DROP_PREVIEW_MARK = 'mpDropPreview'
+
+def _drop_preview_apply(html, request):
+    """/new-drops?id=… 공개 전 미리보기 처리(마커 멱등).
+    반환 (html, did, cookie_token):
+      · 공개 전 + 허가된 열람(관리자 세션·?pv=·쿠키) → 상단 안내 배너 + noindex 주입
+      · ?pv= 가 유효하면 cookie_token 반환 → 호출부가 mp_pv_<id> 쿠키 발급(상세↔발표 이동에도 유지)
+      · 공개 이벤트·비허가·오류 → 원본 그대로(페이지는 열리지만 API 가 404 → '이벤트를 찾을 수 없습니다')"""
+    try:
+        did_s = (request.query_params.get('id') or '').strip()
+        if not re.fullmatch(r'\d{1,10}', did_s) or ('id="%s"' % _DROP_PREVIEW_MARK) in html:
+            return html, None, None
+        did = int(did_s)
+        d = next((x for x in _drops_all() if isinstance(x, dict) and num(x.get('id')) == did), None)
+        if not d:
+            return html, None, None
+        now = kst_now()
+        if _drop_is_live(d, now) or not _drop_preview_ok(d, request):
+            return html, None, None
+        tok = str(d.get('preview_token') or '')
+        q = (request.query_params.get('pv') or '').strip()
+        set_tok = tok if (tok and q and hmac.compare_digest(q, tok)) else None
+        if _drop_pub_mode(d) == 'at' and _drop_dt(d.get('publish_at')):
+            w = _drop_dt(d.get('publish_at'))
+            msg = '공개 예정 %d/%d %02d:%02d KST' % (w.month, w.day, w.hour, w.minute)
+        else:
+            msg = '비공개 초안'
+        e = lambda s: str(s or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+        bar = ('<div id="%s" style="position:relative;z-index:200;background:#141414;color:#fff;'
+               'font:700 12.5px/1.55 -apple-system,BlinkMacSystemFont,\'Apple SD Gothic Neo\',\'Noto Sans KR\',sans-serif;'
+               'letter-spacing:.01em;padding:9px 16px;display:flex;flex-wrap:wrap;align-items:center;'
+               'justify-content:center;gap:6px 12px;text-align:center;border-bottom:3px solid #E8442E">'
+               '<span style="font-family:\'IBM Plex Mono\',monospace;font-size:10.5px;letter-spacing:.14em;'
+               'background:#E8442E;padding:3px 8px">PREVIEW</span>'
+               '<span>🔒 공개 전 미리보기 · %s · 일반 방문자에게는 보이지 않으며 구매·응모는 공개 후 가능합니다</span>'
+               '</div>') % (_DROP_PREVIEW_MARK, e(msg))
+        m = re.search(r'<body[^>]*>', html, re.I)
+        html = (html[:m.end()] + '\n' + bar + html[m.end():]) if m else (bar + html)
+        html = _seo_insert_after_title(html, '<meta name="robots" content="noindex,nofollow">')
+        return html, did, set_tok
+    except Exception:
+        return html, None, None
+
+def _serve_html(html, seo_path, request):
+    """HTML 최종 응답 — /new-drops 상세는 공개 전 미리보기 배너·쿠키를 덧붙인다."""
+    did = tok = None
+    if seo_path == '/new-drops':
+        html, did, tok = _drop_preview_apply(html, request)
+    resp = HTMLResponse(html, headers={'Cache-Control': 'no-cache'})
+    if did and tok:
+        resp.set_cookie('mp_pv_%d' % did, tok, max_age=_DROP_PV_COOKIE_AGE, path='/',
+                        httponly=True, samesite='lax', secure=True)
+    return resp
+
 @admin_router.api_route('/{spath:path}', methods=['GET', 'HEAD'])
 def serve_site(spath: str, request: Request):
     # HEAD 명시 등록 — FastAPI .get()은 HEAD를 자동 포함하지 않아 카카오/페북 스크래퍼의
@@ -16378,7 +16594,7 @@ def serve_site(spath: str, request: Request):
         try:
             ensure_ready()
             ov = one('SELECT html FROM page_edits WHERE path=?', (name,))
-            if ov: return HTMLResponse(_inject_auth(ov['html'], seo_path, seo_uid), headers={'Cache-Control': 'no-cache'})
+            if ov: return _serve_html(_inject_auth(ov['html'], seo_path, seo_uid), seo_path, request)
         except Exception:
             pass
     fp = os.path.realpath(os.path.join(STATIC_DIR, spath))
@@ -16388,7 +16604,7 @@ def serve_site(spath: str, request: Request):
     mt = mimetypes.guess_type(fp)[0] or 'application/octet-stream'
     data = open(fp, 'rb').read()
     if mt == 'text/html':
-        return HTMLResponse(_inject_auth(data.decode('utf-8', errors='replace'), seo_path, seo_uid), headers={'Cache-Control': 'no-cache'})
+        return _serve_html(_inject_auth(data.decode('utf-8', errors='replace'), seo_path, seo_uid), seo_path, request)
     if spath.startswith('img/e/'):
         # 내용 해시 파일명 → 영구 캐시 안전 (교체는 새 해시 파일명으로)
         return Response(data, media_type=mt,

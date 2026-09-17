@@ -673,6 +673,16 @@ async def create_order(req: Request):
     ga_cid, ga_sid = _ga_cookie_ids(req)
     _ga_ok = _has_ga_cols()              # 주문 트랜잭션 밖에서 판정 (내부 예외 → PG abort 방지)
 
+    # ── 공개 전 이벤트 옵션 구매 차단 (2026-09-17 · NEW/DROPS 비공개 초안·예약 공개) ────
+    #   미리보기 링크·관리자 세션으로 페이지가 열려도 결제는 공개 이후에만 만들어져야 한다
+    #   (링크 유출 시 공개 전 선점 방지). 판정은 admin_v2.drop_purchase_gate — 400 반환.
+    #   드롭 읽기 실패 등 내부 예외는 통과(fail-open) — 일반 상품 결제에 영향 없음.
+    try:
+        import admin_v2 as _av; _av.drop_purchase_gate(items)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     changed_stock_ids = []
     with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
         sub, resolved = 0, []

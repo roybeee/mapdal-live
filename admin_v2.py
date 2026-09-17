@@ -1393,6 +1393,8 @@ def ensure_ready():
     except Exception: pass
     try: _migrate_home_page_edits() # 홈 편집본을 배포 정적본과 동기화 — 백업 후 교체 (멱등)
     except Exception: pass
+    try: _repair_drops_mail_escape() # 2026-09-17 사고 복구 — drops JSON 의 깨진 이스케이프(\\cx@) 원복 (멱등)
+    except Exception as e: print('drops repair skipped:', e)
     try: _migrate_contact_mail_db() # 대표 문의 이메일 단일화 — DB 편집본·설정값 멱등 치환
     except Exception: pass
     try: _migrate_kpoptogether_db() # 파트너 표기 전환(→KPOPTOGETHER) — DB 편집본·설정·상품 멱등 치환
@@ -6232,6 +6234,43 @@ def _catalog_migrate_lifestyle():
     run("UPDATE product_groups SET department='LIFESTYLE', "
         "product_type=CASE WHEN product_type='LIVING' THEN 'LIFESTYLE' ELSE product_type END, "
         "updated_at=? WHERE department='LIVING'", (now_iso(),))
+
+def _mail_escape_repair_text(raw, local):
+    """'\\<local>@mealzip.kr' 처럼 홀수 개 백슬래시 뒤에 대표 주소가 붙은 자리를 '\\n<local>@…' 로 되돌린다.
+    (짝수 개 백슬래시 = 리터럴 백슬래시 이스케이프이므로 건드리지 않는다)"""
+    pat = re.compile(r'(?<!\\)((?:\\\\)*)\\(?=' + re.escape(local) + r'@mealzip\.kr)', re.I)
+    return pat.sub(lambda m: m.group(1) + '\\n', raw)
+
+def _repair_drops_mail_escape():
+    """2026-09-17 사고 복구 — 구 contact_mail_apply 가 drops JSON 원문의 '\\n' 을 이메일
+    로컬파트로 삼켜 '\\cx@mealzip.kr'(잘못된 이스케이프) 로 만든 행을 되돌린다.
+    JSON 으로 해석되지 않는 drops·__bak::drops 행만 대상으로 하고, 되돌린 결과가
+    리스트로 파싱될 때만 기록한다 (멱등 · 정상 행은 무변경)."""
+    local = CONTACT_MAIL.split('@')[0]
+    try:
+        cand = rows("SELECT key, value, updated, by_admin FROM site_settings "
+                    "WHERE key='drops' OR key LIKE ?", ('__bak::drops::%',))
+    except Exception:
+        return 0
+    fixed = 0
+    for r in cand:
+        raw = r.get('value') or ''
+        if not raw or r['key'].endswith('-corrupt') or isinstance(jload(raw, None), list):
+            continue                                   # 정상 행·사고 원문 스냅샷 — 무변경
+        new = _mail_escape_repair_text(raw, local)
+        if new == raw or not isinstance(jload(new, None), list):
+            print('[drops-repair] %s: 자동 복구 불가 (수동 확인 필요)' % r['key']); continue
+        if r['key'] == 'drops':                        # 복구 직전 원문을 별도 스냅샷으로 보존
+            try:
+                run('INSERT INTO site_settings VALUES(?,?,?,?)',
+                    ('__bak::drops::%s-corrupt' % re.sub(r'\D', '', now_iso())[:14], raw,
+                     r.get('updated') or now_iso(), r.get('by_admin') or ''))
+            except Exception: pass
+        run('UPDATE site_settings SET value=?, updated=? WHERE key=?', (new, now_iso(), r['key']))
+        fixed += 1
+    if fixed:
+        print('[drops-repair] 깨진 이스케이프 복구 %d행' % fixed)
+    return fixed
 
 def _migrate_contact_mail_db():
     """DB에 남은 구 문의 이메일을 대표 주소로 멱등 치환한다.
@@ -13876,7 +13915,9 @@ def _ecom_snippet():
 #   섞여 있어 원본 수정만으로는 누락이 생기므로, 서빙 직전 한 번 더 정규화한다.
 #   제3자 A/S 주소(help@kihno.com 등 음반 제조사)는 도메인이 달라 영향 없음.
 CONTACT_MAIL = os.getenv('CONTACT_MAIL', 'cx@mealzip.kr')
-_LEGACY_MAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@mealzip\.kr|mapdal\.seoul@gmail\.com', re.I)
+#   로컬파트의 각 글자는 '백슬래시 바로 뒤'가 아니어야 한다 — JSON/JS 원문의 \n \t 같은
+#   이스케이프 글자를 삼키면 '\\n\\ncx@' → '\\n\\cx@' 로 원문이 깨진다 (2026-09-17 사고).
+_LEGACY_MAIL_RE = re.compile(r'(?:(?<!\\)[A-Za-z0-9._%+-])+@mealzip\.kr|mapdal\.seoul@gmail\.com', re.I)
 
 def contact_mail_apply(text):
     """구 문의 이메일을 대표 주소로 치환한다 (멱등 — 이미 대표 주소면 결과 동일)."""

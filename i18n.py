@@ -370,20 +370,34 @@ function fxWalk(n){if(CUR==='KRW'||!RATES)return;if(n.nodeType===3){fxNode(n);re
 if(CUR!=='KRW'){fetch('/api/fx').then(function(r){return r.json()}).then(function(d){RATES=d.rates||{};
  var go=function(){fxWalk(D.body);try{new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(fxWalk);if(m.type==='characterData')fxNode(m.target)})}).observe(D.body,{childList:true,subtree:true,characterData:true})}catch(e){}};
  if(D.readyState==='loading')D.addEventListener('DOMContentLoaded',go);else go()}).catch(function(){})}
-/* 언어·통화 스위처 (헤더 우측 상단 고정 바) */
-function bar(){if(D.getElementById('mpLangBar'))return;var b=D.createElement('div');b.id='mpLangBar';
+/* 언어·통화 스위처 — 헤더 유틸 영역에 🌐 버튼 1개(공간 최소) + 드롭다운. 헤더 없는 화면은 좌하단 고정 */
+function bar(){if(D.getElementById('mpLangBar'))return;
  var path=location.pathname.replace(/^\/(en|ja|zh)(?=\/|$)/,'')||'/home';
- var opts=[['ko','KO'],['en','EN'],['ja','JA'],['zh','中文']].map(function(x){var href=(x[0]==='ko'?'':'/'+x[0])+path+location.search;
-  return'<a href="'+href+'" hreflang="'+x[0]+'" data-l="'+x[0]+'"'+(x[0]===L?' aria-current="true" class="on"':'')+'>'+x[1]+'</a>'}).join('');
- var cs=['KRW','USD','JPY','CNY','EUR','TWD'].map(function(c){return'<option'+(c===CUR?' selected':'')+'>'+c+'</option>'}).join('');
- b.innerHTML='<nav aria-label="Language">'+opts+'</nav><label><span class="sr">Currency</span><select aria-label="Currency">'+cs+'</select></label>';
- b.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[data-l]');if(a){sc('mp_lang',a.getAttribute('data-l'));try{W.mpTrack&&mpTrack('lang_switch',{method:a.getAttribute('data-l')})}catch(x){}}});
- b.querySelector('select').addEventListener('change',function(){sc('mp_cur',this.value);location.reload()});
- D.body.appendChild(b)}
-var st=D.createElement('style');st.textContent='#mpLangBar{position:fixed;z-index:9980;right:12px;top:auto;bottom:12px;display:flex;gap:6px;align-items:center;background:rgba(20,20,20,.92);color:#fff;padding:6px 8px;font:600 11.5px/1 "IBM Plex Mono",monospace;backdrop-filter:blur(6px)}'
- +'#mpLangBar nav{display:flex;gap:2px}#mpLangBar a{color:#bbb;text-decoration:none;padding:6px 7px;min-width:30px;text-align:center}#mpLangBar a.on{background:#fff;color:#141414}'
- +'#mpLangBar select{font:inherit;background:#141414;color:#fff;border:1px solid #444;padding:5px 4px}#mpLangBar .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}'
- +'@media(max-width:768px){#mpLangBar{left:10px;right:auto;bottom:84px}}';
+ var L4=[['ko','한국어'],['en','English'],['ja','日本語'],['zh','简体中文']],LB={ko:'KO',en:'EN',ja:'JA',zh:'中文'};
+ var b=D.createElement('span');b.id='mpLangBar';
+ b.innerHTML='<button type="button" aria-haspopup="true" aria-expanded="false" aria-label="Language & currency">🌐 '+LB[L]+'</button>'
+  +'<div class="pop" role="menu" hidden>'+L4.map(function(x){return'<a role="menuitem" hreflang="'+x[0]+'" href="'+(x[0]==='ko'?'':'/'+x[0])+path+location.search+'" data-l="'+x[0]+'"'+(x[0]===L?' aria-current="true"':'')+'>'+x[1]+'</a>'}).join('')
+  +'<label>Currency <select aria-label="Currency">'+['KRW','USD','JPY','CNY','EUR','TWD'].map(function(c){return'<option'+(c===CUR?' selected':'')+'>'+c+'</option>'}).join('')+'</select></label></div>';
+ var btn=b.querySelector('button'),pop=b.querySelector('.pop');
+ btn.addEventListener('click',function(e){e.stopPropagation();var o=pop.hidden;pop.hidden=!o;btn.setAttribute('aria-expanded',o?'true':'false')});
+ D.addEventListener('click',function(e){if(!b.contains(e.target)){pop.hidden=true;btn.setAttribute('aria-expanded','false')}});
+ D.addEventListener('keydown',function(e){if(e.key==='Escape'){pop.hidden=true;btn.setAttribute('aria-expanded','false')}});
+ pop.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[data-l]');if(a){sc('mp_lang',a.getAttribute('data-l'));try{W.mpTrack&&mpTrack('lang_switch',{method:a.getAttribute('data-l')})}catch(x){}}});
+ pop.querySelector('select').addEventListener('change',function(){sc('mp_cur',this.value);location.reload()});
+ var host=D.querySelector('header .util')||D.querySelector('.util');
+ if(host){b.className='inhdr';host.insertBefore(b,host.firstChild)}else{b.className='fixed';D.body.appendChild(b)}}
+var st=D.createElement('style');st.textContent='#mpLangBar{position:relative;display:inline-flex;align-items:center;margin-right:8px}'
+ +'#mpLangBar>button{font:600 12px/1 "IBM Plex Mono",monospace;background:transparent;color:inherit;border:1px solid currentColor;border-radius:999px;padding:6px 9px;cursor:pointer;white-space:nowrap;min-height:30px}'
+ +'#mpLangBar>button:focus-visible,#mpLangBar a:focus-visible{outline:2px solid #E8332A;outline-offset:2px}'
+ +'#mpLangBar .pop{position:absolute;right:0;top:calc(100% + 8px);z-index:9990;background:#fff;color:#141414;border:1px solid #E2E0D9;box-shadow:0 10px 30px rgba(0,0,0,.15);min-width:170px;padding:6px;text-align:left}'
+ +'#mpLangBar .pop a{display:block;padding:9px 10px;color:#141414;text-decoration:none;font:500 13.5px/1.2 "IBM Plex Sans KR",sans-serif;letter-spacing:0}'
+ +'#mpLangBar .pop a:hover,#mpLangBar .pop a[aria-current]{background:#F4F3EF}#mpLangBar .pop a[aria-current]{font-weight:700;color:#E8332A}'
+ +'#mpLangBar .pop label{display:flex;justify-content:space-between;align-items:center;gap:8px;border-top:1px solid #E2E0D9;margin-top:4px;padding:9px 10px 4px;font:500 12px "IBM Plex Mono",monospace;color:#5E5D57}'
+ +'#mpLangBar .pop select{font:inherit;border:1px solid #E2E0D9;padding:4px}'
+ +'#mpLangBar.fixed{position:fixed;z-index:9980;left:12px;bottom:12px;background:#141414;color:#fff;padding:4px;margin:0}#mpLangBar.fixed .pop{top:auto;bottom:calc(100% + 8px);left:0;right:auto}'
+ +'@media(max-width:768px){#mpLangBar>button{padding:5px 7px;font-size:11px}#mpLangBar.fixed{bottom:84px}'
+ +'header .util{gap:10px!important;font-size:12px!important;flex-shrink:0}header .util>a,header .util>span{white-space:nowrap}'
+ +'header .logo,header .logo img,header .logo svg{max-width:38vw}}';
 D.head.appendChild(st);
 if(D.readyState==='loading')D.addEventListener('DOMContentLoaded',bar);else bar();
 """

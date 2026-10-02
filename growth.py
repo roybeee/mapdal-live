@@ -410,7 +410,9 @@ var st=D.createElement('style');st.textContent='#mpCb{position:fixed;left:16px;r
  +'padding:16px 18px;display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;font:500 13px/1.55 "IBM Plex Sans KR",-apple-system,sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.25)}'
  +'#mpCb p{margin:0;flex:1 1 260px}#mpCb a{color:#FFB000;text-decoration:underline}#mpCb div{display:flex;gap:8px}'
  +'#mpCb button{font:700 12.5px/1 inherit;padding:11px 14px;border:1px solid #555;background:transparent;color:#fff;cursor:pointer;min-height:40px}'
- +'#mpCb button.pri{background:#E8332A;border-color:#E8332A}#mpCb button:focus-visible{outline:2px solid #FFB000;outline-offset:2px}';
+ +'#mpCb button.pri{background:#E8332A;border-color:#E8332A}#mpCb button:focus-visible{outline:2px solid #FFB000;outline-offset:2px}'
+ +'@media(max-width:600px){#mpCb{left:8px;right:8px;bottom:8px;padding:12px 14px;gap:10px;font-size:12px;line-height:1.5}'
+ +'#mpCb p{flex-basis:100%}#mpCb div{width:100%}#mpCb button{flex:1;padding:9px 10px;min-height:40px}}';
 D.head.appendChild(st);
 function boot(){
  if(MP.consent.ads)pixels();
@@ -2171,6 +2173,7 @@ def html_apply(html, path=''):
     try:
         html = trust_apply(html, path)
         html = copy_apply(html, path)
+        html = o2o_apply(html, path)
         if not mail_enabled() and '주문 확인 메일을 보내드렸습니다. ' in html:
             # 메일 미연동 상태에서 '메일 보냈다'는 거짓 안내를 하지 않는다.
             html = html.replace('주문 확인 메일을 보내드렸습니다. ', '')
@@ -2273,3 +2276,128 @@ def copy_apply(html, path=''):
     except Exception:
         pass
     return html
+
+
+# ═══════════════════════════ O2O 확장: 국내 체크아웃 쿠폰 · 드롭 알림 구독 ═══════
+_CK_SEND_OLD = "client:(window.mpClientHint?window.mpClientHint():null)}));"
+_CK_SEND_NEW = ("client:(window.mpClientHint?window.mpClientHint():null),coupon:(window.mpCpCode||''),"
+                "lang:(window.MP_LANG||'ko')}));")
+_CK_CALC_OLD = "return {sub,ship,total:sub+ship,drop,pts};"
+_CK_CALC_NEW = ("var _off=(window.mpCpOff&&sub>=(window.mpCpMin||0))?Math.min(window.mpCpOff,Math.max(0,sub-100)):0;"
+                "window.mpCpApplied=_off;return {sub,ship,total:sub+ship-_off,drop,pts};")
+_CK_COUPON_UI = r'''<div id="mpCp" style="padding:10px 0;border-bottom:1px solid var(--line)">
+<div style="display:flex;gap:6px"><input class="f-input" id="mpCpIn" placeholder="쿠폰 코드 (예: HOME-XXXXXX)" aria-label="쿠폰 코드" style="margin:0;text-transform:uppercase;font-size:14px">
+<button type="button" id="mpCpBtn" style="background:var(--ink);color:#fff;border:0;padding:0 14px;font-weight:700;cursor:pointer;white-space:nowrap">적용</button></div>
+<div id="mpCpMsg" style="font-size:12px;min-height:16px;margin-top:4px" aria-live="polite"></div></div>
+<div class="sum-row" id="mpCpRow" style="display:none"><span>쿠폰 할인</span><span id="mpCpV" style="color:var(--red)"></span></div>'''
+_CK_COUPON_JS = r'''<script id="mpCpJs">(function(){try{
+var $=function(i){return document.getElementById(i)},fmt=function(n){return '₩'+Math.round(n).toLocaleString('ko-KR')};
+function sub(){try{return JSON.parse(localStorage.getItem('mapdal_cart')||'[]').reduce(function(a,i){return a+(Number(i.p)||0)*(Number(i.q)||1)},0)}catch(e){return 0}}
+function paint(){var r=$('mpCpRow'),v=$('mpCpV');if(!r)return;var o=window.mpCpApplied||0;r.style.display=o?'':'none';v.textContent='−'+fmt(o)}
+var _rs=window.renderSum;if(typeof _rs==='function'){window.renderSum=function(){_rs.apply(this,arguments);paint()}}
+function apply(){var c=($('mpCpIn').value||'').trim().toUpperCase(),m=$('mpCpMsg');if(!c){window.mpCpCode='';window.mpCpOff=0;rs();return}
+ fetch('/api/coupon/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:c,sub:sub(),email:(($('bEmail')||{}).value||'')})})
+ .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'쿠폰을 확인할 수 없습니다');return d})})
+ .then(function(d){window.mpCpCode=d.code;window.mpCpOff=d.off;window.mpCpMin=0;m.style.color='#0A7D38';m.textContent='적용되었습니다 · '+(d.note||d.code);rs();try{window.mpTrack&&mpTrack('select_promotion',{})}catch(e){}})
+ .catch(function(x){window.mpCpCode='';window.mpCpOff=0;m.style.color='var(--red)';m.textContent=x.message;rs()})}
+function rs(){try{(window.renderSum||function(){})()}catch(e){}paint()}
+var b=$('mpCpBtn');if(b)b.addEventListener('click',apply);
+var i=$('mpCpIn');if(i)i.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();apply()}});
+try{var q=new URLSearchParams(location.search).get('coupon')||sessionStorage.getItem('mp_cp');if(q&&i){i.value=q;apply()}}catch(e){}
+}catch(e){}})();</script>'''
+
+_NL_BAND = r'''<section id="mpNl" aria-label="Drop alerts" style="background:#141414;color:#fff;border-top:4px solid #E8332A">
+<div style="max-width:1180px;margin:0 auto;padding:28px 16px;display:flex;gap:18px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+<div style="flex:1 1 320px"><div style="font:500 11px 'IBM Plex Mono',monospace;letter-spacing:.14em;color:#FFB000">DROP ALERTS · WORLDWIDE</div>
+<div style="font-family:'Black Han Sans',sans-serif;font-size:26px;line-height:1.2;margin:6px 0 4px">새 드롭·팬사인회 소식을 가장 먼저</div>
+<div style="font-size:13px;color:#bbb">구독하면 첫 주문 10% 쿠폰을 바로 드립니다 · 언제든 수신거부</div></div>
+<form id="mpNlF" style="flex:1 1 360px;display:flex;flex-wrap:wrap;gap:8px" novalidate>
+<input id="mpNlE" type="email" autocomplete="email" inputmode="email" placeholder="이메일 주소" aria-label="이메일 주소" required style="flex:1 1 200px;font:inherit;font-size:16px;padding:12px;border:0;min-width:0">
+<button type="submit" style="font:700 14px inherit;background:#E8332A;color:#fff;border:0;padding:0 18px;min-height:46px;cursor:pointer">구독하기</button>
+<label style="flex:1 1 100%;font-size:11.5px;color:#aaa;display:flex;gap:6px;align-items:flex-start"><input type="checkbox" id="mpNlC" style="margin-top:2px">맵달SEOUL의 혜택·신상 소식(광고성 정보) 수신에 동의합니다.</label>
+<div id="mpNlM" style="flex:1 1 100%;font-size:13px;min-height:18px" aria-live="polite"></div></form></div></section>
+<script id="mpNlJs">(function(){try{var f=document.getElementById('mpNlF');if(!f)return;f.addEventListener('submit',function(e){e.preventDefault();
+var em=document.getElementById('mpNlE').value.trim(),m=document.getElementById('mpNlM');
+if(!/^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(em)){m.style.color='#FFB000';m.textContent=(window.mpT||String)('이메일 주소를 확인해 주세요');return}
+if(!document.getElementById('mpNlC').checked){m.style.color='#FFB000';m.textContent=(window.mpT||String)('수신 동의에 체크해 주세요');return}
+fetch('/api/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,consent:true,lang:(window.MP_LANG||'ko'),source:'footer'})})
+.then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'error');return d})})
+.then(function(d){m.style.color='#fff';m.innerHTML=(window.mpT||String)('구독 완료! 첫 주문 쿠폰')+' <b style="color:#FFB000;font-family:monospace;font-size:15px">'+d.coupon+'</b>';
+ try{sessionStorage.setItem('mp_cp',d.coupon)}catch(x){}try{window.mpTrack&&mpTrack('generate_lead',{method:'footer'})}catch(x){}})
+.catch(function(x){m.style.color='#FFB000';m.textContent=x.message})})}catch(e){}})();</script>'''
+
+_OC_OPTIN = r'''<div id="mpOcOpt" style="max-width:560px;margin:18px auto 0;padding:16px;border:1px solid #E2E0D9;background:#fff;text-align:center;display:none">
+<div style="font-weight:700;margin-bottom:4px">다음 드롭 소식을 이메일로 받아보세요</div>
+<div style="font-size:12.5px;color:#5E5D57;margin-bottom:10px">새 앨범·팬사인회·한정 굿즈 알림 · 언제든 수신거부</div>
+<button type="button" id="mpOcBtn" style="background:#141414;color:#fff;border:0;padding:12px 18px;font-weight:700;cursor:pointer">드롭 알림 받기</button>
+<div id="mpOcMsg" style="font-size:13px;margin-top:8px;min-height:16px" aria-live="polite"></div></div>
+<script id="mpOcOptJs">(function(){try{var q=new URLSearchParams(location.search),oid=q.get('oid');if(!oid)return;
+var box=document.getElementById('mpOcOpt');var hero=document.querySelector('.done-hero');if(hero&&box){hero.appendChild(box)}
+fetch('/api/contacts/order-optin?oid='+encodeURIComponent(oid)).then(function(r){return r.json()}).then(function(d){if(d&&d.eligible)box.style.display='block'}).catch(function(){});
+document.getElementById('mpOcBtn').addEventListener('click',function(){var b=this;b.disabled=true;
+fetch('/api/contacts/order-optin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({oid:oid,lang:(window.MP_LANG||'ko')})})
+.then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'error');return d})})
+.then(function(){document.getElementById('mpOcMsg').textContent=(window.mpT||String)('구독되었습니다. 다음 드롭에서 만나요!');b.style.display='none'})
+.catch(function(x){document.getElementById('mpOcMsg').textContent=x.message;b.disabled=false})})}catch(e){}})();</script>'''
+
+
+def o2o_apply(html, path=''):
+    """국내 체크아웃 쿠폰 · 사이트 공통 드롭 알림 구독 · 주문완료 구독 버튼 (멱등)."""
+    if not isinstance(html, str):
+        return html
+    try:
+        if path == '/checkout' and 'id="mpCp"' not in html and '<div class="sum-row total">' in html:
+            if _CK_SEND_OLD in html:
+                html = html.replace(_CK_SEND_OLD, _CK_SEND_NEW, 1)
+            if _CK_CALC_OLD in html:
+                html = html.replace(_CK_CALC_OLD, _CK_CALC_NEW, 1)
+            html = html.replace('<div class="sum-row total">', _CK_COUPON_UI + '<div class="sum-row total">', 1)
+            i = html.lower().rfind('</body>')
+            html = html[:i] + _CK_COUPON_JS + html[i:]
+        if path == '/order-complete' and 'mpOcOpt' not in html:
+            i = html.lower().rfind('</body>')
+            html = html[:i] + _OC_OPTIN + html[i:]
+        if (path and path not in ('/checkout', '/cart', '/order-complete', '/account', '/search')
+                and 'id="mpNl"' not in html):
+            j = html.find('<footer')
+            if j >= 0:
+                html = html[:j] + _NL_BAND + html[j:]
+    except Exception:
+        pass
+    return html
+
+
+@growth_router.get('/api/contacts/order-optin')
+def api_order_optin_check(request: Request, oid: str = ''):
+    """주문완료 화면 — 이 주문(주문 브라우저·소유 회원) 이메일이 아직 구독 전이면 버튼 노출."""
+    try:
+        a = _app()
+        r = _order(str(oid)[:40])
+        if not r or not a._ov_ok(request, r['order_id'], r.get('customer_id') or ''):
+            return {'eligible': False}
+        em = str((_jl(r.get('buyer'), {}) or {}).get('email') or '').lower()
+        return {'eligible': bool(em) and not mkt_ok(em, r.get('customer_id'))}
+    except Exception:
+        return {'eligible': False}
+
+
+@growth_router.post('/api/contacts/order-optin')
+async def api_order_optin(request: Request):
+    d = await request.json()
+    a = _app()
+    r = _order(str(d.get('oid') or '')[:40])
+    if not r or not a._ov_ok(request, r['order_id'], r.get('customer_id') or ''):
+        raise HTTPException(403, 'forbidden')
+    em = str((_jl(r.get('buyer'), {}) or {}).get('email') or '').lower()
+    if not em:
+        raise HTTPException(400, 'no email')
+    ensure()
+    lang = re.sub(r'[^a-z]', '', str(d.get('lang') or 'ko'))[:2] or 'ko'
+    if _one('SELECT id FROM mp_contacts WHERE email=?', (em,)):
+        _run('UPDATE mp_contacts SET consent=1, unsub=0 WHERE email=?', (em,))
+    else:
+        _run('INSERT INTO mp_contacts(id,created,email,channel,country,lang,source,consent,customer_id,unsub,mail_step) '
+             'VALUES(?,?,?,?,?,?,?,1,?,0,?)',
+             (secrets.token_hex(10), _iso(), em, 'email', (r.get('country') or '')[:2], lang, 'order_complete',
+              r.get('customer_id') or '', 'd7'))   # 이미 구매 고객 — 웰컴 드립 생략
+    return {'ok': True}

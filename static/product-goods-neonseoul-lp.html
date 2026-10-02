@@ -449,11 +449,11 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 <div class="crumb"><a href="/home">HOME</a> &gt; <a href="/shop">SHOP</a> &gt; <a href="/shop">앨범 / 음반</a> &gt; <span style="color:var(--ink)">네온서울 바이닐 LP</span></div>
 <div class="pdp">
   <div>
-    <div class="gal-main" id="galMain"><span class="bg-word">MAPDAL SEOUL</span><span class="gal-flavor">NEON SEOUL VINYL LP</span><div class="glyph-hero">LP</div><span class="gal-pager">1 | 1</span></div>
+    <div class="gal-main" id="galMain"><span class="bg-word">MAPDAL SEOUL</span><span class="gal-flavor">NEON SEOUL VINYL LP</span><div class="glyph-hero">LP</div><span class="gal-pager" style="letter-spacing:.06em">실물 사진 준비 중 · 성수 매장에서 실물 확인 가능</span></div>
     <div class="pdp-tabs">
       <div class="tab-bar">
         <button class="on" data-tab="desc">상품설명</button>
-        <button data-tab="rev">리뷰&amp;포토<b>356</b></button>
+        <button data-tab="rev">리뷰&amp;포토<b id="mpRevCnt"></b></button>
         <button data-tab="qa">Q&amp;A</button>
       </div>
       <div class="tab-panel on" id="tab-desc">
@@ -482,7 +482,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
           <details><summary>배송 안내</summary><div class="ic"><table class="info-table">
             <tr><th>국내배송</th><td>3,000원 (30,000원 이상 무료) · 오후 2시 이전 결제 시 당일 출고</td></tr>
             <tr><th>맵달드림</th><td>서울 전역 당일배송 · 성수 1F 픽업</td></tr>
-            <tr><th>글로벌배송</th><td>전 세계 배송 가능 · 관세·세금 선지불(DDP)</td></tr>
+            <tr><th>글로벌배송</th><td>전 세계 배송 가능 · 결제 시 배송비 확정 · 관세는 수령 국가 기준</td></tr>
           </table></div></details>
           <details><summary>교환/반품/환불 안내</summary><div class="ic"><table class="info-table">
             <tr><th>교환/반품</th><td>수령일로부터 7일 이내 접수 (미개봉·택 부착 상태)</td></tr>
@@ -495,20 +495,10 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
           <div class="rec-rail"><a class="rec-card" href="/product-goods-slogan-towel"><span class="g-thumb" style="background:linear-gradient(160deg,#7A4B00,#F2A900)"><b>타월</b></span><h5>맵달 슬로건 타월</h5><div class="rp"><b>—</b>₩15,000</div></a><a class="rec-card" href="/product-goods-glass-set"><span class="g-thumb" style="background:linear-gradient(160deg,#0B3D91,#3B82F6)"><b>컵</b></span><h5>성수 한정 유리컵 세트</h5><div class="rp"><b>—</b>₩26,000</div></a><a class="rec-card" href="/product-goods-picnic-mat"><span class="g-thumb" style="background:linear-gradient(160deg,#20603C,#57B87B)"><b>매트</b></span><h5>한강 피크닉 매트</h5><div class="rp"><b>—</b>₩34,000</div></a><a class="rec-card" href="/product-goods-sticker-pack"><span class="g-thumb" style="background:linear-gradient(160deg,#E8332A,#FF7A45)"><b>스티커</b></span><h5>맵달 스티커 팩</h5><div class="rp"><b>—</b>₩8,000</div></a></div>
         </div>
       </div>
-      <div class="tab-panel" id="tab-rev">
-        <div class="rev-sum">
-          <div class="big"><span class="stars">★★★★★</span>4.7<small>총 356건</small></div>
-          <div class="attr-bars">
-            <div class="attr-row"><span class="al">품질</span><span class="at">만족해요</span><span class="bar"><i style="width:86%"></i></span><span class="pc">86%</span></div>
-            <div class="attr-row"><span class="al">구성</span><span class="at">기대 이상이에요</span><span class="bar"><i style="width:82%"></i></span><span class="pc">82%</span></div>
-            <div class="attr-row"><span class="al">선물</span><span class="at">선물로 추천해요</span><span class="bar"><i style="width:88%"></i></span><span class="pc">88%</span></div>
-          </div>
-        </div>
-        <div class="rev-item"><div class="rh"><span class="avatar">V</span><span class="uid">vinyl***</span><span class="stars" style="font-size:12px">★★★★★</span><span>2026.06 · 맵달드림</span></div><div class="opt">[옵션] LP 단품</div><p>컬러반인데 노이즈 거의 없어요. 프레싱 퀄리티 좋습니다.</p><div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>24</b></button></div></div><div class="rev-item"><div class="rh"><span class="avatar">K</span><span class="uid">kith***</span><span class="stars" style="font-size:12px">★★★★☆</span><span>2026.06 · 맵달드림</span></div><div class="opt">[옵션] LP 단품</div><p>자켓 아트웍이 인테리어로도 훌륭. 거치해두고 있어요.</p><div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>21</b></button></div></div>
-      </div>
+      <div class="tab-panel" id="tab-rev"><div id="mpRevHost"></div></div>
       <div class="tab-panel" id="tab-qa">
         <div class="qa-btns"><button>상품 문의</button><button>배송·반품·교환 문의</button></div>
-        <div class="qa-item"><span class="qtag">상품 문의 · 답변완료</span><div class="q">Q. 해외 배송이 가능한가요?</div><div class="a">전 세계 배송 가능합니다. 관세·세금은 결제 시 선지불(DDP)되어 수령 시 추가 비용이 없습니다.</div></div>
+        <div class="qa-item"><span class="qtag">상품 문의 · 답변완료</span><div class="q">Q. 해외 배송이 가능한가요?</div><div class="a">해외 배송 가능 여부는 상품마다 다릅니다. 결제 단계에서 국가를 선택하시면 배송 가능 여부와 배송비가 바로 계산되며, 관세는 수령 국가 기준에 따라 부과될 수 있습니다. 냉동·냉장 K-FOOD는 현재 국내 배송만 가능합니다.</div></div>
         <div class="qa-item"><span class="qtag">상품 문의 · 답변완료</span><div class="q">Q. 성수 매장에서 실물을 볼 수 있나요?</div><div class="a">1F 맵달STATION과 4F 앨범·MD 스토어에서 대부분의 상품을 실물로 확인하실 수 있습니다. 운영시간은 11:00–21:00입니다.</div></div>
       </div>
     </div>
@@ -521,8 +511,8 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
     <div class="price-block">
       <div class="now"><span class="amt">₩42,000~</span></div>
     </div>
-    <div class="rating-row"><span class="stars">★★★★★</span><b>4.7</b><a href="#" onclick="openTab('rev');return false">리뷰 356건</a></div>
-    <div class="viewers"><span id="vCount">36</span>명이 보고 있어요</div>
+    <div class="rating-row" id="mpRate" hidden></div>
+    
     <select class="opt-select" id="optSel"><option value="" selected disabled>옵션을 선택해 주세요</option><option value="o0">LP 단품 — ₩42,000</option><option value="o1">LP + 슬립매트 세트 — ₩52,000</option></select>
     <div class="opt-lines" id="optLines"></div>
     <div class="total-row"><span class="tl">구매수량 <b id="totQty">0</b>개<small>배송비 별도</small></span><span class="tv" id="total">총 0원</span></div>
@@ -536,7 +526,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <div class="ben-row"><div class="bh"><h6>가입혜택</h6><div class="bv"><span class="hl">최초 가입 2,000P</span></div><span class="chev">⌄</span></div><div class="bd">한 고객당 최초 가입 시 한 번만 지급됩니다</div></div>
       <div class="ben-row"><div class="bh"><h6>정품보증</h6><div class="bv"><b>공식 라이선스</b> · 위조 시 전액 환불</div><span class="chev">⌄</span></div><div class="bd">모든 아티스트 MD는 권리사 공식 라이선스 계약 하에 제작·판매됩니다</div></div>
       <div class="ben-row"><div class="bh"><h6>맵달드림</h6><div class="bv"><span class="hl">지금 주문하면 오늘 도착 또는 성수 픽업 가능!</span></div><span class="chev">⌄</span></div><div class="bd">서울 전역 당일배송 · 21시 이전 주문 건 당일 처리</div></div>
-      <div class="ben-row"><div class="bh"><h6>글로벌배송</h6><div class="bv">관세·세금 <b>선지불(DDP)</b> · 추가 결제 없음</div><span class="chev">⌄</span></div><div class="bd">전 세계 배송 가능 · 체크아웃에서 배송지 입력 시 최종 금액 자동 확정</div></div>
+      <div class="ben-row"><div class="bh"><h6>글로벌배송</h6><div class="bv"><b>전 세계 배송</b> · 결제 시 배송비 확정</div><span class="chev">⌄</span></div><div class="bd">50여 개국 배송 · 해외 배송 주문에서 국가 선택 시 배송비·예상 도착일 자동 계산 · 관세는 수령 국가 기준에 따라 부과될 수 있음</div></div>
       <div class="ben-row"><div class="bh"><h6>픽업</h6><div class="bv">1F·4F 스토어 <b>무료 픽업</b> 가능</div><span class="chev">⌄</span></div><div class="bd">주문 후 1시간 이내 준비 완료 · 운영시간 11:00–21:00</div></div>
     </div>
     <button class="store-btn" onclick="location.href='/mapdal-seoul'">📍 성수 매장 재고 확인 · 맵달SEOUL 안내</button>
@@ -566,8 +556,6 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 
 
 <script>
-let v=parseInt(document.getElementById('vCount').textContent);
-setInterval(()=>{v=Math.max(20,v+Math.floor(Math.random()*9)-4);document.getElementById('vCount').textContent=v;},4000);
 const OPTS={"o0": {"name": "LP 단품", "price": 42000}, "o1": {"name": "LP + 슬립매트 세트", "price": 52000}};
 let cart={};const fmt=n=>n.toLocaleString('ko-KR');
 function render(){const box=document.getElementById('optLines');box.innerHTML='';let tq=0,tp=0;
@@ -656,5 +644,24 @@ function scan(){var as=document.querySelectorAll('a[href]'),fresh=[];
   fresh.forEach(function(x){mkBtn(x[0],x[1])})})}
 function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go._t=setTimeout(scan,400)}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
-})();</script></body>
+})();</script><script id="mpTrustJs">(function(){try{
+var q=new URLSearchParams(location.search);
+var pid=(typeof PID!=='undefined'&&PID)?PID:(function(){
+ if(/\/album-detail/.test(location.pathname)&&q.get('uid'))return'k2g::'+q.get('uid');
+ var m=location.pathname.match(/^\/(product-[A-Za-z0-9._-]+?)(?:\.html)?$/);return m?m[1]:null})();
+if(!pid)return;
+function go(){
+ fetch('/api/reviews?product_id='+encodeURIComponent(pid)).then(function(r){return r.ok?r.json():null}).then(function(d){
+  var n=(d&&d.count)||0,a=(d&&d.avg)||0,rr=document.getElementById('mpRate'),rc=document.getElementById('mpRevCnt');
+  if(rc)rc.textContent=n?String(n):'';
+  if(rr&&n){var s='';for(var i=1;i<=5;i++)s+=(i<=Math.round(a)?'★':'☆');
+   rr.innerHTML='<span class="stars">'+s+'</span><b>'+a.toFixed(1)+'</b><a href="#" onclick="try{openTab(\'rev\')}catch(e){}return false">구매인증 리뷰 '+n+'건</a>';
+   rr.hidden=false}
+ }).catch(function(){});
+ /* 리뷰 위젯 id 는 문자열을 쪼개 쓴다 — admin_v2 는 본문에 그 id 문자열이 있으면 위젯을 주입하지 않는다 */
+ var host=document.getElementById('mpRevHost'),w=document.getElementById('mpRev'+'iews');
+ if(host&&w&&w.parentNode!==host)host.appendChild(w);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();
+}catch(e){}})();</script></body>
 </html><script id="mpFootWhite">(function(){try{var els=document.querySelectorAll("footer *,footer");for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";if(/사업자등록번호|통신판매업신고|맵달서울성수|MEAL ZIP/.test(t)&&t.length<420&&e.children.length<10){e.style.color="#fff";}}}catch(e){}})();</script>

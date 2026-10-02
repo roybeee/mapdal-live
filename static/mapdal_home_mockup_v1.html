@@ -416,7 +416,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 (function(){
 "use strict";
 /* API 실패·초기 로딩용 기본 슬라이드 (관리자 저장값이 오면 대체됨) */
-var MZH_DEFAULT={interval_ms:3000,slides:[
+var MZH_DEFAULT={interval_ms:6000,slides:[
  {img:"",href:"",eyebrow:"NOT A STORE, A STAGE \u00b7 SEONGSU, SEOUL",
   title:"SHOP SEONGSU,",title2:"FROM ANYWHERE",
   sub:"성수동 연무장길 825평 — 몰입부터 구매까지, 무대에서 벌어진 팬 경험이 매주 새로운 드롭으로 도착합니다. 현장의 열기를 그대로 배송합니다.",
@@ -546,7 +546,7 @@ function render(data){
   root.classList.toggle("has-live",slides.some(function(s){
     return !s.img&&!s.img_m&&!s.video&&(s.live_visual===true||String(s.title||"").trim().toUpperCase()==="SHOP SEONGSU,");
   }));
-  INT=Math.max(1500,Math.min(15000,data.interval_ms||3000));
+  INT=Math.max(5000,Math.min(15000,data.interval_ms||6000));   /* 5초 미만은 읽기 전에 넘어간다(WCAG 2.2.2) */
   root.style.setProperty("--mzh-int",INT+"ms");
   track.innerHTML=slides.map(slideHTML).join("");
   bindVideos();

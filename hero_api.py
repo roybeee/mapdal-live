@@ -38,7 +38,7 @@ SETTINGS_KEY = "hero_slides"
 # 기본 슬라이드 (관리자 저장 전 초기값) — 슬라이드 1은 기존 히어로 그대로
 # ----------------------------------------------------------------------
 DEFAULT_DATA = {
-    "interval_ms": 3000,
+    "interval_ms": 6000,
     "slides": [
         {
             "img": "", "href": "",
@@ -117,7 +117,7 @@ class Slide(BaseModel):
 
 
 class HeroData(BaseModel):
-    interval_ms: int = Field(3000, ge=1500, le=15000)
+    interval_ms: int = Field(6000, ge=1500, le=15000)   # 저장 호환(기존 3000) — 실제 노출은 홈에서 최소 5초로 보정
     slides: List[Slide] = Field(..., min_length=1, max_length=10)
 
 

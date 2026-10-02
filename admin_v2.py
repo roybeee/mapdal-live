@@ -1491,7 +1491,7 @@ def api_login(request: Request, body: dict = Body(...)):
     tok = (body.get('token') or '').strip()
     if tok:  # 마스터 토큰 비상 로그인
         key = 'tk:' + ip; guard(key)
-        if admin_token() and tok == admin_token():
+        if admin_token() and hmac.compare_digest(str(tok or '').encode('utf-8', 'replace'), admin_token().encode('utf-8')):
             fail_clear(key)
             sid = make_session('__master__')
             audit({'name': '마스터', 'role': 'OWNER'}, '로그인', '', '마스터 토큰 / ' + ip)
@@ -2055,7 +2055,13 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         raise HTTPException(400, '이미 취소된 주문입니다')
     refunded = False
     refund_mid_note = ''                              # 구 MID 환불 시 감사로그에 남길 표기
-    if r.get('status') == 'PAID' and not manual:
+    if r.get('status') == 'PAID' and not manual and (r.get('pay_method') or '') == 'PayPal':
+        # 해외 주문(PayPal) — PayPal Captures Refund API. 실패하면 HTTPException 으로 중단(상태 불변).
+        import globalshop
+        globalshop.paypal_refund(oid)
+        refunded = True
+        refund_mid_note = ' / PayPal'
+    elif r.get('status') == 'PAID' and not manual:
         tid = r.get(_state['paykey']) if _state['paykey'] else None
         if not tid: raise HTTPException(400, '거래번호(TID)가 없어 자동 환불 불가 — 이니시스 상점관리자에서 직접 취소하세요.')
         if not _inicis_creds(): raise HTTPException(400, 'INICIS_MID / INICIS_INIAPI 미설정')
@@ -2123,6 +2129,10 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         refunded = True
         refund_mid_note = (' / MID %s(구)' % mid) if mid_label else ''
     sets, args = ["status='CANCELLED'"], []
+    try:                                              # 미결제 주문에 걸려 있던 쿠폰 예약 해제 (growth · 멱등)
+        import growth; growth.coupon_release(oid)
+    except Exception:
+        pass
     if 'fulfill' in _state['ocols']: sets.append("fulfill='CANCELLED'")
     if 'admin_memo' in _state['ocols']: sets.append('admin_memo=?'); args.append(('[취소] ' + reason)[:300])
     run('UPDATE orders SET %s WHERE order_id=?' % ', '.join(sets), tuple(args + [oid]))
@@ -2291,7 +2301,9 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
     #   품절 해제는 잔여 재고가 있을 때만 하므로 이중으로 안전하다.
     ph = VBANK_EXPIRE_PENDING_H
     try:
-        pend = rows("SELECT * FROM orders WHERE status='PENDING'") or []
+        # FAILED(결제 인증·승인 실패)도 생성 시점에 재고를 차감한 상태다 — 종전에는 정리 대상에서
+        # 빠져 실패 건마다 재고가 영구히 묶였다(2026-10). PENDING 과 같은 나이·복원 규칙을 적용한다.
+        pend = rows("SELECT * FROM orders WHERE status IN ('PENDING','FAILED')") or []
     except Exception:
         pend = []
     for r in pend:
@@ -2301,6 +2313,13 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
         age_h = (now - c0).total_seconds() / 3600.0
         if age_h < max(2, ph or 24):                    # 승인 진행 중인 건 보호
             continue
+        try:                                            # 해외 주문: 인보이스 72시간 확보 · PayPal 캡처 진행/보류/완료 건 보호
+            import globalshop
+            if globalshop.sweep_skip(r, age_h):
+                continue
+        except Exception:
+            if (r.get('ship_method') or '') == 'intl':
+                continue
         out['pending_stuck'] += 1
         fresh = age_h <= VBANK_EXPIRE_RESTOCK_D * 24    # 재고 복원 대상 여부
         item = {'order_id': r.get('order_id') or '', 'amount': num(r.get('amount')),
@@ -4209,7 +4228,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 .inv-status{font-size:11px;font-weight:700}.inv-status.out{color:var(--bad)}.inv-status.low{color:#9a6b00}.inv-status.ok{color:var(--ok)}
 @media(max-width:900px){.p-summary{grid-template-columns:repeat(2,1fr)}.group-head{grid-template-columns:auto 65px 1fr auto}.group-head>.gsource,.group-head>.gstock{display:none}.variant-wrap{overflow-x:auto}}
 </style></head><body>
-<header><h1>MAPDAL<span>SEOUL</span></h1><span class="who" id="who"></span><button class="btn sm ghost" id="pwbtn" style="background:none;color:#bbb;border-color:#555" onclick="pwModal()">비밀번호</button><button class="btn sm ghost" style="background:none;color:#bbb;border-color:#555" onclick="logout()">로그아웃</button><nav id="nav"></nav></header>
+<header><h1>MAPDAL<span>SEOUL</span></h1><span class="who" id="who"></span><a class="btn sm" href="/admin/growth" style="background:#E8332A;color:#fff;border-color:#E8332A;text-decoration:none">그로스 엔진 · ROAS · O2O</a><button class="btn sm ghost" id="pwbtn" style="background:none;color:#bbb;border-color:#555" onclick="pwModal()">비밀번호</button><button class="btn sm ghost" style="background:none;color:#bbb;border-color:#555" onclick="logout()">로그아웃</button><nav id="nav"></nav></header>
 <main>
 <section id="t-dash"><div class="loading">불러오는 중…</div></section>
 <section id="t-orders" style="display:none">
@@ -5077,7 +5096,7 @@ function renderBanner(){
  });
  const bar=document.createElement('div');bar.style.cssText='display:flex;gap:10px;align-items:center;flex-wrap:wrap';
  bar.innerHTML=`${BN.slides.length<5?'<button class="btn ghost" onclick="bnAdd()">+ 슬라이드 추가</button>':''}
-  <span class="hint">전환 간격 <input id="bniv" type="number" min="1500" max="15000" step="500" value="${BN.interval_ms||3000}" style="width:84px;padding:5px;border:1px solid #ddd;border-radius:5px"> ms</span>
+  <span class="hint">전환 간격 <input id="bniv" type="number" min="5000" max="15000" step="500" value="${Math.max(5000,BN.interval_ms||6000)}" style="width:84px;padding:5px;border:1px solid #ddd;border-radius:5px"> ms</span>
   ${can(2)?'<button class="btn red" style="margin-left:auto" onclick="saveBanner()">저장 (홈 즉시 반영)</button>':''}`;
  box.appendChild(bar);
 }
@@ -5100,7 +5119,7 @@ async function bnUploadVideo(i,inp){const f=inp.files[0];if(!f)return;inp.value=
   const pv2=$('#bnpv'+i);if(pv2)pv2.style.opacity=1;}}
 function bnMove(i,d){const s=BN.slides,j=i+d;if(j<0||j>=s.length)return;const t=s[i];s[i]=s[j];s[j]=t;renderBanner();}
 function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',img_m:'',video:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
-async function saveBanner(){try{BN.interval_ms=parseInt($('#bniv').value)||3000;
+async function saveBanner(){try{BN.interval_ms=Math.max(5000,parseInt($('#bniv').value)||6000);
  const d=await api('/admin/api/banner',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(BN)});
  toast('저장 완료 — 홈페이지에 '+d.slides+'개 슬라이드 반영');}catch(e){toast(e.message)}}
 
@@ -7565,7 +7584,6 @@ max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
     <h1>%(name)s</h1>
     <div class="price-block">%(pricehtml)s</div>
     <div class="stock-line %(bcls)s">%(bmsg)s</div>
-    <div class="viewers"><span id="vCount">%(viewers)d</span>명이 보고 있어요</div>
     <div class="qty-row"><span style="font-size:13px;font-weight:600">수량</span>
       <div class="qty-ctl"><button id="qm">−</button><span id="qv">1</span><button id="qp">＋</button></div></div>
     <div class="total-row"><span class="tl">총 상품 금액</span><span class="tv" id="pTot">₩%(price_fmt)s</span></div>
@@ -7618,8 +7636,6 @@ function addItem(){var items=ldc();var ex=items.find(function(i){return i.id===P
 document.getElementById('btnCart').onclick=function(){if(SOLD)return;addItem();location.href='/cart'};
 document.getElementById('btnBuy').onclick=function(){if(SOLD)return;addItem();location.href='/checkout'};
 cbadge();
-// 뷰어 카운터
-var v=%(viewers)d;setInterval(function(){v=Math.max(12,v+Math.floor(Math.random()*9)-4);var el=document.getElementById('vCount');if(el)el.textContent=v},4000);
 // 탭·아코디언
 document.querySelectorAll('.tab-bar button').forEach(function(b){b.addEventListener('click',function(){
  document.querySelectorAll('.tab-bar button').forEach(function(x){x.classList.toggle('on',x===b)});
@@ -7650,7 +7666,7 @@ fetch('/api/pqna?product_id='+encodeURIComponent(PID)).then(function(r){return r
 </script>%(relatedsnippet)s</body></html>'''
 
 @admin_router.get('/p/{pid:path}', response_class=HTMLResponse)
-def pdp(pid: str):
+def pdp(pid: str, request: Request):
     try: ensure_ready()
     except Exception: pass
     if not _state['pcols']: raise HTTPException(404)
@@ -7791,7 +7807,7 @@ def pdp(pid: str):
         _seed = 0
     viewers = 60 + (_seed % 80)
     _img_og = img if img.startswith('http') else (('https://mapdal.kr' + img) if img.startswith('/') else OG_IMAGE_URL)
-    return HTMLResponse(_brand_apply(_PDP_HTML % {
+    return _pdp_resp(_track_apply(_brand_apply(_PDP_HTML % {
         'name': h(r.get('name')), 'namejs': json.dumps(str(r.get('name') or '')),
         'pricehtml': pricehtml, 'price_fmt': format(sale, ','), 'pricejs': sale,
         'bcls': 'no' if soldout else 'ok',
@@ -7808,7 +7824,7 @@ def pdp(pid: str):
         'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
         'shiprows': shiprows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
-        'relatedsnippet': _RELATED_WIDGET_SNIPPET}))
+        'relatedsnippet': _RELATED_WIDGET_SNIPPET}), '/p/' + pid), request)
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 SIGNUP_BONUS = 2000
@@ -8915,7 +8931,7 @@ def account_page(request: Request):
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     if m:
         mdata = {'ok': True}
-        return HTMLResponse(_brand_apply(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False))))
+        return _pdp_resp(_track_apply(_brand_apply(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False))), '/account'), request, '/account')
     _prov = [
         ('kakao',  '/auth/kakao',  'TALK · 카카오로 3초만에 시작하기',
          'background:#FEE500;color:#191919;border-color:#FEE500;font-weight:800',
@@ -8934,7 +8950,7 @@ def account_page(request: Request):
            _style if _on else 'background:#efeee9;color:#9b9a94;border-color:#e3e1db;font-weight:700',
            _label, '' if _on else ' (준비 중)')
         for _k, _href, _label, _style, _on in _prov)
-    return HTMLResponse(_brand_apply('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
+    return _pdp_resp(_track_apply(_brand_apply('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
         '</head><body><div class="box"><h1>MAPDAL<span>SEOUL</span></h1><div class="sub">SIGN IN / SIGN UP</div>'
         '<div style="background:#fff3df;border-left:4px solid #FFB000;padding:9px 11px;font-size:12px;margin-bottom:14px"><b>최초 가입 2,000P</b> · 한 고객당 한 번만 지급</div>'
         + social +
@@ -8972,7 +8988,7 @@ def account_page(request: Request):
         'try{await post("/api/member/signup",{name:document.getElementById("sn").value,gender:g,phone:document.getElementById("sph").value,birth:document.getElementById("sbi").value,email:document.getElementById("se").value,password:p,terms:document.getElementById("sterms").checked,privacy:document.getElementById("sprivacy").checked,marketing:document.getElementById("smarketing").checked});location.reload()}catch(e){show(e.message)}}'
         'let RID="";async function resetSend(){try{const r=await post("/api/member/password-reset/send",{email:document.getElementById("re").value,phone:document.getElementById("rp").value});RID=r.reset_id;document.getElementById("rverify").style.display="";show(r.dry?"테스트 모드: 관리자 알림 로그에서 인증번호를 확인하세요":"인증번호를 발송했습니다")}catch(e){show(e.message)}}'
         'async function resetVerify(){try{await post("/api/member/password-reset/verify",{reset_id:RID,code:document.getElementById("rc").value,password:document.getElementById("rnw").value});alert("비밀번호가 변경되었습니다. 다시 로그인해 주세요.");mode(0)}catch(e){show(e.message)}}'
-        '</script></body></html>'))
+        '</script></body></html>'), '/account'), request, '/account')
 
 @admin_router.get('/admin/api/members')
 def api_members(request: Request):
@@ -9491,7 +9507,7 @@ TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta
 
 FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#fff;font:12px/1.9 'IBM Plex Sans KR',sans-serif;margin:0;padding:0;border-top:1px solid rgba(255,255,255,.09)">
 <div style="max-width:1440px;margin:0 auto;padding:26px 48px 40px">
-<div style="margin-bottom:10px"><a href="/terms" style="color:#fff;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a></div>
+<div style="margin-bottom:10px"><a href="/terms" style="color:#fff;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy" style="color:#FFB000;font-weight:800;text-decoration:none;margin-right:16px">개인정보처리방침</a><a href="/track" style="color:#fff;text-decoration:none;margin-right:16px">비회원·해외 주문 조회</a><a href="/checkout-global" style="color:#fff;text-decoration:none">International orders</a></div>
 <div><span style="color:#fff;font-weight:700">맵달서울성수</span> · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 (성수동2가)<br>
 사업자등록번호 {reg} · 통신판매업신고 {mail_order} · 전화 {phone} · 이메일 {email}<br>
 호스팅서비스 제공: Render Services, Inc.<br>
@@ -12991,6 +13007,15 @@ def _order_complete_apply(html):
         "        try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
         "        return;\n"
         "      }\n"
+        "      // 해외 주문(결제 링크 발송 방식) — 실패가 아니라 '접수·결제 링크 대기'다 (globalshop 2026-10).\n"
+        "      if(d.status==='PENDING'&&d.ship_method==='intl'){\n"
+        "        title.textContent='주문이 접수되었습니다';\n"
+        "        desc.innerHTML='결제 확인 또는 결제 링크 안내를 24시간 이내(한국시간) 이메일로 보내드립니다. 상품은 72시간 동안 확보됩니다.';\n"
+        "        desc.setAttribute('data-mp-pay','1');\n"
+        "        ono.textContent='ORDER NO. '+oid;\n"
+        "        try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
+        "        return;\n"
+        "      }\n"
         "      if(d.status!=='PAID')throw new Error('결제가 완료되지 않았습니다');\n"
         "      title.textContent='주문이 완료되었습니다';\n"
         "      var _trk=(d.tracking?'<br>운송장 <b class=\\\"mono\\\">'+d.tracking+'</b> — 마이페이지 [주문/배송 조회]에서 실시간 추적이 가능합니다.':'');\n"
@@ -13571,6 +13596,23 @@ Disallow: /order-complete
 Disallow: /account
 Disallow: /search
 Disallow: /hero-admin
+Disallow: /visit
+Disallow: /i18n/
+Disallow: /en/cart
+Disallow: /en/checkout
+Disallow: /en/order-complete
+Disallow: /en/account
+Disallow: /en/search
+Disallow: /ja/cart
+Disallow: /ja/checkout
+Disallow: /ja/order-complete
+Disallow: /ja/account
+Disallow: /ja/search
+Disallow: /zh/cart
+Disallow: /zh/checkout
+Disallow: /zh/order-complete
+Disallow: /zh/account
+Disallow: /zh/search
 
 Sitemap: %s/sitemap.xml
 ''' % SITE_ORIGIN
@@ -13624,9 +13666,19 @@ def _sitemap_xml():
     except Exception:
         pass
     esc = lambda u: u.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    # 다국어(2026-10): 언어별 URL(/en·/ja·/zh)을 각각 <url> 로 싣고, 모두에게 같은 hreflang 묶음을 단다.
+    _hl = (('ko', ''), ('en', '/en'), ('ja', '/ja'), ('zh-Hans', '/zh'))
+    out = []
+    for u in locs:
+        path = u[len(SITE_ORIGIN):] or '/home'
+        alts = ''.join('<xhtml:link rel="alternate" hreflang="%s" href="%s"/>' % (h, esc(SITE_ORIGIN + pre + path))
+                       for h, pre in _hl)
+        alts += '<xhtml:link rel="alternate" hreflang="x-default" href="%s"/>' % esc(SITE_ORIGIN + '/en' + path)
+        for h, pre in _hl:
+            out.append('<url><loc>%s</loc>%s</url>\n' % (esc(SITE_ORIGIN + pre + path), alts))
     xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
-           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-           + ''.join('<url><loc>%s</loc></url>\n' % esc(u) for u in locs)
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
+           + ''.join(out)
            + '</urlset>\n')
     _sitemap_cache.update(t=time.time(), xml=xml)
     return xml
@@ -13641,10 +13693,32 @@ def sitemap_xml(request: Request):
 _BRAND_CSS_LINK = '<link id="mpBrandCss" rel="stylesheet" href="/brand-system.css">'
 _BRAND_JS_TAG = '<script id="mpBrandJs" defer src="/brand-system.js"></script>'
 
+_LOGO_TEXT_RE = re.compile(r'<(a|div)\s+class="logo"((?:\s+href="[^"]*")?)\s*>\s*MAPDAL\s*<(em|span)>SEOUL</\3>\s*</\1>')
+_WORDMARK_IMG = '<img src="/mapdal-wordmark.svg" alt="MAPDAL SEOUL" width="214" height="32" decoding="async">'
+
+
 def _brand_apply(html):
     """Attach the shared wordmark and white-canvas brand system once per document."""
     if '<head' not in html[:4000].lower():
         return html
+    # 워드마크 서버 치환 — 종전엔 brand-system.js 가 로드 후 바꿔 '텍스트 로고 → 이미지' 깜빡임·레이아웃 이동이 났다.
+    if 'MAPDAL<' in html or 'MAPDAL <' in html:
+        html = _LOGO_TEXT_RE.sub(lambda m: '<%s class="logo mapdal-wordmark"%s aria-label="MAPDAL SEOUL">%s</%s>'
+                                 % (m.group(1), m.group(2), _WORDMARK_IMG, m.group(1)), html)
+    # 폰트 원본 사전 연결 — 첫 텍스트 렌더 지연 단축
+    if 'fonts.googleapis.com' in html and 'rel="preconnect" href="https://fonts.gstatic.com"' not in html:
+        m = re.search(r'<head[^>]*>', html, re.I)
+        if m:
+            html = (html[:m.end()] + '<link rel="preconnect" href="https://fonts.googleapis.com">'
+                    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' + html[m.end():])
+    # 본문 바로가기(키보드·스크린리더)
+    if 'mp-skip' not in html:
+        m = re.search(r'<body[^>]*>', html, re.I)
+        h = html.lower().find('</header>')
+        if m and h > m.end():
+            h += len('</header>')
+            html = html[:h] + '<span id="mpMain" tabindex="-1"></span>' + html[h:]
+            html = html[:m.end()] + '<a class="mp-skip" href="#mpMain">본문 바로가기</a>' + html[m.end():]
     if 'mpBrandCss' not in html:
         i = html.lower().find('</head>')
         html = (html[:i] + _BRAND_CSS_LINK + html[i:]) if i >= 0 else (_BRAND_CSS_LINK + html)
@@ -13831,8 +13905,9 @@ function idFromUrl(u){try{
   return'k2g::'+(u.searchParams.get('id')||'');
  return u.pathname.replace(/\.html$/,'').slice(1)}catch(e){return''}}
 function viewItem(P){try{
- var id=(P==='/album-detail')?idFromUrl(new URL(location.href)):P.slice(1);
- var nm=pageName(),pr=priceFromDom();
+ var isP=P.indexOf('/p/')===0;
+ var id=(P==='/album-detail')?idFromUrl(new URL(location.href)):(isP?((typeof PID!=='undefined'&&PID)?String(PID):decodeURIComponent(P.slice(3))):P.slice(1));
+ var nm=pageName(),pr=(isP&&typeof PRICE!=='undefined'&&PRICE>0)?PRICE:priceFromDom();
  var it={item_id:id,item_name:nm||id,item_category:cat(id,nm)};if(pr>0)it.price=pr;
  var pp={items:[it]};if(pr>0){pp.currency='KRW';pp.value=pr}
  ev('view_item',pp)}catch(e){}}
@@ -13873,7 +13948,7 @@ function boot(){try{
    var c3=[],cr3=cartRaw(),k;for(k=0;k<cr3.length;k++)c3.push(toIt(cr3[k]));
    if(c3.length)ev('add_payment_info',{currency:'KRW',value:val(c3),payment_type:'INIStdPay',items:c3})
   }catch(e){}},true)}
- else if(P.indexOf('/product-')===0||P==='/album-detail'){viewItem(P)}
+ else if(P.indexOf('/product-')===0||P==='/album-detail'||P.indexOf('/p/')===0){viewItem(P)}
  else if(P==='/shop'){listOnce(0)}
 }catch(e){}}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',boot)}else{boot()}
@@ -13907,8 +13982,9 @@ def _ecom_snippet():
     """GA4 전자상거래 퍼널 런타임 — GA4_ID 설정 시에만 주입(마커 mpEcomJs).
     mpAnalytics 와 마커를 분리한 이유: 관리자 편집으로 구 스니펫이 본문에
     베이크된 페이지에도 퍼널 계측이 독립적으로 주입되어야 하기 때문."""
-    ga = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('GA4_ID', ''))
-    return _MP_ECOM_JS if ga else ''
+    # 2026-10: growth 이벤트 버스가 gtag 호출을 자사 원장(mp_events)·광고 픽셀로 함께 보내므로
+    #   GA4 미설정이어도 퍼널 이벤트를 발생시킨다(gtag 는 growth head 스크립트가 항상 정의).
+    return _MP_ECOM_JS
 
 # ── 대표 문의 이메일 단일화 (구 주소 → CONTACT_MAIL) ──────────────────
 #   자사 노출 주소를 대표 1개로 모은다. 정적 파일·DB 편집본·상품 상세가
@@ -13924,6 +14000,44 @@ def contact_mail_apply(text):
     if not text: return text
     if '@mealzip.kr' not in text and 'mapdal.seoul@gmail.com' not in text: return text
     return _LEGACY_MAIL_RE.sub(CONTACT_MAIL, text)
+
+
+def _withdraw_words():
+    """탈퇴 확인 단어 — 다국어 화면에서는 번역된 단어가 안내되므로 함께 허용한다."""
+    w = {'탈퇴'}
+    try:
+        import i18n
+        for lg in i18n.LANGS:
+            v = i18n.load(lg).get('탈퇴')
+            if v:
+                w.add(v.strip().lower())
+    except Exception:
+        pass
+    return w
+
+
+def _pdp_resp(html, request, clean_path=None):
+    """독립 화면(/p/ 상세·/account) 응답 — 다국어 적용 + 언어 쿠키."""
+    cp = clean_path or ('/' + request.url.path.strip('/'))
+    return _lang_cookie(HTMLResponse(_localize(html, request, cp), headers={'Vary': 'Cookie'}), request)
+
+
+def _track_apply(html, path=''):
+    """계측 전용 주입 — 사이트 공용 셸(_inject_auth)을 쓰지 않는 독립 화면(/p/ 상세·/account)에도
+    GA4·이벤트 버스·퍼널 런타임·동의 배너를 붙인다. 종전에는 이 화면들에 계측이 전혀 없어
+    관리자 등록 상품의 view_item·add_to_cart 와 회원가입/로그인 전환이 통째로 누락됐다(2026-10)."""
+    try:
+        import growth
+        html = growth.html_apply(html, path)
+        add = ''
+        if 'mpAnalytics' not in html: add += _analytics_snippet()
+        add += growth.body_snippet(html)
+        if 'mpEcomJs' not in html: add += _ecom_snippet()
+        if 'mpReviews' not in html and path.startswith('/p/'): add += _REVIEW_SNIPPET
+        i = html.lower().rfind('</body>')
+        return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
+    except Exception:
+        return html
 
 
 def _inject_auth(html, path='', uid=None):
@@ -13942,12 +14056,31 @@ def _inject_auth(html, path='', uid=None):
     html = _seo_apply(html, path, uid)
     html = _inject_og(html)
     html = _brand_apply(html)
+    try:
+        import growth
+        html = growth.html_apply(html, path)      # 가짜 사회적 증거 제거 · 어트리뷰션/동의(head) — 멱등
+    except Exception:
+        growth = None
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
-    if 'mpMobNav' not in html: add += MOBNAV_SNIPPET
+    if 'mpMobNav' not in html:
+        # 레이아웃 CSS(모바일 헤더·내비)는 <head> 로 — 본문 끝에서 늦게 적용되면 첫 화면 후 헤더 높이가
+        # 바뀌며 아래 전체가 밀린다(모바일 CLS 0.38 측정). 스크립트는 종전대로 본문 끝.
+        _mn_end = MOBNAV_SNIPPET.find('</style>') + len('</style>')
+        _h = html.lower().find('</head>')
+        if MOBNAV_SNIPPET.lstrip().startswith('<style') and _mn_end > 8 and _h >= 0:
+            html = html[:_h] + MOBNAV_SNIPPET[:_mn_end] + html[_h:]
+            add += MOBNAV_SNIPPET[_mn_end:]
+        else:
+            add += MOBNAV_SNIPPET
     if 'mpTickerJs' not in html: add += TICKER_SNIPPET
-    if 'mpCardCss' not in html: add += CARD_CSS_SNIPPET
+    if 'mpCardCss' not in html:
+        _h = html.lower().find('</head>')
+        if _h >= 0 and CARD_CSS_SNIPPET.lstrip().startswith('<style'):
+            html = html[:_h] + CARD_CSS_SNIPPET + html[_h:]
+        else:
+            add += CARD_CSS_SNIPPET
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
@@ -13955,6 +14088,9 @@ def _inject_auth(html, path='', uid=None):
     if 'mpDropRecover' not in html: add += ENTRYRECOVER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if 'mpAnalytics' not in html: add += _analytics_snippet()
+    if growth is not None:
+        try: add += growth.body_snippet(html)     # 이벤트 버스(Meta·TikTok·카카오·Google Ads·자사 원장) + 동의 배너
+        except Exception: pass
     if 'mpEcomJs' not in html: add += _ecom_snippet()
     if 'mpKakaoCh' not in html: add += _kakao_channel_snippet()
     if 'mpReviews' not in html and (path == '/album-detail' or path.startswith('/product-') or 'qna-wrap' in html):
@@ -14245,6 +14381,11 @@ def order_notify_async(oid, event):
     try:
         import threading
         threading.Thread(target=_order_notify, args=(oid, event), daemon=True).start()
+    except Exception:
+        pass
+    try:
+        import growth                              # 이메일 · Meta/TikTok 서버전환 · 쿠폰 확정 · 이벤트 원장
+        growth.on_order_event_async(oid, event)
     except Exception:
         pass
 
@@ -15078,7 +15219,7 @@ def api_m_withdraw(request: Request, body: dict = Body(...)):
     if m.get('provider') == 'email':
         if not pw_verify(body.get('password') or '', m.get('pw') or ''):
             raise HTTPException(403, '비밀번호가 올바르지 않습니다')
-    elif (body.get('confirm') or '') != '탈퇴':
+    elif (body.get('confirm') or '').strip().lower() not in _withdraw_words():
         raise HTTPException(400, "'탈퇴' 를 정확히 입력해 주세요")
     account_security(m, 'WITHDRAW', request)
     cid=m.get('customer_id') or ''
@@ -15919,14 +16060,13 @@ def _artists_index_html():
 
 # ── 공개 페이지 라우트 (캐치올보다 먼저 등록) ─────────────────────────────
 @admin_router.get('/artists')
-def artists_index_page():
+def artists_index_page(request: Request):
     try: ensure_ready()
     except Exception: pass
-    return HTMLResponse(_inject_auth(_artists_index_html(), '/artists'),
-                        headers={'Cache-Control': 'no-cache'})
+    return _serve_html(_inject_auth(_artists_index_html(), '/artists'), '/artists', request)
 
 @admin_router.get('/artist/{slug}')
-def artist_hub_page(slug: str):
+def artist_hub_page(slug: str, request: Request):
     try: ensure_ready()
     except Exception: pass
     art = _artist_row_by_slug(slug)
@@ -15936,8 +16076,7 @@ def artist_hub_page(slug: str):
     if art['slug'] != slug:  # 별칭(한글 이름 등)으로 접근 → 대표 슬러그로 정리
         return Response(status_code=302,
                         headers={'Location': '/artist/' + urllib.parse.quote(art['slug'], safe='')})
-    return HTMLResponse(_inject_auth(_artist_hub_html(art), '/artist/' + art['slug']),
-                        headers={'Cache-Control': 'no-cache'})
+    return _serve_html(_inject_auth(_artist_hub_html(art), '/artist/' + art['slug']), '/artist/' + art['slug'], request)
 
 # ── 앨범상세 아티스트 칩 — 제목 아래 '아티스트관' 태그 링크 주입 ─────────
 ENTRYRECOVER_SNIPPET = r"""<script id="mpDropRecover">(function(){
@@ -16520,7 +16659,7 @@ def k2g_data_js(request: Request):
 # ── /kpop: shop.html을 앨범 전용관 모드로 변환 서빙 ──────────────────────
 #    ※ 캐치올(serve_site)보다 먼저 등록되어야 한다 (등록 순서 = 매칭 순서).
 @admin_router.get('/kpop')
-def kpop_page():
+def kpop_page(request: Request):
     html = None
     try:
         ensure_ready()
@@ -16533,7 +16672,7 @@ def kpop_page():
         if not os.path.isfile(fp):
             return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center"><h2>KPOP(음반) 준비 중입니다</h2><a href="/">MAPDAL SEOUL 홈으로</a>', status_code=503)
         html = open(fp, 'rb').read().decode('utf-8', errors='replace')
-    return HTMLResponse(_inject_auth(_KPOP_MARK + html, '/kpop'), headers={'Cache-Control': 'no-cache'})
+    return _serve_html(_inject_auth(_KPOP_MARK + html, '/kpop'), '/kpop', request)
 
 # ═══════ 정적 서빙 대체 (편집본 우선 · 반드시 모듈 마지막 라우트) ═══════
 import mimetypes
@@ -16588,12 +16727,49 @@ def _drop_preview_apply(html, request):
     except Exception:
         return html, None, None
 
+def _req_lang(request):
+    """요청 언어 — URL 접두사(/en·/ja·/zh) > mp_lang 쿠키 > 한국어."""
+    try:
+        lg = getattr(request.state, 'lang', None)
+    except Exception:
+        lg = None
+    if lg in ('en', 'ja', 'zh'):
+        return lg
+    c = (request.cookies.get('mp_lang') or '') if request is not None else ''
+    return c if c in ('en', 'ja', 'zh') else 'ko'
+
+
+def _localize(html, request, clean_path):
+    """다국어 최종 단계(i18n.localize) — 실패 시 원문 그대로."""
+    try:
+        import i18n
+        # canonical·hreflang 에는 페이지를 구분하는 파라미터만 싣는다(utm·fbclid 등 추적값 제외)
+        qp = request.query_params if request is not None else {}
+        keep = [(k, qp.get(k)) for k in ('uid', 'id', 'view') if qp.get(k)] if clean_path in ('/album-detail', '/new-drops') else []
+        hp = clean_path + (('?' + urllib.parse.urlencode(keep)) if keep else '')
+        return i18n.localize(html, hp, _req_lang(request), SITE_ORIGIN)
+    except Exception:
+        return html
+
+
+def _lang_cookie(resp, request):
+    """접두사 URL 로 들어온 언어를 쿠키로 기억 — 이후 JS 이동(/cart 등)도 같은 언어로."""
+    try:
+        lg = getattr(request.state, 'lang', None)
+        if lg in ('en', 'ja', 'zh') and request.cookies.get('mp_lang') != lg:
+            resp.set_cookie('mp_lang', lg, max_age=31536000, path='/', samesite='lax', secure=True)
+    except Exception:
+        pass
+    return resp
+
+
 def _serve_html(html, seo_path, request):
     """HTML 최종 응답 — /new-drops 상세는 공개 전 미리보기 배너·쿠키를 덧붙인다."""
     did = tok = None
     if seo_path == '/new-drops':
         html, did, tok = _drop_preview_apply(html, request)
-    resp = HTMLResponse(html, headers={'Cache-Control': 'no-cache'})
+    html = _localize(html, request, seo_path or ('/' + request.url.path.strip('/')))
+    resp = _lang_cookie(HTMLResponse(html, headers={'Cache-Control': 'no-cache', 'Vary': 'Cookie'}), request)
     if did and tok:
         resp.set_cookie('mp_pv_%d' % did, tok, max_age=_DROP_PV_COOKIE_AGE, path='/',
                         httponly=True, samesite='lax', secure=True)
@@ -16650,4 +16826,22 @@ def serve_site(spath: str, request: Request):
         # 내용 해시 파일명 → 영구 캐시 안전 (교체는 새 해시 파일명으로)
         return Response(data, media_type=mt,
                         headers={'Cache-Control': 'public, max-age=31536000, immutable'})
-    return Response(data, media_type=mt)
+    # ── 이미지 WebP 협상 + 정적 자산 캐시 (2026-10 성능) ──────────────────────
+    #   같은 URL(.jpg/.png) 그대로 두고, 브라우저가 WebP 를 받으면 옆의 .webp(평균 45% 경량)를 준다.
+    #   관리자 DB(히어로 슬라이드 등)에 저장된 기존 경로를 바꾸지 않아도 되는 방식.
+    hdr = {}
+    negotiated = False
+    if mt in ('image/jpeg', 'image/png'):
+        wp = os.path.splitext(fp)[0] + '.webp'
+        if os.path.isfile(wp):
+            negotiated = True                             # 같은 URL 이 Accept 에 따라 다른 바이트를 준다
+            hdr['Vary'] = 'Accept'
+            if 'image/webp' in (request.headers.get('accept') or ''):
+                data, mt = open(wp, 'rb').read(), 'image/webp'
+    if negotiated:
+        # Cloudflare 는 Vary: Accept 를 무시하고 확장자 기준으로 공유 캐시한다 — 형식이 뒤섞이지 않도록
+        # 협상 응답은 브라우저 캐시(private)만 허용한다.
+        hdr['Cache-Control'] = 'private, max-age=604800'
+    elif mt.startswith('image/') or mt in ('text/css', 'application/javascript', 'text/javascript', 'font/woff2'):
+        hdr['Cache-Control'] = 'public, max-age=604800, stale-while-revalidate=86400'
+    return Response(data, media_type=mt, headers=hdr)

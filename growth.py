@@ -200,6 +200,16 @@ def _run(sql, args=()):
         c.exec(sql, args)
 
 
+def _run_rc(sql, args=()):
+    """실행 후 영향 행 수 — 원자적 조건부 UPDATE 의 성공 여부 판정용."""
+    with _app().db() as c:
+        cur = c.exec(sql, args)
+        try:
+            return int(cur.rowcount or 0)
+        except Exception:
+            return 0
+
+
 # ═══════════════════════════ [1] 신뢰 정합화 ════════════════════════════
 #   정적 PDP·관리자 편집본(page_edits)·동적 PDP(/p/) 어디에서 오든 서빙 직전에 한 번 더
 #   정리한다(멱등). 원본 정적 파일도 같은 규칙으로 정리해 두었다 — 이 함수는 DB 편집본에
@@ -497,8 +507,10 @@ def _is_mobile(req):
 
 
 def _client_ip(req):
-    xf = (req.headers.get('x-forwarded-for') or '').split(',')[0].strip()
-    return xf or (req.client.host if req.client else '')
+    try:
+        return _app().client_ip(req)
+    except Exception:
+        return req.client.host if req.client else ''
 
 
 @growth_router.post('/api/ev')
@@ -536,7 +548,7 @@ async def api_event(req: Request):
             cid = ''
         _EVQ.append((secrets.token_hex(8), _iso(), _day(),
                      _cid(req.cookies.get('mp_vid'))[:24], _cid(req.cookies.get('mp_sid'))[:16], cid,
-                     n, str(d.get('p') or '')[:120], int(d.get('v') or 0), str(d.get('c') or 'KRW')[:3],
+                     n, str(d.get('p') or '')[:120], _int_safe(d.get('v')), str(d.get('c') or 'KRW')[:3],
                      str(d.get('o') or '')[:40], str(lt.get('s') or '(direct)')[:40],
                      str(lt.get('m') or '(none)')[:30], str(lt.get('c') or '')[:80],
                      _country(req), str(d.get('l') or '')[:5], 'm' if _is_mobile(req) else 'd',
@@ -545,6 +557,13 @@ async def api_event(req: Request):
     except Exception:
         pass
     return Response(status_code=204)
+
+
+def _int_safe(v):
+    try:
+        return max(-2000000000, min(2000000000, int(float(v or 0))))
+    except Exception:
+        return 0
 
 
 _FLUSH = {'t': None}
@@ -579,10 +598,39 @@ def flush_events():
         return 0
     sql = ('INSERT INTO mp_events(id,ts,day,vid,sid,cid,name,path,value,currency,oid,src,med,cmp,'
            'country,lang,dev,props) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING')
-    with _app().db() as c:
+    batch = [_ev_clean(r) for r in batch]
+    try:
+        with _app().db() as c:
+            for r in batch:
+                c.exec(sql, r)
+        return len(batch)
+    except Exception as e:
+        # 한 행이 PG 트랜잭션을 중단시키면 배치 전체가 날아간다 → 행 단위로 다시 넣고 불량 행만 버린다
+        print('[growth] batch insert 실패 → 행 단위 재시도: %s' % str(e)[:120], flush=True)
+        ok = 0
         for r in batch:
-            c.exec(sql, r)
-    return len(batch)
+            try:
+                with _app().db() as c:
+                    c.exec(sql, r)
+                ok += 1
+            except Exception:
+                pass
+        return ok
+
+
+def _ev_clean(r):
+    """외부 입력 정제 — NUL 문자 제거(PG TEXT 거부), 금액은 INTEGER 범위로 제한."""
+    out = []
+    for i, v in enumerate(r):
+        if isinstance(v, str):
+            v = v.replace('\x00', '')
+        elif i == 8:
+            try:
+                v = max(-2000000000, min(2000000000, int(v)))
+            except Exception:
+                v = 0
+        out.append(v)
+    return tuple(out)
 
 
 @growth_router.post('/api/consent')
@@ -1047,11 +1095,62 @@ def coupon_check(code, email='', customer_id='', phone='', intl=False):
     if cp.get('uses_left') is not None and int(cp['uses_left']) <= 0:
         raise HTTPException(400, '이미 사용된 쿠폰입니다 (Already used)')
     sc = cp.get('scope') or 'all'
-    if sc == 'first' and _buyer_has_paid(email, customer_id, phone):
+    if sc == 'first' and (_buyer_has_paid(email, customer_id, phone) or _buyer_has_first_coupon(email, customer_id, phone)):
         raise HTTPException(400, '첫 주문 전용 쿠폰입니다 (First order only)')
     if sc == 'intl' and not intl:
         raise HTTPException(400, '해외 배송 주문 전용 쿠폰입니다 (International orders only)')
     return cp
+
+
+def _buyer_has_first_coupon(email='', customer_id='', phone=''):
+    """첫 주문 쿠폰을 이미 다른 미결제(HELD)·사용(USED) 주문에 건 구매자인지 — 결제 전 주문 여러 건에
+    첫 주문 쿠폰을 동시에 거는 우회를 막는다."""
+    try:
+        conds, args = [], []
+        if customer_id:
+            conds.append('o.customer_id=?'); args.append(customer_id)
+        if phone:
+            conds.append('o.contact_phone_norm=?'); args.append(phone)
+        if email:
+            conds.append("o.buyer LIKE ? ESCAPE '\\'"); args.append(_email_like(email))
+        if not conds:
+            return False
+        return bool(_one("SELECT u.order_id FROM mp_coupon_uses u JOIN orders o ON o.order_id=u.order_id "
+                         "JOIN mp_coupons c ON c.code=u.code WHERE c.scope='first' AND u.status IN ('HELD','USED') "
+                         "AND o.status NOT IN ('CANCELLED','FAILED') AND (" + ' OR '.join(conds) + ") LIMIT 1", tuple(args)))
+    except Exception:
+        return False
+
+
+def coupon_reserve(cp):
+    """사용 횟수 제한 쿠폰은 주문 생성 '전'에 원자적으로 1회분을 예약한다 (동시 주문 중복 사용 방지).
+    무제한 쿠폰은 예약 없음. 반환 True=예약함(실패 시 coupon_unreserve 로 되돌려야 함)."""
+    if not cp or cp.get('uses_left') is None:
+        return False
+    n = _run_rc('UPDATE mp_coupons SET uses_left=uses_left-1 WHERE code=? AND uses_left IS NOT NULL AND uses_left>0',
+                (cp['code'],))
+    if n != 1:
+        raise HTTPException(400, '이미 사용된 쿠폰입니다 (Already used)')
+    return True
+
+
+def coupon_unreserve(code):
+    try:
+        _run('UPDATE mp_coupons SET uses_left=uses_left+1 WHERE code=? AND uses_left IS NOT NULL', (_norm_code(code),))
+    except Exception:
+        pass
+
+
+def coupon_release(oid):
+    """미결제로 취소·만료된 주문의 쿠폰 보류를 풀고, 예약했던 사용 횟수를 돌려준다 (멱등)."""
+    try:
+        u = _one("SELECT code FROM mp_coupon_uses WHERE order_id=? AND status='HELD'", (oid,))
+        if not u:
+            return
+        if _run_rc("UPDATE mp_coupon_uses SET status='RELEASED' WHERE order_id=? AND status='HELD'", (oid,)) == 1:
+            coupon_unreserve(u['code'])
+    except Exception:
+        pass
 
 
 def coupon_amount(cp, sub):
@@ -1079,11 +1178,8 @@ def coupon_hold(order_id, code, off):
 
 
 def coupon_finalize(oid):
-    u = _one("SELECT * FROM mp_coupon_uses WHERE order_id=? AND status='HELD'", (oid,))
-    if not u:
-        return
-    _run("UPDATE mp_coupon_uses SET status='USED' WHERE order_id=?", (oid,))
-    _run('UPDATE mp_coupons SET uses_left=uses_left-1 WHERE code=? AND uses_left IS NOT NULL AND uses_left>0', (u['code'],))
+    """결제완료 — HELD → USED (조건부 UPDATE 로 멱등). 사용 횟수는 주문 생성 시 이미 예약·차감됐다."""
+    _run("UPDATE mp_coupon_uses SET status='USED' WHERE order_id=? AND status='HELD'", (oid,))
 
 
 @growth_router.post('/api/coupon/check')
@@ -1139,17 +1235,27 @@ def unsub_url(email):
 
 
 def mkt_ok(email='', customer_id=''):
-    """광고성 메일 발송 가능 여부 — 명시적 동의 + 수신거부 없음."""
+    """광고성 메일 발송 가능 여부 — 명시적 동의 + 수신거부 없음.
+    연락처(mp_contacts)와 회원 동의 이력(consent_history) 중 '가장 최근' 의사 표시를 따른다
+    (예: 매장 QR 로 동의했다가 이후 회원 설정에서 철회했다면 발송하지 않음)."""
     email = str(email or '').strip().lower()
     try:
         if email and _one('SELECT id FROM mp_contacts WHERE email=? AND unsub=1 LIMIT 1', (email,)):
             return False
-        if email and _one('SELECT id FROM mp_contacts WHERE email=? AND consent=1 AND unsub=0 LIMIT 1', (email,)):
-            return True
+        c = _one('SELECT created FROM mp_contacts WHERE email=? AND consent=1 AND unsub=0 ORDER BY created DESC LIMIT 1',
+                 (email,)) if email else None
+        h = None
         if customer_id:
-            r = _one("SELECT granted FROM consent_history WHERE customer_id=? AND consent_type='MARKETING' "
+            h = _one("SELECT granted, created_at FROM consent_history WHERE customer_id=? AND consent_type='MARKETING' "
                      "ORDER BY created_at DESC LIMIT 1", (customer_id,))
-            return bool(r and int(r.get('granted') or 0))
+        if c and h:
+            if str(h.get('created_at') or '') > str(c.get('created') or ''):
+                return bool(int(h.get('granted') or 0))
+            return True
+        if c:
+            return True
+        if h:
+            return bool(int(h.get('granted') or 0))
     except Exception:
         return False
     return False
@@ -1181,9 +1287,13 @@ async def api_contact(req: Request):
     ex = None
     if email:
         ex = _one('SELECT * FROM mp_contacts WHERE email=? ORDER BY created DESC LIMIT 1', (email,))
-    if ex and ex.get('coupon'):
-        _run('UPDATE mp_contacts SET consent=1, unsub=0 WHERE id=?', (ex['id'],))
-        return {'ok': True, 'coupon': ex['coupon'], 'existing': True}
+    if ex:
+        # 이미 등록된 주소 — 다른 사람이 남의 이메일로 쿠폰을 받아가거나 수신거부를 되살리지 못하도록
+        # 쿠폰을 응답에 싣지 않고 상태도 바꾸지 않는다. 쿠폰은 본인 메일함(웰컴 메일)에만 있다.
+        # 예외: 처음 등록한 바로 그 브라우저(방문자 ID 일치)에서 다시 연 경우는 본인 — 코드를 다시 보여준다.
+        if vid and ex.get('vid') == vid and ex.get('coupon') and int(ex.get('consent') or 0) and not int(ex.get('unsub') or 0):
+            return {'ok': True, 'existing': True, 'coupon': ex['coupon']}
+        return {'ok': True, 'existing': True}
     cid_ = secrets.token_hex(10)
     first = src.startswith('qr') or src.startswith('visit')
     code = issue_coupon('HOME', 'pct', 10, 30000, 30000, 180, 'first',
@@ -1214,7 +1324,7 @@ def contact_link_order(oid):
 @growth_router.get('/api/unsub', response_class=HTMLResponse)
 def api_unsub(e: str = '', t: str = ''):
     e = str(e or '').strip().lower()
-    if not e or not hmac.compare_digest(unsub_token(e), str(t or '')):
+    if not e or not hmac.compare_digest(unsub_token(e).encode(), str(t or '').encode('utf-8', 'replace')):
         return HTMLResponse('<meta charset=utf-8><p style="font-family:sans-serif;padding:40px">Invalid link.</p>', 400)
     ensure()
     try:
@@ -1419,6 +1529,11 @@ def start_scheduler():
                 lifecycle_tick()
             except Exception as e:
                 print('[growth] lifecycle: %s' % e, flush=True)
+            try:
+                import globalshop
+                globalshop.reconcile_paypal()          # PayPal 심사 보류·통신 불명 건 확정
+            except Exception as e:
+                print('[growth] paypal reconcile: %s' % e, flush=True)
             if n % 12 == 0:      # 6시간마다
                 try:
                     pull_ad_spend()
@@ -2172,22 +2287,22 @@ en:{tick:'SEONGSU FLAGSHIP · THANK YOU FOR VISITING',h1:'Take Seoul<br><b>home 
  p1:'<b>Ships worldwide</b>Albums & merch to 50+ countries',p2:'<b>Official albums</b>Counted toward the charts',p3:'<b>Drop alerts</b>New releases, first',how:'Where should we send your code?',email:'Email',email_opt:'Email (optional, for order updates)',wa:'WhatsApp number (with country code)',line:'LINE ID',wechat:'WeChat ID',ig:'Instagram @handle',
  country:'Where are you from?',consent:'I agree to receive MAPDAL SEOUL offers and new-drop news. You can unsubscribe at any time.',submit:'Get my 10% code',
  done_h:'Your welcome code',done_p:'Use it at checkout on mapdal.kr within 180 days (min. ₩30,000, up to ₩30,000 off). Screenshot this screen to keep it.',shop:'Shop online now',store:'Explore the 4-floor store',
- addr:'MAPDAL SEOUL · 5 Seongsui-ro 16-gil, Seongdong-gu, Seoul · Open daily 11:00–21:00',privacy:'Privacy policy',e_need:'Please enter your contact.',e_mail:'Please check your email address.',e_ok:'Please tick the consent box.',e_net:'Something went wrong. Please try again.'},
+ addr:'MAPDAL SEOUL · 5 Seongsui-ro 16-gil, Seongdong-gu, Seoul · Open daily 11:00–21:00',privacy:'Privacy policy',e_need:'Please enter your contact.',e_mail:'Please check your email address.',e_ok:'Please tick the consent box.',e_net:'Something went wrong. Please try again.',exist:'This email is already registered — your code was sent to your inbox.'},
 ja:{tick:'聖水フラッグシップ · ご来店ありがとうございます',h1:'ソウルを、<br><b>おうちでも。</b>',lead:'聖水で見つけたK-POPアルバムやグッズを、帰国後もオンラインで。<b>初回オンライン注文が10%オフ</b>になるクーポンをお送りします。',
  p1:'<b>海外発送</b>アルバム・グッズを50か国以上へ',p2:'<b>公式アルバム</b>チャートに反映',p3:'<b>新作通知</b>いち早くお届け',how:'クーポンの受け取り方法',email:'メールアドレス',email_opt:'メールアドレス（任意・注文のご案内用）',wa:'WhatsApp番号（国番号から）',line:'LINE ID',wechat:'WeChat ID',ig:'Instagram @アカウント',
  country:'お住まいの国',consent:'MAPDAL SEOULからのお得な情報・新作のお知らせを受け取ることに同意します。いつでも配信停止できます。',submit:'10%クーポンを受け取る',
  done_h:'ウェルカムクーポン',done_p:'mapdal.kr のお支払い画面で180日以内にご利用ください（₩30,000以上・最大₩30,000割引）。この画面をスクリーンショットしてください。',shop:'オンラインストアへ',store:'4フロアの店舗を見る',
- addr:'MAPDAL SEOUL · ソウル市城東区聖水二路16ギル5 · 毎日11:00–21:00',privacy:'プライバシーポリシー',e_need:'連絡先を入力してください。',e_mail:'メールアドレスをご確認ください。',e_ok:'同意にチェックしてください。',e_net:'エラーが発生しました。もう一度お試しください。'},
+ addr:'MAPDAL SEOUL · ソウル市城東区聖水二路16ギル5 · 毎日11:00–21:00',privacy:'プライバシーポリシー',e_need:'連絡先を入力してください。',e_mail:'メールアドレスをご確認ください。',e_ok:'同意にチェックしてください。',e_net:'エラーが発生しました。もう一度お試しください。',exist:'このメールアドレスは登録済みです。クーポンは受信トレイをご確認ください。'},
 zh:{tick:'圣水旗舰店 · 感谢光临',h1:'把首尔<br><b>带回家。</b>',lead:'在圣水看中的 K-POP 专辑和周边，回国后也能在线购买。送您<b>首次线上订单 10% 优惠</b>。',
  p1:'<b>全球配送</b>专辑与周边发往50多个国家',p2:'<b>官方专辑</b>计入榜单',p3:'<b>新品提醒</b>第一时间通知',how:'优惠码发送到哪里？',email:'电子邮箱',email_opt:'电子邮箱（选填，用于订单通知）',wa:'WhatsApp 号码（含国家代码）',line:'LINE ID',wechat:'微信号',ig:'Instagram 账号',
  country:'您来自哪里？',consent:'我同意接收 MAPDAL SEOUL 的优惠和新品资讯，可随时退订。',submit:'领取 10% 优惠码',
  done_h:'您的欢迎优惠码',done_p:'请在180天内于 mapdal.kr 结账时使用（满₩30,000，最高减₩30,000）。建议截图保存。',shop:'立即线上购物',store:'了解四层旗舰店',
- addr:'MAPDAL SEOUL · 首尔城东区圣水二路16街5 · 每天 11:00–21:00',privacy:'隐私政策',e_need:'请输入联系方式。',e_mail:'请检查邮箱地址。',e_ok:'请勾选同意。',e_net:'出错了，请重试。'},
+ addr:'MAPDAL SEOUL · 首尔城东区圣水二路16街5 · 每天 11:00–21:00',privacy:'隐私政策',e_need:'请输入联系方式。',e_mail:'请检查邮箱地址。',e_ok:'请勾选同意。',e_net:'出错了，请重试。',exist:'该邮箱已登记，优惠码已发送至您的邮箱。'},
 ko:{tick:'성수 플래그십 · 방문해 주셔서 감사합니다',h1:'성수의 맵달을,<br><b>집에서도.</b>',lead:'매장에서 본 앨범·굿즈를 온라인에서 그대로. <b>첫 온라인 주문 10% 쿠폰</b>을 드려요.',
  p1:'<b>전국·해외 배송</b>앨범·굿즈 50여 개국',p2:'<b>공식 앨범</b>차트 반영',p3:'<b>드롭 알림</b>신상 가장 먼저',how:'쿠폰을 어디로 보내드릴까요?',email:'이메일',email_opt:'이메일 (선택 · 주문 안내용)',wa:'WhatsApp 번호 (국가번호 포함)',line:'LINE ID',wechat:'WeChat ID',ig:'인스타그램 @계정',
  country:'국가',consent:'맵달SEOUL의 혜택·신상 소식 수신에 동의합니다. 언제든 수신거부할 수 있습니다.',submit:'10% 쿠폰 받기',
  done_h:'웰컴 쿠폰 코드',done_p:'mapdal.kr 결제 단계에서 180일 이내 사용 (3만원 이상 · 최대 3만원 할인). 화면을 캡처해 두세요.',shop:'온라인 스토어 바로가기',store:'4개 층 매장 둘러보기',
- addr:'맵달SEOUL · 서울 성동구 성수이로16길 5 · 매일 11:00–21:00',privacy:'개인정보처리방침',e_need:'연락처를 입력해 주세요.',e_mail:'이메일 주소를 확인해 주세요.',e_ok:'수신 동의에 체크해 주세요.',e_net:'오류가 발생했습니다. 다시 시도해 주세요.'}};
+ addr:'맵달SEOUL · 서울 성동구 성수이로16길 5 · 매일 11:00–21:00',privacy:'개인정보처리방침',e_need:'연락처를 입력해 주세요.',e_mail:'이메일 주소를 확인해 주세요.',e_ok:'수신 동의에 체크해 주세요.',e_net:'오류가 발생했습니다. 다시 시도해 주세요.',exist:'이미 등록된 이메일입니다. 쿠폰은 받은 메일함을 확인해 주세요.'}};
 var C=[['US','United States'],['JP','Japan 日本'],['CN','China 中国'],['TW','Taiwan 台灣'],['HK','Hong Kong 香港'],['SG','Singapore'],['TH','Thailand'],['VN','Vietnam'],['PH','Philippines'],['MY','Malaysia'],['ID','Indonesia'],['AU','Australia'],['CA','Canada'],['GB','United Kingdom'],['FR','France'],['DE','Germany'],['ES','Spain'],['IT','Italy'],['NL','Netherlands'],['MX','Mexico'],['BR','Brazil'],['IN','India'],['AE','UAE'],['KR','Korea 한국'],['ZZ','Other']];
 var nav=(navigator.language||'en').toLowerCase(),L=(/^ja/.test(nav)?'ja':/^zh/.test(nav)?'zh':/^ko/.test(nav)?'ko':'en'),CH='email';
 var tz='';try{tz=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}
@@ -2207,7 +2322,8 @@ document.getElementById('f').addEventListener('submit',function(e){e.preventDefa
  var btn=document.getElementById('go');btn.disabled=true;
  fetch('/api/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,channel:CH,handle:CH==='email'?'':v,country:sel.value,lang:L,source:'qr:'+QR,consent:true})})
  .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||t.e_net);return d})})
- .then(function(d){document.getElementById('code').textContent=d.coupon||'';document.getElementById('f').style.display='none';document.getElementById('done').style.display='block';
+ .then(function(d){if(!d.coupon){err.style.color='#0A7D38';err.textContent=t.exist;btn.disabled=false;return}
+  document.getElementById('code').textContent=d.coupon||'';document.getElementById('f').style.display='none';document.getElementById('done').style.display='block';
   try{window.mpTrack&&mpTrack('generate_lead',{method:CH})}catch(e){}
   document.getElementById('shop').href='/shop?utm_source=store_qr&utm_medium=offline&utm_campaign='+encodeURIComponent(QR)})
  .catch(function(x){err.textContent=x.message||t.e_net;btn.disabled=false})});
@@ -2406,7 +2522,8 @@ if(!/^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(em)){m.style.color='#FFB000';m.textCo
 if(!document.getElementById('mpNlC').checked){m.style.color='#FFB000';m.textContent=(window.mpT||String)('수신 동의에 체크해 주세요');return}
 fetch('/api/contacts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,consent:true,lang:(window.MP_LANG||'ko'),source:'footer'})})
 .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'error');return d})})
-.then(function(d){m.style.color='#fff';m.innerHTML=(window.mpT||String)('구독 완료! 첫 주문 쿠폰')+' <b style="color:#FFB000;font-family:monospace;font-size:15px">'+d.coupon+'</b>';
+.then(function(d){m.style.color='#fff';if(!d.coupon){m.textContent=(window.mpT||String)('이미 구독 중인 이메일입니다. 쿠폰은 받은 메일함을 확인해 주세요.');return}
+ m.innerHTML=(window.mpT||String)('구독 완료! 첫 주문 쿠폰')+' <b style="color:#FFB000;font-family:monospace;font-size:15px">'+d.coupon+'</b>';
  try{sessionStorage.setItem('mp_cp',d.coupon)}catch(x){}try{window.mpTrack&&mpTrack('generate_lead',{method:'footer'})}catch(x){}})
 .catch(function(x){m.style.color='#FFB000';m.textContent=x.message})})}catch(e){}})();</script>'''
 

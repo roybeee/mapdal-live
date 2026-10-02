@@ -67,7 +67,7 @@ summary{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--r
     </div>
     <div style="width:150px">
       <label for="intv">전환 간격 (ms)</label>
-      <input type="number" id="intv" min="1500" max="15000" step="500" value="3000">
+      <input type="number" id="intv" min="5000" max="15000" step="500" value="6000">
     </div>
     <button class="btn" id="loadBtn" style="margin-top:24px">불러오기</button>
   </div>
@@ -85,7 +85,7 @@ summary{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--r
 (function(){
 "use strict";
 var API="/api/hero", MAXS=10;
-var state={interval_ms:3000,slides:[]};
+var state={interval_ms:6000,slides:[]};
 var list=document.getElementById("list"),
     stat=document.getElementById("stat"),
     tok=document.getElementById("tok"),
@@ -185,7 +185,7 @@ function load(){
   msg("불러오는 중...",true);
   fetch(API,{cache:"no-store"}).then(function(r){return r.json();})
   .then(function(d){
-    state.interval_ms=d.interval_ms||3000;
+    state.interval_ms=Math.max(5000,d.interval_ms||6000);
     state.slides=(d.slides&&d.slides.length?d.slides:[blank()]).map(function(s){
       return Object.assign(blank(),s);});
     intv.value=state.interval_ms;
@@ -198,7 +198,7 @@ function save(){
   var t=tok.value.trim();
   if(!t){msg("관리자 토큰을 입력하세요.",false);tok.focus();return;}
   sessionStorage.setItem("mzh_token",t);
-  state.interval_ms=parseInt(intv.value,10)||3000;
+  state.interval_ms=Math.max(5000,parseInt(intv.value,10)||6000);
   msg("저장 중...",true);
   fetch(API,{method:"PUT",
     headers:{"Content-Type":"application/json","X-Admin-Token":t},

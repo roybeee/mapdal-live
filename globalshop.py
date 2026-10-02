@@ -148,6 +148,9 @@ def quote(items, country, coupon_code='', email='', customer_id='', lock_c=None)
 
     def run(c):
         nonlocal sub, n
+        # 같은 상품이 여러 줄(…::o1 / ….html::o1 등 표기 차이 포함)로 담겨도 실제 DB 행 기준으로 수량을 합산한
+        # 뒤 재고를 검사한다 — 줄마다 따로 검사하면 재고 1개에 2줄이 모두 통과해 초과판매된다.
+        agg, order = {}, []
         for it in items[:50]:
             pid = str(it.get('id', ''))
             q = max(1, min(99, int(it.get('q', 1) or 1)))
@@ -156,6 +159,13 @@ def quote(items, country, coupon_code='', email='', customer_id='', lock_c=None)
                 # 단종·삭제된 상품이 오래된 장바구니에 남은 경우 — 견적 전체를 막지 않고 제외 대상으로 표시
                 blocked.append({'id': pid, 'n': str(it.get('n') or pid)[:80], 'gone': True})
                 continue
+            if row['id'] in agg:
+                agg[row['id']][1] = min(99, agg[row['id']][1] + q)
+            else:
+                agg[row['id']] = [row, q]
+                order.append(row['id'])
+        for rid in order:
+            row, q = agg[rid]
             cat = row.get('category') or row.get('kind') or ''
             if not intl_ok(row['id'], row.get('name') or '', cat):
                 blocked.append({'id': row['id'], 'n': row['name']})
@@ -246,7 +256,11 @@ def _pp_token():
 
 
 def _pp(method, path, payload=None, idem=None):
-    h = {'Authorization': 'Bearer ' + _pp_token(), 'Content-Type': 'application/json'}
+    try:
+        tok = _pp_token()
+    except Exception as e:                       # 토큰 발급 실패(네트워크·자격증명) — 상태코드 0 으로 통일
+        return 0, {'error': 'token: %s' % str(e)[:160]}
+    h = {'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json'}
     if idem:
         h['PayPal-Request-Id'] = idem
     rq = urllib.request.Request(_pp_base() + path, data=(json.dumps(payload).encode() if payload is not None else None),
@@ -259,6 +273,8 @@ def _pp(method, path, payload=None, idem=None):
             return e.code, json.loads(e.read().decode() or '{}')
         except Exception:
             return e.code, {}
+    except Exception as e:                       # 타임아웃·연결 끊김 — PayPal 쪽 처리 여부 불명 → 호출부가 재조회
+        return 0, {'error': str(e)[:200]}
 
 
 def _money(v):
@@ -286,6 +302,76 @@ def ensure():
 
 def _clean(s, n=120):
     return re.sub(r'[\x00-\x1f<>]', '', str(s or '')).strip()[:n]
+
+
+def _intl_order_tx(a, items, country, buyer, customer_id, member_id, phone_norm, cp):
+    """단일 트랜잭션: 재고 잠금 조회 → 검증 → 차감 → 주문 INSERT. (트랜잭션 안에서는 실패해도 되는 문장을 두지 않는다)"""
+    with a.db() as c:
+        q = quote(items, country, '', buyer['email'], customer_id, lock_c=c)
+        if q['blocked']:
+            raise HTTPException(400, 'Some items in your cart can only be shipped within Korea — please remove them first')
+        off = _g().coupon_amount(cp, q['sub']) if cp else 0
+        total = q['sub'] + q['ship'] + q['duties'] - off
+        for l in q['lines']:
+            if l['stock'] is not None:
+                c.exec('UPDATE products SET stock=stock-? WHERE id=?', (l['q'], l['id']))
+                if l['stock'] - l['q'] <= 0:
+                    c.exec('UPDATE products SET soldout=1 WHERE id=?', (l['id'],))
+        oid = 'MD-%s-%s' % (a.kst_naive().strftime('%Y%m%d'), secrets.token_hex(3).upper())
+        buyer['ship_fee'], buyer['duties'], buyer['ddp'] = q['ship'], q['duties'], q['ddp']
+        lines = [{'id': l['id'], 'n': l['n'], 'p': l['p'], 'q': l['q']} for l in q['lines']]
+        c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) '
+               'VALUES(?,?,?,?,?,?,?,?,?,?)',
+               (oid, a.kst_iso(), 'PENDING', total, json.dumps(buyer, ensure_ascii=False),
+                json.dumps(lines, ensure_ascii=False), 'intl', customer_id or None, member_id or None, phone_norm or None))
+    return oid, q, off, total, lines
+
+
+def _cancel_unpaid(oid, reason):
+    """미결제 해외 주문 취소 — 재고 복원·쿠폰 예약 해제는 관리자 취소 코어와 동일 경로."""
+    try:
+        av = _av()
+        r = av.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+        if r and r.get('status') in ('PENDING', 'FAILED'):
+            av._order_cancel_core({'name': '시스템', 'role': 'OWNER'}, r, reason, restock=True)
+    except Exception as e:
+        print('[global] cancel %s: %s' % (oid, e), flush=True)
+
+
+def _cancel_stale_paypal(req):
+    """이 브라우저가 만든 미결제 PayPal 주문(결제 전 단계 CREATED/RETRY)을 정리 — 결제창 재시도 때 재고가 이중으로 묶이지 않게."""
+    try:
+        a = _app()
+        oids = [x.partition('.')[0] for x in (req.cookies.get(a._OV_COOKIE) or '').split('|') if x][:8]
+        for oid in oids:
+            if not a._ov_ok(req, oid):
+                continue
+            with a.db() as c:
+                p = c.one('SELECT status, provider FROM mp_intl_pay WHERE order_id=?', (oid,))
+                o = c.one('SELECT status FROM orders WHERE order_id=?', (oid,))
+            if p and o and p.get('provider') == 'paypal' and p.get('status') in ('CREATED', 'RETRY') and o['status'] == 'PENDING':
+                _cancel_unpaid(oid, '결제창 재시도 — 이전 미결제 주문 자동정리')
+    except Exception:
+        pass
+
+
+def sweep_skip(r, age_h):
+    """관리자 자동정리(_sweep) 보호 규칙 — True 면 이번에는 취소하지 않는다.
+    · 결제 링크(인보이스) 주문: 72시간 확보 · PayPal 캡처 진행/보류/완료 건: 절대 자동취소하지 않음."""
+    try:
+        if (r.get('ship_method') or '') != 'intl':
+            return False
+        with _app().db() as c:
+            p = c.one('SELECT provider, status FROM mp_intl_pay WHERE order_id=?', (r['order_id'],))
+        if not p:
+            return age_h < 72
+        if p.get('status') in ('CAPTURING', 'CAPTURE_PENDING', 'CAPTURED'):
+            return True
+        if p.get('provider') == 'invoice':
+            return age_h < 72
+        return False
+    except Exception:
+        return True
 
 
 @global_router.post('/api/intl/orders')
@@ -335,34 +421,27 @@ async def api_intl_order(req: Request, response: Response):
         pass
     # 쿠폰 유효성은 트랜잭션 밖에서(읽기) — quote() 안에서 coupon_check 가 DB 를 읽으므로
     # 트랜잭션 안에서는 쿠폰 없이 계산하고, 할인액만 순수 계산으로 반영한다.
+    # 같은 브라우저의 이전 미결제 PayPal 주문(결제창을 닫고 다시 시도한 경우)은 재고를 돌려놓고 정리한다.
+    _cancel_stale_paypal(req)
     cp = None
+    cp_reserved = False
     if str(d.get('coupon') or '').strip():
         cp = _g().coupon_check(d.get('coupon'), buyer['email'], customer_id, phone_norm, True)
-    with a.db() as c:
-        q = quote(items, country, '', buyer['email'], customer_id, lock_c=c)
-        if q['blocked']:
-            raise HTTPException(400, 'Some items in your cart can only be shipped within Korea — please remove them first')
-        off = _g().coupon_amount(cp, q['sub']) if cp else 0
-        total = q['sub'] + q['ship'] + q['duties'] - off
-        for l in q['lines']:
-            if l['stock'] is not None:
-                c.exec('UPDATE products SET stock=stock-? WHERE id=?', (l['q'], l['id']))
-                if l['stock'] - l['q'] == 0:
-                    c.exec('UPDATE products SET soldout=1 WHERE id=?', (l['id'],))
-        oid = 'MD-%s-%s' % (a.kst_naive().strftime('%Y%m%d'), secrets.token_hex(3).upper())
-        buyer['ship_fee'], buyer['duties'], buyer['ddp'] = q['ship'], q['duties'], q['ddp']
-        lines = [{'id': l['id'], 'n': l['n'], 'p': l['p'], 'q': l['q']} for l in q['lines']]
-        c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) '
-               'VALUES(?,?,?,?,?,?,?,?,?,?)',
-               (oid, a.kst_iso(), 'PENDING', total, json.dumps(buyer, ensure_ascii=False),
-                json.dumps(lines, ensure_ascii=False), 'intl', customer_id or None, member_id or None, phone_norm or None))
-        if customer_id:
-            try:
+        cp_reserved = _g().coupon_reserve(cp)
+    try:
+        oid, q, off, total, lines = _intl_order_tx(a, items, country, buyer, customer_id, member_id, phone_norm, cp)
+    except BaseException:
+        if cp_reserved:
+            _g().coupon_unreserve(cp['code'])
+        raise
+    if customer_id:
+        try:
+            with a.db() as c:
                 c.exec('INSERT INTO account_order_links(order_id,customer_id,member_id,link_source,linked_at,verified_at) '
                        'VALUES(?,?,?,?,?,?)', (oid, customer_id, member_id, 'CHECKOUT_SESSION' if member_id else 'GUEST_CHECKOUT',
                                                a.kst_iso(), a.kst_iso()))
-            except Exception:
-                pass
+        except Exception:
+            pass
     # ── 주문 트랜잭션 밖: 재고 투영 · 국가 · 어트리뷰션 · 쿠폰 보류 · 조회 쿠키 ──
     try:
         for l in q['lines']:
@@ -377,7 +456,7 @@ async def api_intl_order(req: Request, response: Response):
         pass
     try:
         _g().order_attr_capture(req, oid, d)
-        if cp and off:
+        if cp:
             _g().coupon_hold(oid, cp['code'], off)
             with a.db() as c:
                 c.exec('UPDATE orders SET coupon=?, discount=? WHERE order_id=?', (cp['code'], str(off), oid))
@@ -413,6 +492,7 @@ async def api_intl_order(req: Request, response: Response):
         st, res = _pp('POST', '/v2/checkout/orders', payload, idem='mp-' + oid)
         if st not in (200, 201) or not res.get('id'):
             a._pay_log(oid, 'PP_CREATE_FAIL', str(res)[:300])
+            _cancel_unpaid(oid, 'PayPal 결제 주문 생성 실패 — 자동취소·재고복원')
             raise HTTPException(502, 'PayPal is temporarily unavailable — please try again in a moment')
         with a.db() as c:
             c.exec('INSERT INTO mp_intl_pay(order_id,provider,provider_order,currency,amount,krw,status,created) '
@@ -431,43 +511,97 @@ async def api_intl_order(req: Request, response: Response):
 
 @global_router.post('/api/intl/capture')
 async def api_intl_capture(req: Request):
-    """PayPal 승인 후 캡처 — 금액·통화·주문번호 대조 후 PAID. 멱등(이미 PAID 면 그대로 성공)."""
+    """PayPal 승인 후 캡처.
+    · 주문한 브라우저(서명 쿠키)·소유 회원만 호출 가능 — 남의 주문을 실패 처리할 수 없다.
+    · 주문이 PENDING 일 때만 캡처한다(취소·만료된 주문은 돈을 받지 않는다).
+    · CREATED/RETRY → CAPTURING 원자 전환으로 동시 호출 1회만 진행.
+    · 네트워크 오류는 GET 으로 PayPal 상태를 재확인 · PENDING(심사) 캡처는 PAID 가 아니라 보류로 두고 정기 재확인.
+    · PAID 전환은 status='PENDING' 조건부 UPDATE 1행일 때만 — 부작용(적립·알림·전환)이 정확히 1회."""
     ensure()
     a = _app()
     d = await req.json()
     oid = str(d.get('orderId') or '')[:40]
     with a.db() as c:
         row = c.one('SELECT * FROM mp_intl_pay WHERE order_id=?', (oid,))
-        o = c.one('SELECT status FROM orders WHERE order_id=?', (oid,))
+        o = c.one('SELECT status, customer_id FROM orders WHERE order_id=?', (oid,))
     if not row or not o or row.get('provider') != 'paypal':
         raise HTTPException(404, 'Order not found')
-    if o['status'] == 'PAID':
+    if not a._ov_ok(req, oid, o.get('customer_id') or ''):
+        raise HTTPException(403, 'This order belongs to another session')
+    if o['status'] == 'PAID' or row.get('status') == 'CAPTURED':
         return {'ok': True, 'orderId': oid}
+    if row.get('status') == 'CAPTURE_PENDING':
+        return {'ok': True, 'orderId': oid, 'pending': True}
+    if o['status'] != 'PENDING':
+        raise HTTPException(409, 'This order has expired — no charge was made. Please place a new order.')
+    with a.db() as c:
+        claimed = c.exec("UPDATE mp_intl_pay SET status='CAPTURING' WHERE order_id=? AND status IN ('CREATED','RETRY')",
+                         (oid,)).rowcount
+    if claimed != 1:
+        raise HTTPException(409, 'Payment is already being processed — please wait a moment')
     st, res = _pp('POST', '/v2/checkout/orders/%s/capture' % row['provider_order'], {}, idem='cap-' + oid)
-    if st == 422 and 'ORDER_ALREADY_CAPTURED' in json.dumps(res):
-        st, res = _pp('GET', '/v2/checkout/orders/%s' % row['provider_order'])
+    if st == 0 or st >= 500 or (st == 422 and 'ORDER_ALREADY_CAPTURED' in json.dumps(res)):
+        st2, res2 = _pp('GET', '/v2/checkout/orders/%s' % row['provider_order'])
+        if st2 == 200:
+            st, res = st2, res2
+    return _capture_settle(oid, row, st, res)
+
+
+def _capture_settle(oid, row, st, res):
+    """캡처 응답(또는 재조회 결과) 정산 — api_intl_capture · reconcile_paypal 공용."""
+    a = _app()
+    cap, pu = {}, {}
     try:
         pu = res['purchase_units'][0]
-        cap = pu['payments']['captures'][0]
-        ok = (res.get('status') == 'COMPLETED' and cap.get('status') in ('COMPLETED', 'PENDING')
-              and cap['amount']['currency_code'] == 'USD' and cap['amount']['value'] == row['amount']
-              and (pu.get('custom_id') or cap.get('custom_id') or oid) == oid)
+        cap = (pu.get('payments') or {}).get('captures', [{}])[0] or {}
     except Exception:
-        ok, cap = False, {}
-    if not ok:
+        cap = {}
+    cst = cap.get('status') or ''
+    amount_ok = ((cap.get('amount') or {}).get('currency_code') == 'USD'
+                 and (cap.get('amount') or {}).get('value') == row['amount']
+                 and (pu.get('custom_id') or cap.get('custom_id') or oid) == oid)
+    if cst in ('COMPLETED', 'PENDING') and not amount_ok:
+        # 금액·통화·주문번호 불일치 — 돈은 들어왔으므로 즉시 환불하고 실패 처리
+        a._pay_log(oid, 'PP_MISMATCH', json.dumps(res)[:300])
+        try:
+            if cap.get('id'):
+                _pp('POST', '/v2/payments/captures/%s/refund' % cap['id'], {}, idem='mm-' + oid)
+        except Exception:
+            pass
+        with a.db() as c:
+            c.exec("UPDATE mp_intl_pay SET status='REFUNDED', raw=? WHERE order_id=?", (json.dumps(res)[:3000], oid))
+        _cancel_unpaid(oid, 'PayPal 금액 불일치 — 자동환불·취소')
+        raise HTTPException(402, 'Payment could not be verified and was refunded. Please try again.')
+    if cst == 'PENDING':
+        with a.db() as c:
+            c.exec("UPDATE mp_intl_pay SET status='CAPTURE_PENDING', capture_id=?, raw=? WHERE order_id=?",
+                   (cap.get('id') or '', json.dumps(res)[:3000], oid))
+        a._pay_log(oid, 'PP_HOLD', 'PayPal 심사 보류 — 확정 시 자동 결제완료 처리')
+        return {'ok': True, 'orderId': oid, 'pending': True}
+    if cst != 'COMPLETED':
+        # 캡처되지 않음(카드 거절·미승인·통신 불명) — 고객이 다시 시도할 수 있게 RETRY 로 되돌린다(주문은 PENDING 유지)
         a._pay_log(oid, 'PP_CAPTURE_FAIL', '[%s] %s' % (st, json.dumps(res)[:300]))
         with a.db() as c:
-            c.exec("UPDATE mp_intl_pay SET status='FAILED', raw=? WHERE order_id=?", (json.dumps(res)[:3000], oid))
-            c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+            c.exec("UPDATE mp_intl_pay SET status='RETRY', raw=? WHERE order_id=? AND status IN ('CAPTURING','CAPTURE_PENDING')",
+                   (json.dumps(res)[:3000], oid))
         raise HTTPException(402, 'Payment was not completed — no charge was made. Please try again.')
     cid = cap.get('id') or ''
     with a.db() as c:
         c.exec("UPDATE mp_intl_pay SET status='CAPTURED', captured=?, capture_id=?, raw=? WHERE order_id=?",
                (a.kst_iso(), cid, json.dumps(res)[:3000], oid))
-        c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, paid_at=? WHERE order_id=? AND status<>'PAID'",
-               (cid, 'PayPal', a.kst_iso(), oid))
-    a._pay_log(oid, 'PAID', 'PayPal · US$%s · capture …%s%s' % (row['amount'], cid[-6:],
-                                                              ' (보류 — PayPal 심사 중)' if cap.get('status') == 'PENDING' else ''))
+        n = c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, paid_at=? WHERE order_id=? AND status='PENDING'",
+                   (cid, 'PayPal', a.kst_iso(), oid)).rowcount
+    if n != 1:
+        # 그 사이 주문이 취소·만료됨 — 재고가 이미 풀렸을 수 있으므로 결제를 되돌린다
+        a._pay_log(oid, 'PP_LATE', '주문이 PENDING 이 아니어서 캡처 환불')
+        try:
+            _pp('POST', '/v2/payments/captures/%s/refund' % cid, {}, idem='late-' + oid)
+            with a.db() as c:
+                c.exec("UPDATE mp_intl_pay SET status='REFUNDED' WHERE order_id=?", (oid,))
+        except Exception:
+            pass
+        raise HTTPException(409, 'This order had expired, so your payment was refunded. Please place a new order.')
+    a._pay_log(oid, 'PAID', 'PayPal · US$%s · capture …%s' % (row['amount'], cid[-6:]))
     try:
         a._award_purchase_points(oid)
     except Exception:
@@ -481,6 +615,28 @@ async def api_intl_capture(req: Request):
     except Exception:
         pass
     return {'ok': True, 'orderId': oid}
+
+
+def reconcile_paypal():
+    """심사 보류(CAPTURE_PENDING)·통신 불명(CAPTURING 10분 경과) 건을 PayPal 에 재조회해 확정한다 (스케줄러 30분 주기)."""
+    if not paypal_enabled():
+        return
+    ensure()
+    a = _app()
+    try:
+        with a.db() as c:
+            rs = c.all("SELECT * FROM mp_intl_pay WHERE provider='paypal' AND status IN ('CAPTURE_PENDING','CAPTURING')")
+    except Exception:
+        return
+    for row in rs[:50]:
+        try:
+            st, res = _pp('GET', '/v2/checkout/orders/%s' % row['provider_order'])
+            if st == 200:
+                _capture_settle(row['order_id'], row, st, res)
+        except HTTPException:
+            pass
+        except Exception as e:
+            print('[global] reconcile %s: %s' % (row.get('order_id'), e), flush=True)
 
 
 def paypal_refund(oid):
@@ -795,7 +951,7 @@ def _track_payload(o):
 @global_router.post('/api/track')
 async def api_track(req: Request, response: Response):
     a = _app()
-    ip = (req.headers.get('x-forwarded-for') or '').split(',')[0].strip() or (req.client.host if req.client else '')
+    ip = a.client_ip(req)
     now = time.time()
     b = _TRK_RATE.get(ip)
     if not b or now - b[0] > 600:
@@ -816,7 +972,9 @@ async def api_track(req: Request, response: Response):
     if not o:
         raise HTTPException(404, 'We couldn’t find an order with these details')
     bem = str(json.loads(o.get('buyer') or '{}').get('email') or '').strip().lower()
-    ok = (bool(email) and _hmac.compare_digest(email, bem)) or (bool(tok) and bem and _hmac.compare_digest(tok, track_token(oid, bem)))
+    _b = lambda x: str(x).encode('utf-8', 'replace')     # 비ASCII 입력도 TypeError 없이 비교
+    ok = (bool(email) and _hmac.compare_digest(_b(email), _b(bem))) or \
+         (bool(tok) and bool(bem) and _hmac.compare_digest(_b(tok), _b(track_token(oid, bem))))
     if not ok:
         raise HTTPException(404, 'We couldn’t find an order with these details')
     try:

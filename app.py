@@ -393,12 +393,15 @@ async def clean_urls(request, call_next):
                 return RedirectResponse('/%s/home%s' % (lang, q), status_code=302)
     if request.method in ('GET', 'HEAD'):
         p = request.scope['path']
-        if p == '/checkout' and request.query_params.get('dom') != '1' and (
+        _qp = request.query_params
+        if p == '/checkout' and _qp.get('dom') != '1' and not _qp.get('fail') and not _qp.get('msg') and (
                 (request.state.lang in ('en', 'ja', 'zh')) or
                 (request.state.lang is None and request.cookies.get('mp_lang') in ('en', 'ja', 'zh'))):
-            # 해외 언어로 보는 고객은 해외 배송 체크아웃이 기본(국내 배송은 화면 하단 링크 · ?dom=1)
+            # 해외 언어로 보는 고객은 해외 배송 체크아웃이 기본(국내 배송은 화면 하단 링크 · ?dom=1).
+            # 이니시스 결제 실패 복귀(?fail=1&msg=…)는 국내 체크아웃에 그대로 남겨 실패 사유를 보여준다.
             lg = request.state.lang or request.cookies.get('mp_lang')
-            return RedirectResponse('/%s/checkout-global' % lg, status_code=302)
+            q = ('?' + request.url.query) if request.url.query else ''
+            return RedirectResponse('/%s/checkout-global%s' % (lg, q), status_code=302)
         if p == '/home':
             # 클린 주소 → 실제 홈 파일을 내부 매핑 (주소창은 /home 유지)
             request.scope['path'] = '/' + _HOME_FILE
@@ -724,69 +727,77 @@ async def create_order(req: Request, response: Response):
     #   트랜잭션 안에서는 DB 접근 없는 순수 계산(coupon_amount)만 한다 — PG abort 방지.
     #   최소금액 미달 등은 트랜잭션 안에서 400 → 재고차감까지 함께 롤백된다.
     coupon = None
+    cp_reserved = False
     if str(body.get('coupon') or '').strip():
         import growth
         coupon = growth.coupon_check(body.get('coupon'), buyer.get('email') or '', customer_id, phone_norm,
                                      bool(body.get('intl')))
+        cp_reserved = growth.coupon_reserve(coupon)      # 사용 횟수 제한 쿠폰: 주문 생성 전 원자적 예약
     discount = 0
     changed_stock_ids = []
-    with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
-        sub, resolved = 0, []
-        for it in items:
-            pid = str(it.get('id', '')); q = max(1, min(99, int(it.get('q', 1))))
-            row = None
-            for cand in _product_id_candidates(pid):      # 클린 URL(.html 숨김) 대응: 두 형태 모두 조회
-                row = c.one(f'SELECT * FROM products WHERE id=?{LOCK}', (cand,))
-                if row: break
-            if not row: raise HTTPException(400, f'알 수 없는 상품: {pid}')
-            db_id = row['id']                              # 이후 재고차감·주문라인은 매칭된 실제 DB ID 사용
-            if row['soldout']: raise HTTPException(400, f'품절: {row["name"][:30]}')
-            if row['price'] <= 0: raise HTTPException(400, f'가격 확인 필요: {row["name"][:30]}')
-            if row['stock'] is not None:                     # 재고 관리 대상 상품
-                if row['stock'] < q:
-                    raise HTTPException(409, f'재고 부족: {row["name"][:30]} (남은 수량 {row["stock"]})')
-                c.exec('UPDATE products SET stock=stock-? WHERE id=?', (q, db_id))
-                changed_stock_ids.append(db_id)
-                if row['stock'] - q == 0:
-                    c.exec('UPDATE products SET soldout=1 WHERE id=?', (db_id,))
-            sub += row['price'] * q
-            resolved.append({'id': db_id, 'n': row['name'], 'p': row['price'], 'q': q})
-        # ── 배송비 ──
-        #   드롭(mpd::) 상품 포함 주문: 금액 무관 3,000원 정액(무료배송 기준 미적용).
-        #   일반 주문: 30,000원 이상 무료, 미만 3,000원. 픽업은 항상 무료.
-        has_drop = any(str(r['id']).startswith(DROP_PREFIX) for r in resolved)
-        if ship == 'pickup':
-            ship_fee = 0
-        elif has_drop:
-            ship_fee = DROP_SHIP_FEE
-        else:
-            ship_fee = 0 if sub >= FREE_SHIP_OVER else SHIP_FEE
-        if coupon:
+    try:
+        with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
+            sub, resolved = 0, []
+            for it in items:
+                pid = str(it.get('id', '')); q = max(1, min(99, int(it.get('q', 1))))
+                row = None
+                for cand in _product_id_candidates(pid):      # 클린 URL(.html 숨김) 대응: 두 형태 모두 조회
+                    row = c.one(f'SELECT * FROM products WHERE id=?{LOCK}', (cand,))
+                    if row: break
+                if not row: raise HTTPException(400, f'알 수 없는 상품: {pid}')
+                db_id = row['id']                              # 이후 재고차감·주문라인은 매칭된 실제 DB ID 사용
+                if row['soldout']: raise HTTPException(400, f'품절: {row["name"][:30]}')
+                if row['price'] <= 0: raise HTTPException(400, f'가격 확인 필요: {row["name"][:30]}')
+                if row['stock'] is not None:                     # 재고 관리 대상 상품
+                    if row['stock'] < q:
+                        raise HTTPException(409, f'재고 부족: {row["name"][:30]} (남은 수량 {row["stock"]})')
+                    c.exec('UPDATE products SET stock=stock-? WHERE id=?', (q, db_id))
+                    changed_stock_ids.append(db_id)
+                    if row['stock'] - q == 0:
+                        c.exec('UPDATE products SET soldout=1 WHERE id=?', (db_id,))
+                sub += row['price'] * q
+                resolved.append({'id': db_id, 'n': row['name'], 'p': row['price'], 'q': q})
+            # ── 배송비 ──
+            #   드롭(mpd::) 상품 포함 주문: 금액 무관 3,000원 정액(무료배송 기준 미적용).
+            #   일반 주문: 30,000원 이상 무료, 미만 3,000원. 픽업은 항상 무료.
+            has_drop = any(str(r['id']).startswith(DROP_PREFIX) for r in resolved)
+            if ship == 'pickup':
+                ship_fee = 0
+            elif has_drop:
+                ship_fee = DROP_SHIP_FEE
+            else:
+                ship_fee = 0 if sub >= FREE_SHIP_OVER else SHIP_FEE
+            if coupon:
+                import growth
+                discount = growth.coupon_amount(coupon, sub)
+            amount = sub + ship_fee - discount
+            order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
+            # ga_* 컬럼 존재 여부는 지연 프로브(_has_ga_cols, 1회 판정 캐시)로 확정한다.
+            #   트랜잭션 내부 try/except 폴백은 PG 에서 트랜잭션 abort 를 유발하므로 금지.
+            if _ga_ok:
+                c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm,ga_cid,ga_sid) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (order_id, kst_iso(), 'PENDING',
+                        amount, json.dumps(buyer, ensure_ascii=False),
+                        json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
+                        phone_norm or None, ga_cid or None, ga_sid or None))
+            else:
+                c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                       (order_id, kst_iso(), 'PENDING',
+                        amount, json.dumps(buyer, ensure_ascii=False),
+                        json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
+                        phone_norm or None))
+            if customer_id:
+                try:
+                    c.exec('INSERT INTO account_order_links(order_id,customer_id,member_id,link_source,linked_at,verified_at) VALUES(?,?,?,?,?,?)',
+                           (order_id, customer_id, member_id, 'CHECKOUT_SESSION' if member_id else 'GUEST_CHECKOUT',
+                            kst_iso(), kst_iso()))
+                except Exception:
+                    pass
+    except BaseException:
+        if cp_reserved:                  # 주문이 만들어지지 않았으면(재고·최소금액 등) 예약을 되돌린다
             import growth
-            discount = growth.coupon_amount(coupon, sub)
-        amount = sub + ship_fee - discount
-        order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
-        # ga_* 컬럼 존재 여부는 지연 프로브(_has_ga_cols, 1회 판정 캐시)로 확정한다.
-        #   트랜잭션 내부 try/except 폴백은 PG 에서 트랜잭션 abort 를 유발하므로 금지.
-        if _ga_ok:
-            c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm,ga_cid,ga_sid) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-                   (order_id, kst_iso(), 'PENDING',
-                    amount, json.dumps(buyer, ensure_ascii=False),
-                    json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
-                    phone_norm or None, ga_cid or None, ga_sid or None))
-        else:
-            c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                   (order_id, kst_iso(), 'PENDING',
-                    amount, json.dumps(buyer, ensure_ascii=False),
-                    json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
-                    phone_norm or None))
-        if customer_id:
-            try:
-                c.exec('INSERT INTO account_order_links(order_id,customer_id,member_id,link_source,linked_at,verified_at) VALUES(?,?,?,?,?,?)',
-                       (order_id, customer_id, member_id, 'CHECKOUT_SESSION' if member_id else 'GUEST_CHECKOUT',
-                        kst_iso(), kst_iso()))
-            except Exception:
-                pass
+            growth.coupon_unreserve(coupon['code'])
+        raise
     # 새 상품마스터 재고 화면도 결제 직후 동일 수량을 보도록 호환 투영을 동기화한다.
     try:
         import admin_v2
@@ -806,7 +817,7 @@ async def create_order(req: Request, response: Response):
     try:
         import growth
         growth.order_attr_capture(req, order_id, body)
-        if coupon and discount:
+        if coupon:
             growth.coupon_hold(order_id, coupon['code'], discount)
             with db() as c:
                 c.exec('UPDATE orders SET coupon=?, discount=? WHERE order_id=?',
@@ -1500,6 +1511,10 @@ def _award_purchase_points(oid: str):
         lines = json.loads(o['items'] or '[]')
         base = sum(int(l.get('p', 0)) * int(l.get('q', 1))
                    for l in lines if not str(l.get('id', '')).startswith(DROP_PREFIX))
+        try:                                        # 쿠폰 할인분은 적립 기준에서 제외 (2026-10)
+            base = max(0, base - int(float(o.get('discount') or 0)))
+        except Exception:
+            pass
         pts = (base * POINT_RATE_BP) // 10000       # 1% · 원 단위 절사
         if pts <= 0:
             return
@@ -1618,6 +1633,17 @@ def _ini_net_cancel(net_cancel_url: str, auth_token: str):
 _OV_COOKIE = 'mp_ov'
 _OV_MISS = {}
 
+def client_ip(req: Request) -> str:
+    """레이트리밋용 클라이언트 IP — 위조 불가한 값 우선.
+    운영은 Cloudflare → Render 구조라 CF-Connecting-IP 가 실제 접속 IP 다. X-Forwarded-For 의 맨 왼쪽은
+    클라이언트가 임의로 넣을 수 있으므로, 없을 때는 프록시가 덧붙인 맨 오른쪽 값을 쓴다."""
+    h = req.headers
+    ip = (h.get('cf-connecting-ip') or '').strip()
+    if not ip:
+        xs = [x.strip() for x in (h.get('x-forwarded-for') or '').split(',') if x.strip()]
+        ip = xs[-1] if xs else ''
+    return ip or (req.client.host if req.client else '')
+
 def _ov_key() -> bytes:
     return hashlib.sha256(('mp-ov:' + (os.getenv('GROWTH_SECRET') or ADMIN_TOKEN or DATABASE_URL or 'local')).encode()).digest()
 
@@ -1634,7 +1660,7 @@ def _ov_ok(req: Request, oid: str, customer_id: str = '') -> bool:
     import hmac as _h
     for x in (req.cookies.get(_OV_COOKIE) or '').split('|'):
         o, _, sg = x.partition('.')
-        if o == oid and sg and _h.compare_digest(sg, _ov_sig(oid)):
+        if o == oid and sg and _h.compare_digest(sg.encode('utf-8', 'replace'), _ov_sig(oid).encode()):
             return True
     if customer_id:
         try:
@@ -1647,7 +1673,7 @@ def _ov_ok(req: Request, oid: str, customer_id: str = '') -> bool:
 
 def _ov_miss_limited(req: Request) -> bool:
     import time as _t
-    ip = (req.headers.get('x-forwarded-for') or '').split(',')[0].strip() or (req.client.host if req.client else '')
+    ip = client_ip(req)
     now = _t.time()
     b = _OV_MISS.get(ip)
     if not b or now - b[0] > 600:
@@ -1658,7 +1684,7 @@ def _ov_miss_limited(req: Request) -> bool:
     return b[1] >= 30
 
 def _ov_miss(req: Request):
-    ip = (req.headers.get('x-forwarded-for') or '').split(',')[0].strip() or (req.client.host if req.client else '')
+    ip = client_ip(req)
     b = _OV_MISS.get(ip)
     if b:
         b[1] += 1

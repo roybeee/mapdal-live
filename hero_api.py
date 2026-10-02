@@ -117,7 +117,7 @@ class Slide(BaseModel):
 
 
 class HeroData(BaseModel):
-    interval_ms: int = Field(6000, ge=5000, le=15000)
+    interval_ms: int = Field(6000, ge=1500, le=15000)   # 저장 호환(기존 3000) — 실제 노출은 홈에서 최소 5초로 보정
     slides: List[Slide] = Field(..., min_length=1, max_length=10)
 
 

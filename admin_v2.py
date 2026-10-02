@@ -1491,7 +1491,7 @@ def api_login(request: Request, body: dict = Body(...)):
     tok = (body.get('token') or '').strip()
     if tok:  # 마스터 토큰 비상 로그인
         key = 'tk:' + ip; guard(key)
-        if admin_token() and hmac.compare_digest(str(tok or ''), admin_token()):
+        if admin_token() and hmac.compare_digest(str(tok or '').encode('utf-8', 'replace'), admin_token().encode('utf-8')):
             fail_clear(key)
             sid = make_session('__master__')
             audit({'name': '마스터', 'role': 'OWNER'}, '로그인', '', '마스터 토큰 / ' + ip)
@@ -2129,6 +2129,10 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         refunded = True
         refund_mid_note = (' / MID %s(구)' % mid) if mid_label else ''
     sets, args = ["status='CANCELLED'"], []
+    try:                                              # 미결제 주문에 걸려 있던 쿠폰 예약 해제 (growth · 멱등)
+        import growth; growth.coupon_release(oid)
+    except Exception:
+        pass
     if 'fulfill' in _state['ocols']: sets.append("fulfill='CANCELLED'")
     if 'admin_memo' in _state['ocols']: sets.append('admin_memo=?'); args.append(('[취소] ' + reason)[:300])
     run('UPDATE orders SET %s WHERE order_id=?' % ', '.join(sets), tuple(args + [oid]))
@@ -2309,8 +2313,13 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
         age_h = (now - c0).total_seconds() / 3600.0
         if age_h < max(2, ph or 24):                    # 승인 진행 중인 건 보호
             continue
-        if (r.get('ship_method') or '') == 'intl' and age_h < 72:
-            continue                                    # 해외 주문: 결제 링크(인보이스) 발송 대기 72시간 확보
+        try:                                            # 해외 주문: 인보이스 72시간 확보 · PayPal 캡처 진행/보류/완료 건 보호
+            import globalshop
+            if globalshop.sweep_skip(r, age_h):
+                continue
+        except Exception:
+            if (r.get('ship_method') or '') == 'intl':
+                continue
         out['pending_stuck'] += 1
         fresh = age_h <= VBANK_EXPIRE_RESTOCK_D * 24    # 재고 복원 대상 여부
         item = {'order_id': r.get('order_id') or '', 'amount': num(r.get('amount')),
@@ -5087,7 +5096,7 @@ function renderBanner(){
  });
  const bar=document.createElement('div');bar.style.cssText='display:flex;gap:10px;align-items:center;flex-wrap:wrap';
  bar.innerHTML=`${BN.slides.length<5?'<button class="btn ghost" onclick="bnAdd()">+ 슬라이드 추가</button>':''}
-  <span class="hint">전환 간격 <input id="bniv" type="number" min="1500" max="15000" step="500" value="${BN.interval_ms||3000}" style="width:84px;padding:5px;border:1px solid #ddd;border-radius:5px"> ms</span>
+  <span class="hint">전환 간격 <input id="bniv" type="number" min="5000" max="15000" step="500" value="${Math.max(5000,BN.interval_ms||6000)}" style="width:84px;padding:5px;border:1px solid #ddd;border-radius:5px"> ms</span>
   ${can(2)?'<button class="btn red" style="margin-left:auto" onclick="saveBanner()">저장 (홈 즉시 반영)</button>':''}`;
  box.appendChild(bar);
 }
@@ -5110,7 +5119,7 @@ async function bnUploadVideo(i,inp){const f=inp.files[0];if(!f)return;inp.value=
   const pv2=$('#bnpv'+i);if(pv2)pv2.style.opacity=1;}}
 function bnMove(i,d){const s=BN.slides,j=i+d;if(j<0||j>=s.length)return;const t=s[i];s[i]=s[j];s[j]=t;renderBanner();}
 function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',img_m:'',video:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
-async function saveBanner(){try{BN.interval_ms=parseInt($('#bniv').value)||3000;
+async function saveBanner(){try{BN.interval_ms=Math.max(5000,parseInt($('#bniv').value)||6000);
  const d=await api('/admin/api/banner',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(BN)});
  toast('저장 완료 — 홈페이지에 '+d.slides+'개 슬라이드 반영');}catch(e){toast(e.message)}}
 
@@ -13001,7 +13010,7 @@ def _order_complete_apply(html):
         "      // 해외 주문(결제 링크 발송 방식) — 실패가 아니라 '접수·결제 링크 대기'다 (globalshop 2026-10).\n"
         "      if(d.status==='PENDING'&&d.ship_method==='intl'){\n"
         "        title.textContent='주문이 접수되었습니다';\n"
-        "        desc.innerHTML='24시간 이내(한국시간)에 안전한 결제 링크를 이메일로 보내드립니다. 상품은 72시간 동안 확보됩니다.';\n"
+        "        desc.innerHTML='결제 확인 또는 결제 링크 안내를 24시간 이내(한국시간) 이메일로 보내드립니다. 상품은 72시간 동안 확보됩니다.';\n"
         "        desc.setAttribute('data-mp-pay','1');\n"
         "        ono.textContent='ORDER NO. '+oid;\n"
         "        try{localStorage.removeItem('mapdal_cart');localStorage.removeItem('mapdal_drop_sel');}catch(e){}\n"
@@ -16734,9 +16743,10 @@ def _localize(html, request, clean_path):
     """다국어 최종 단계(i18n.localize) — 실패 시 원문 그대로."""
     try:
         import i18n
-        q = request.url.query if request is not None else ''
-        keep_q = clean_path in ('/album-detail', '/new-drops') or clean_path.startswith('/p/')
-        hp = clean_path + (('?' + q) if (q and keep_q) else '')
+        # canonical·hreflang 에는 페이지를 구분하는 파라미터만 싣는다(utm·fbclid 등 추적값 제외)
+        qp = request.query_params if request is not None else {}
+        keep = [(k, qp.get(k)) for k in ('uid', 'id', 'view') if qp.get(k)] if clean_path in ('/album-detail', '/new-drops') else []
+        hp = clean_path + (('?' + urllib.parse.urlencode(keep)) if keep else '')
         return i18n.localize(html, hp, _req_lang(request), SITE_ORIGIN)
     except Exception:
         return html
@@ -16820,11 +16830,18 @@ def serve_site(spath: str, request: Request):
     #   같은 URL(.jpg/.png) 그대로 두고, 브라우저가 WebP 를 받으면 옆의 .webp(평균 45% 경량)를 준다.
     #   관리자 DB(히어로 슬라이드 등)에 저장된 기존 경로를 바꾸지 않아도 되는 방식.
     hdr = {}
-    if mt in ('image/jpeg', 'image/png') and 'image/webp' in (request.headers.get('accept') or ''):
+    negotiated = False
+    if mt in ('image/jpeg', 'image/png'):
         wp = os.path.splitext(fp)[0] + '.webp'
         if os.path.isfile(wp):
-            data, mt = open(wp, 'rb').read(), 'image/webp'
-        hdr['Vary'] = 'Accept'
-    if mt.startswith('image/') or mt in ('text/css', 'application/javascript', 'text/javascript', 'font/woff2'):
+            negotiated = True                             # 같은 URL 이 Accept 에 따라 다른 바이트를 준다
+            hdr['Vary'] = 'Accept'
+            if 'image/webp' in (request.headers.get('accept') or ''):
+                data, mt = open(wp, 'rb').read(), 'image/webp'
+    if negotiated:
+        # Cloudflare 는 Vary: Accept 를 무시하고 확장자 기준으로 공유 캐시한다 — 형식이 뒤섞이지 않도록
+        # 협상 응답은 브라우저 캐시(private)만 허용한다.
+        hdr['Cache-Control'] = 'private, max-age=604800'
+    elif mt.startswith('image/') or mt in ('text/css', 'application/javascript', 'text/javascript', 'font/woff2'):
         hdr['Cache-Control'] = 'public, max-age=604800, stale-while-revalidate=86400'
     return Response(data, media_type=mt, headers=hdr)

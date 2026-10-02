@@ -242,6 +242,10 @@ def _is_logic_literal(src, a, b, q):
         return True                                   # 객체 키 {'한글': …}
     if post.startswith(']') and pre.endswith('['):
         return True
+    if pre.endswith((',', '[')):
+        # 배열 원소·두 번째 이후 인자 — 상품 데이터(K2G 등)·분류 키 목록일 가능성이 높다.
+        # 화면에 그려지는 값은 브라우저 런타임이 텍스트 노드에서 번역하므로 여기서는 원문을 보존한다.
+        return True
     return False
 
 
@@ -467,17 +471,18 @@ def seo_alternates(html, path, lang, origin=None):
     origin = (origin or _SEO_ORIGIN).rstrip('/')
     if 'hreflang="x-default"' in html:
         return html
-    clean = path or '/home'
+    import html as _h
+    clean = _h.escape(path or '/home', quote=True)
     links = ['<link rel="alternate" hreflang="ko" href="%s%s">' % (origin, clean)]
     for l in LANGS:
         links.append('<link rel="alternate" hreflang="%s" href="%s/%s%s">' % (HTML_LANG[l] if l != 'zh' else 'zh-Hans', origin, l, clean))
     links.append('<link rel="alternate" hreflang="x-default" href="%s/en%s">' % (origin, clean))
     alt = ''.join(links)
     if lang in LANGS:
-        html = re.sub(r'<link rel="canonical" href="[^"]*">',
-                      '<link rel="canonical" href="%s/%s%s">' % (origin, lang, clean), html, count=1)
-        html = re.sub(r'<meta property="og:url" content="[^"]*">',
-                      '<meta property="og:url" content="%s/%s%s">' % (origin, lang, clean), html, count=1)
+        can = '<link rel="canonical" href="%s/%s%s">' % (origin, lang, clean)
+        ogu = '<meta property="og:url" content="%s/%s%s">' % (origin, lang, clean)
+        html = re.sub(r'<link rel="canonical" href="[^"]*">', lambda m: can, html, count=1)
+        html = re.sub(r'<meta property="og:url" content="[^"]*">', lambda m: ogu, html, count=1)
         loc = {'en': 'en_US', 'ja': 'ja_JP', 'zh': 'zh_CN'}[lang]
         html = html.replace('<meta property="og:locale" content="ko_KR">',
                             '<meta property="og:locale" content="%s">' % loc, 1)

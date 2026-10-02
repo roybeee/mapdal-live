@@ -567,7 +567,7 @@ _CKG_HTML = r'''<!doctype html><html lang="__LANG__"><head><meta charset="utf-8"
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-:root{--ink:#141414;--red:#E8332A;--amber:#FFB000;--paper:#F7F6F2;--line:#E2E0D9;--steel:#5E5D57;--good:#0A7D38}
+:root{--ink:#141414;--red:#DC2B24;--amber:#FFB000;--paper:#F7F6F2;--line:#E2E0D9;--steel:#5E5D57;--good:#0A7D38}
 *{box-sizing:border-box}[hidden]{display:none!important}html,body{margin:0}body{background:var(--paper);color:var(--ink);font:15px/1.55 "IBM Plex Sans KR",-apple-system,"Hiragino Sans","PingFang SC",sans-serif}
 a{color:inherit}.top{background:var(--ink);color:#fff;border-bottom:4px solid var(--red)}
 .top .in{max-width:1180px;margin:0 auto;padding:14px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
@@ -742,3 +742,157 @@ refresh();if(items.length)ga('begin_checkout');
 fetch('/api/member/me').then(function(r){return r.json()}).then(function(m){if(m&&m.email&&!$('email').value)$('email').value=m.email;if(m&&m.name&&!$('name').value)$('name').value=m.name}).catch(function(){});
 })();
 </script></body></html>'''
+
+
+# ═══════════════════════════ /track — 비회원·해외 주문 조회 ═════════════════
+#   주문번호 + 주문 이메일 일치 시 상태·운송장 공개. 메일의 서명 링크(oid+t)는 입력 없이 바로 열린다.
+#   성공하면 주문 조회 쿠키(mp_ov)를 붙여 주문완료 화면·리뷰 작성 흐름과도 이어진다.
+import hmac as _hmac, hashlib as _hashlib
+_TRK_RATE = {}
+
+
+def track_token(oid, email):
+    key = _hashlib.sha256(('mp-track:' + (_env('GROWTH_SECRET') or _env('ADMIN_TOKEN') or _env('DATABASE_URL') or 'local')).encode()).digest()
+    return _hmac.new(key, ('%s|%s' % (oid, str(email or '').strip().lower())).encode(), _hashlib.sha256).hexdigest()[:20]
+
+
+def track_link(oid, email):
+    return '%s/track?oid=%s&t=%s' % (_g()._site(), urllib.parse.quote(oid), track_token(oid, email))
+
+
+def _track_payload(o):
+    av = _av()
+    buyer = json.loads(o.get('buyer') or '{}')
+    items = json.loads(o.get('items') or '[]')
+    co, trk = (o.get('courier') or ''), (o.get('tracking') or '')
+    url = ''
+    try:
+        url = av.track_url(co, trk) if trk else ''
+    except Exception:
+        url = ''
+    if trk and (o.get('ship_method') == 'intl' or not url):
+        url = 'https://t.17track.net/en#nums=' + urllib.parse.quote(re.sub(r'[^0-9A-Za-z]', '', trk))
+    try:
+        cname = av.courier_name(co) if co else ''
+    except Exception:
+        cname = co
+    st, ff = o.get('status') or '', (o.get('fulfill') or 'NEW')
+    step = 0
+    if st in ('PAID',):
+        step = 1
+        if ff == 'PREPARING': step = 2
+        if ff == 'SHIPPED': step = 3
+        if ff == 'DONE': step = 4
+    return {'oid': o['order_id'], 'created': str(o.get('created') or '')[:16].replace('T', ' '), 'status': st,
+            'fulfill': ff, 'step': step, 'amount': int(o.get('amount') or 0), 'ship': o.get('ship_method') or '',
+            'courier': cname, 'tracking': trk, 'url': url, 'country': buyer.get('country_name') or buyer.get('country') or '',
+            'items': [{'n': i.get('n'), 'q': i.get('q')} for i in items[:20]],
+            'cancelled': st == 'CANCELLED' or ff == 'CANCELLED'}
+
+
+@global_router.post('/api/track')
+async def api_track(req: Request, response: Response):
+    a = _app()
+    ip = (req.headers.get('x-forwarded-for') or '').split(',')[0].strip() or (req.client.host if req.client else '')
+    now = time.time()
+    b = _TRK_RATE.get(ip)
+    if not b or now - b[0] > 600:
+        b = [now, 0]
+    b[1] += 1
+    _TRK_RATE[ip] = b
+    if len(_TRK_RATE) > 5000:
+        _TRK_RATE.clear()
+    if b[1] > 20:
+        raise HTTPException(429, 'Too many attempts — please try again in a few minutes')
+    d = await req.json()
+    oid = re.sub(r'[^A-Za-z0-9-]', '', str(d.get('oid') or '')).upper()[:30]
+    email = str(d.get('email') or '').strip().lower()
+    tok = str(d.get('t') or '')
+    with a.db() as c:
+        cols = 'order_id,created,status,amount,buyer,items,ship_method' + (',fulfill,tracking,courier' if a._has_ship_cols() else '')
+        o = c.one('SELECT %s FROM orders WHERE order_id=?' % cols, (oid,))
+    if not o:
+        raise HTTPException(404, 'We couldn’t find an order with these details')
+    bem = str(json.loads(o.get('buyer') or '{}').get('email') or '').strip().lower()
+    ok = (bool(email) and _hmac.compare_digest(email, bem)) or (bool(tok) and bem and _hmac.compare_digest(tok, track_token(oid, bem)))
+    if not ok:
+        raise HTTPException(404, 'We couldn’t find an order with these details')
+    try:
+        response.set_cookie(a._OV_COOKIE, a._ov_cookie_value(req, oid), max_age=90 * 86400, httponly=True,
+                            samesite='lax', secure=a.SITE_ORIGIN.startswith('https'))
+    except Exception:
+        pass
+    return _track_payload(o)
+
+
+@global_router.get('/track', response_class=HTMLResponse)
+def track_page(request: Request):
+    lang = _lang(request)
+    if not request.cookies.get('mp_lang') and not getattr(request.state, 'lang', None):
+        lang = 'ko' if (request.headers.get('accept-language') or 'ko').lower().startswith('ko') else lang
+    html = _TRACK_HTML.replace('__LANG__', lang if lang != 'zh' else 'zh-Hans').replace('__L__', json.dumps(lang))
+    g = _g()
+    html = g.head_apply(html)
+    add = ''
+    try:
+        add += _av()._analytics_snippet()
+    except Exception:
+        pass
+    add += g._body_js()
+    html = html.replace('</body>', add + '</body>', 1)
+    return HTMLResponse(html, headers={'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex'})
+
+
+_TRACK_HTML = r'''<!doctype html><html lang="__LANG__"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Order tracking — MAPDAL SEOUL</title><meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>:root{--ink:#141414;--red:#DC2B24;--line:#E2E0D9;--steel:#5E5D57;--paper:#F7F6F2}*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 "IBM Plex Sans KR",-apple-system,"Hiragino Sans","PingFang SC",sans-serif}
+.top{background:var(--ink);border-bottom:4px solid var(--red)}.top a{display:inline-block;padding:14px 16px;font-family:"Black Han Sans",sans-serif;font-size:22px;color:#fff;text-decoration:none}.top em{font-style:normal;color:#EE3532}
+.w{max-width:620px;margin:0 auto;padding:28px 16px 60px}h1{font-family:"Black Han Sans",sans-serif;font-weight:400;font-size:30px;margin:0 0 6px}
+.card{background:#fff;border:1px solid var(--line);padding:20px;margin-top:16px}label{display:block;font-size:13px;font-weight:700;margin:10px 0 4px}
+input{width:100%;font:inherit;font-size:16px;padding:12px;border:1px solid var(--line)}input:focus{outline:2px solid var(--ink);outline-offset:-1px}
+button{width:100%;margin-top:14px;font:700 15px inherit;background:var(--red);color:#fff;border:0;padding:14px;cursor:pointer;min-height:50px}
+.err{color:var(--red);font-size:13.5px;min-height:18px;margin-top:8px}.mono{font-family:"IBM Plex Mono",monospace}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin:16px 0}.steps div{text-align:center;font-size:12px;color:var(--steel);padding-top:10px;border-top:4px solid var(--line)}
+.steps div.on{border-color:var(--red);color:var(--ink);font-weight:700}.kv{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+.kv span:first-child{color:var(--steel)}.trk{display:inline-block;margin-top:12px;background:var(--ink);color:#fff;text-decoration:none;padding:12px 16px;font-weight:700}
+.it{font-size:13.5px;padding:3px 0}.note{font-size:12.5px;color:var(--steel);margin-top:14px}</style></head><body>
+<header class="top"><a id="home" href="/home">MAPDAL<em>SEOUL</em></a></header>
+<main class="w"><h1 data-t="h"></h1><p data-t="p" style="color:var(--steel);margin:0"></p>
+<form class="card" id="f" novalidate><label for="oid" data-t="oid"></label><input id="oid" class="mono" autocomplete="off" placeholder="MD-20261002-ABC123" required>
+<label for="em" data-t="em"></label><input id="em" type="email" autocomplete="email" inputmode="email" required>
+<button type="submit" data-t="go"></button><div class="err" id="err" role="alert"></div></form>
+<section class="card" id="res" hidden aria-live="polite"></section>
+<p class="note" data-t="help"></p></main>
+<script>(function(){var L=__L__,P=(L==='ko'?'':'/'+L);
+var T={ko:{h:'주문 조회',p:'주문번호와 주문 시 입력한 이메일로 배송 상황을 확인하세요.',oid:'주문번호',em:'주문 이메일',go:'조회하기',s:['결제 완료','상품 준비중','발송 완료','배송 완료'],
+ ono:'주문번호',date:'주문일시',amt:'결제금액',stat:'상태',courier:'택배사',trk:'운송장',track:'배송 조회하기',pending:'결제 대기',cancel:'취소된 주문입니다',dest:'배송 국가',
+ help:'문의: cx@mealzip.kr · 회원은 마이페이지에서 전체 주문 내역을 볼 수 있습니다.'},
+en:{h:'Track your order',p:'Enter your order number and the email you used at checkout.',oid:'Order number',em:'Email',go:'Track order',s:['Paid','Packing','Shipped','Delivered'],
+ ono:'Order no.',date:'Ordered',amt:'Total',stat:'Status',courier:'Carrier',trk:'Tracking no.',track:'Track parcel',pending:'Awaiting payment',cancel:'This order was cancelled',dest:'Destination',
+ help:'Need help? cx@mealzip.kr (EN/JP/CN)'},
+ja:{h:'注文状況の確認',p:'注文番号とご注文時のメールアドレスを入力してください。',oid:'注文番号',em:'メールアドレス',go:'確認する',s:['決済完了','準備中','発送済み','配達完了'],
+ ono:'注文番号',date:'注文日時',amt:'お支払い金額',stat:'状況',courier:'配送業者',trk:'追跡番号',track:'配送状況を見る',pending:'お支払い待ち',cancel:'キャンセルされたご注文です',dest:'お届け先の国',
+ help:'お問い合わせ：cx@mealzip.kr（日本語対応）'},
+zh:{h:'订单查询',p:'请输入订单号和下单时使用的电子邮箱。',oid:'订单号',em:'电子邮箱',go:'查询',s:['已付款','备货中','已发货','已送达'],
+ ono:'订单号',date:'下单时间',amt:'支付金额',stat:'状态',courier:'快递公司',trk:'运单号',track:'查看物流',pending:'待付款',cancel:'该订单已取消',dest:'收货国家',
+ help:'咨询：cx@mealzip.kr（支持中文）'}};
+var t=T[L]||T.en,$=function(i){return document.getElementById(i)};document.querySelectorAll('[data-t]').forEach(function(e){e.textContent=t[e.getAttribute('data-t')]});
+$('home').href=P+'/home';
+var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
+function show(d){var r=$('res');r.hidden=false;var st=d.cancelled?t.cancel:(d.step?t.s[d.step-1]:t.pending);
+ r.innerHTML=(d.cancelled?'':'<div class="steps">'+t.s.map(function(x,i){return'<div class="'+(d.step>i?'on':'')+'">'+x+'</div>'}).join('')+'</div>')
+ +'<div class="kv"><span>'+t.ono+'</span><span class="mono">'+esc(d.oid)+'</span></div><div class="kv"><span>'+t.date+'</span><span>'+esc(d.created)+'</span></div>'
+ +'<div class="kv"><span>'+t.amt+'</span><span>₩'+Number(d.amount).toLocaleString('en-US')+'</span></div><div class="kv"><span>'+t.stat+'</span><b>'+esc(st)+'</b></div>'
+ +(d.country?'<div class="kv"><span>'+t.dest+'</span><span>'+esc(d.country)+'</span></div>':'')
+ +(d.tracking?'<div class="kv"><span>'+t.courier+'</span><span>'+esc(d.courier)+'</span></div><div class="kv"><span>'+t.trk+'</span><span class="mono">'+esc(d.tracking)+'</span></div>':'')
+ +'<div style="margin-top:10px">'+d.items.map(function(i){return'<div class="it">· '+esc(i.n)+' × '+(i.q||1)+'</div>'}).join('')+'</div>'
+ +(d.url?'<a class="trk" href="'+esc(d.url)+'" target="_blank" rel="noopener">'+t.track+' →</a>':'');
+ try{window.mpTrack&&mpTrack('share',{method:'track_order'})}catch(e){}}
+function go(b){$('err').textContent='';fetch('/api/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
+ .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'Error');return d})}).then(show).catch(function(x){$('err').textContent=x.message})}
+$('f').addEventListener('submit',function(e){e.preventDefault();var o=$('oid').value.trim(),m=$('em').value.trim();if(!o||!m)return;go({oid:o,email:m})});
+var q=new URLSearchParams(location.search);if(q.get('oid')){$('oid').value=q.get('oid');if(q.get('t'))go({oid:q.get('oid'),t:q.get('t')})}
+})();</script></body></html>'''

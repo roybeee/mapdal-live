@@ -410,7 +410,7 @@ var st=D.createElement('style');st.textContent='#mpCb{position:fixed;left:16px;r
  +'padding:16px 18px;display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;font:500 13px/1.55 "IBM Plex Sans KR",-apple-system,sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.25)}'
  +'#mpCb p{margin:0;flex:1 1 260px}#mpCb a{color:#FFB000;text-decoration:underline}#mpCb div{display:flex;gap:8px}'
  +'#mpCb button{font:700 12.5px/1 inherit;padding:11px 14px;border:1px solid #555;background:transparent;color:#fff;cursor:pointer;min-height:40px}'
- +'#mpCb button.pri{background:#E8332A;border-color:#E8332A}#mpCb button:focus-visible{outline:2px solid #FFB000;outline-offset:2px}'
+ +'#mpCb button.pri{background:#DC2B24;border-color:#DC2B24}#mpCb button:focus-visible{outline:2px solid #FFB000;outline-offset:2px}'
  +'@media(max-width:600px){#mpCb{left:8px;right:8px;bottom:8px;padding:12px 14px;gap:10px;font-size:12px;line-height:1.5}'
  +'#mpCb p{flex-basis:100%}#mpCb div{width:100%}#mpCb button{flex:1;padding:9px 10px;min-height:40px}}';
 D.head.appendChild(st);
@@ -435,7 +435,10 @@ def head_apply(html):
     # <meta charset> 가 첫 1024바이트 안에 있어야 하므로 charset 메타 뒤에 넣는다.
     mc = re.search(r'<meta[^>]+charset[^>]*>', html[m.end():m.end() + 600], re.I)
     at = m.end() + (mc.end() if mc else 0)
-    return html[:at] + _HEAD_JS + html[at:]
+    extra = _HEAD_PWA if 'rel="manifest"' not in html else ''
+    if 'name="theme-color"' not in html:
+        extra += '<meta name="theme-color" content="#141414">'
+    return html[:at] + _HEAD_JS + extra + html[at:]
 
 
 def body_snippet(html):
@@ -846,7 +849,7 @@ def _mt(lang):
 def mail_layout(lang, heading, intro, rows_html='', cta=('', ''), extra='', unsub_url=''):
     """브랜드 메일 레이아웃 — 테이블 기반(주요 메일 클라이언트 호환), 인라인 스타일."""
     t = _mt(lang)
-    btn = ('<tr><td style="padding:8px 32px 28px"><a href="%s" style="display:inline-block;background:#E8332A;color:#fff;'
+    btn = ('<tr><td style="padding:8px 32px 28px"><a href="%s" style="display:inline-block;background:#DC2B24;color:#fff;'
            'text-decoration:none;font-weight:700;font-size:14px;padding:14px 22px">%s</a></td></tr>'
            % (_e(cta[0]), _e(cta[1]))) if cta and cta[0] else ''
     un = ('<br><a href="%s" style="color:#87867F">%s</a>' % (_e(unsub_url), t['unsub'])) if unsub_url else ''
@@ -855,9 +858,9 @@ def mail_layout(lang, heading, intro, rows_html='', cta=('', ''), extra='', unsu
             '\'Noto Sans KR\',\'Hiragino Sans\',\'PingFang SC\',Arial,sans-serif;color:#141414">'
             '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">'
             '<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%%;background:#fff">'
-            '<tr><td style="background:#141414;padding:18px 32px;border-bottom:4px solid #E8332A">'
+            '<tr><td style="background:#141414;padding:18px 32px;border-bottom:4px solid #DC2B24">'
             '<span style="color:#fff;font-weight:900;font-size:20px;letter-spacing:.02em">MAPDAL</span>'
-            '<span style="color:#E8332A;font-weight:900;font-size:20px">SEOUL</span></td></tr>'
+            '<span style="color:#DC2B24;font-weight:900;font-size:20px">SEOUL</span></td></tr>'
             '<tr><td style="padding:30px 32px 6px"><h1 style="margin:0 0 10px;font-size:22px;line-height:1.35">%s</h1>'
             '<p style="margin:0;font-size:14.5px;line-height:1.7;color:#3a3a3a">%s</p></td></tr>'
             '<tr><td style="padding:14px 32px">%s</td></tr>%s%s'
@@ -900,7 +903,13 @@ def order_mail(oid, event):
     items = _jl(r.get('items'), []) or []
     name = buyer.get('name') or ''
     hi = (t['hi'] % _e(name)) + '<br>' if name else ''
-    link = _site() + '/order-complete?oid=' + urllib.parse.quote(oid)
+    try:   # 서명 링크 — 다른 기기·메일 앱에서도 입력 없이 주문 조회(/track)가 열린다
+        import globalshop
+        link = globalshop.track_link(oid, to)
+        if lang in ('en', 'ja', 'zh'):
+            link = link.replace(_site() + '/track', _site() + '/' + lang + '/track', 1)
+    except Exception:
+        link = _site() + '/order-complete?oid=' + urllib.parse.quote(oid)
     if event == 'paid':
         subj, head, intro = t['paid_s'] % oid, t['paid_h'], hi + _e(t['paid_p'])
         rows_ = _kv_rows([(t['order'], oid), (t['total'], _won(r.get('amount')))])
@@ -1199,7 +1208,7 @@ def api_unsub(e: str = '', t: str = ''):
                         '<title>MAPDAL SEOUL</title><body style="font-family:-apple-system,sans-serif;padding:60px 20px;'
                         'text-align:center;color:#141414"><h2>수신거부가 완료되었습니다</h2>'
                         '<p>You have been unsubscribed from MAPDAL SEOUL marketing emails.</p>'
-                        '<p><a href="/home" style="color:#E8332A">mapdal.kr</a></p>')
+                        '<p><a href="/home" style="color:#DC2B24">mapdal.kr</a></p>')
 
 
 _WT = {
@@ -1221,9 +1230,9 @@ _WT = {
 def welcome_mail(email, lang, code):
     try:
         w = _WT.get((lang or 'en')[:2], _WT['en'])
-        box = ('<div style="border:2px dashed #E8332A;padding:16px;text-align:center;margin:6px 0">'
+        box = ('<div style="border:2px dashed #DC2B24;padding:16px;text-align:center;margin:6px 0">'
                '<div style="font-size:12px;color:#87867F">%s</div>'
-               '<div style="font-size:26px;font-weight:900;letter-spacing:.08em;color:#E8332A">%s</div>'
+               '<div style="font-size:26px;font-weight:900;letter-spacing:.08em;color:#DC2B24">%s</div>'
                '<div style="font-size:11.5px;color:#87867F;margin-top:4px">%s</div></div>' % (_e(w[3]), _e(code), _e(w[5])))
         url = _site() + '/shop?utm_source=email&utm_medium=crm&utm_campaign=o2o_welcome'
         send_mail(email, w[0], mail_layout(lang, w[1], _e(w[2]), box, (url, w[4]), unsub_url=unsub_url(email)),
@@ -1286,8 +1295,8 @@ def _flow_mail(kind, to, lang, ref, extra_html='', cta_url='', code=''):
     url = _site() + (cta_url or '/shop') + sep + 'utm_source=email&utm_medium=crm&utm_campaign=' + kind
     box = ''
     if code:
-        box = ('<div style="border:2px dashed #E8332A;padding:14px;text-align:center;margin:6px 0">'
-               '<div style="font-size:24px;font-weight:900;letter-spacing:.08em;color:#E8332A">%s</div></div>' % _e(code))
+        box = ('<div style="border:2px dashed #DC2B24;padding:14px;text-align:center;margin:6px 0">'
+               '<div style="font-size:24px;font-weight:900;letter-spacing:.08em;color:#DC2B24">%s</div></div>' % _e(code))
     return send_mail(to, t[0], mail_layout(lang, t[1], _e(t[2]), box + extra_html, (url, t[3]),
                                            unsub_url=unsub_url(to)), kind, ref)
 
@@ -1411,6 +1420,8 @@ def _chan(s, m=''):
     s = str(s or '').lower()
     m = str(m or '').lower()
     paid = m in ('cpc', 'ppc', 'paid', 'paid_social', 'paidsocial', 'cpm', 'display', 'ads', 'ad')
+    if s == 'homescreen' or m == 'app':
+        return 'app'
     if s in ('facebook', 'instagram', 'meta', 'fb', 'ig', 'threads') or s.startswith('facebook') or s.startswith('instagram'):
         return 'meta' if (paid or m in ('social_paid',)) else 'social'
     if s.startswith('google') or s in ('youtube', 'gdn', 'pmax'):
@@ -1911,7 +1922,7 @@ _GROWTH_HTML = r'''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <title>MAPDAL — 그로스 엔진</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-:root{--ink:#141414;--red:#E8332A;--amber:#B87400;--line:#E2E0D9;--paper:#F7F6F2;--steel:#5E5D57;--good:#0A7D38;--bad:#B3261E}
+:root{--ink:#141414;--red:#DC2B24;--amber:#B87400;--line:#E2E0D9;--paper:#F7F6F2;--steel:#5E5D57;--good:#0A7D38;--bad:#B3261E}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 "IBM Plex Sans KR",-apple-system,sans-serif}
 header{background:var(--ink);color:#fff;padding:14px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;border-bottom:4px solid var(--red)}
 header b{font-size:17px}header a{color:#fff;opacity:.8;font-size:13px}header .sp{flex:1}
@@ -1974,7 +1985,7 @@ const won=n=>n==null?'—':'₩'+Math.round(n).toLocaleString('ko-KR'),num=n=>n=
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600)}
 async function api(p,o){const r=await fetch(p,o);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
-const CH={meta:'Meta 광고',google:'Google 광고',tiktok:'TikTok 광고',naver:'네이버 광고',kakao:'카카오 광고',store:'매장 QR (O2O)',crm:'이메일·CRM',search:'자연검색',social:'소셜(자연)',direct:'직접 유입',referral:'추천 사이트',other:'기타'};
+const CH={app:'홈 화면 앱(재방문)',meta:'Meta 광고',google:'Google 광고',tiktok:'TikTok 광고',naver:'네이버 광고',kakao:'카카오 광고',store:'매장 QR (O2O)',crm:'이메일·CRM',search:'자연검색',social:'소셜(자연)',direct:'직접 유입',referral:'추천 사이트',other:'기타'};
 const td=new Date(),fd=new Date(Date.now()-29*864e5),iso=d=>d.toISOString().slice(0,10);$('#f').value=iso(fd);$('#t').value=iso(td);
 const q=()=>'?frm='+$('#f').value+'&to='+$('#t').value;
 function tbl(h,rows){return'<table><tr>'+h.map(x=>'<th>'+x+'</th>').join('')+'</tr>'+(rows.length?rows.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+h.length+'" class="mut">데이터 없음</td></tr>')+'</table>'}
@@ -1993,11 +2004,11 @@ async function fn(){const d=await api('/admin/api/growth/funnel'+q());const N={p
  $('#lgT').innerHTML=tbl(['언어','세션'],d.langs.map(x=>[esc(x.lang||'?'),num(x.n)]));
  const D=d.daily,W=Math.max(600,D.length*26),H=220,mS=Math.max(1,...D.map(x=>x.sessions)),mR=Math.max(1,...D.map(x=>Math.max(x.revenue,x.spend)));
  let s='<svg width="'+W+'" height="'+(H+30)+'" role="img" aria-label="일별 추이">';D.forEach((x,i)=>{const X=20+i*(W-40)/Math.max(1,D.length);
-  s+='<rect x="'+X+'" y="'+(H-x.revenue*H/mR)+'" width="9" height="'+(x.revenue*H/mR)+'" fill="#E8332A"><title>'+x.day+' 매출 '+won(x.revenue)+'</title></rect>';
+  s+='<rect x="'+X+'" y="'+(H-x.revenue*H/mR)+'" width="9" height="'+(x.revenue*H/mR)+'" fill="#DC2B24"><title>'+x.day+' 매출 '+won(x.revenue)+'</title></rect>';
   s+='<rect x="'+(X+10)+'" y="'+(H-x.spend*H/mR)+'" width="9" height="'+(x.spend*H/mR)+'" fill="#B87400"><title>'+x.day+' 광고비 '+won(x.spend)+'</title></rect>';
   s+='<circle cx="'+(X+9)+'" cy="'+(H-x.sessions*H/mS)+'" r="3" fill="#141414"><title>'+x.day+' 세션 '+x.sessions+'</title></circle>';
   if(i%Math.ceil(D.length/10)===0)s+='<text x="'+X+'" y="'+(H+16)+'">'+x.day.slice(5)+'</text>'});
- $('#dChart').innerHTML=(D.length?s+'</svg>':'<p class="mut">데이터 없음</p>')+'<p class="mut"><span style="color:#E8332A">■</span> 매출 <span style="color:#B87400">■</span> 광고비 ● 세션</p>'}
+ $('#dChart').innerHTML=(D.length?s+'</svg>':'<p class="mut">데이터 없음</p>')+'<p class="mut"><span style="color:#DC2B24">■</span> 매출 <span style="color:#B87400">■</span> 광고비 ● 세션</p>'}
 async function co(){const d=await api('/admin/api/growth/cohorts'),n=d.cohorts.length?d.cohorts[0].retention.length:0,H=['코호트','고객']; for(let i=0;i<n;i++)H.push('M'+i);
  const cell=v=>'<span style="display:block;background:rgba(232,51,42,'+Math.min(.85,v/60)+');color:'+(v>35?'#fff':'#141414')+';padding:2px">'+v+'</span>';
  $('#coT').innerHTML='<table class="hm">'+tbl(H,d.cohorts.map(c=>[c.cohort,c.size].concat(c.retention.map((v,i)=>i===0?'100':cell(v))))).slice(7);
@@ -2057,7 +2068,7 @@ _VISIT_HTML = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-:root{--ink:#141414;--red:#E8332A;--amber:#FFB000;--paper:#F7F6F2;--line:#E2E0D9;--steel:#5E5D57}
+:root{--ink:#141414;--red:#DC2B24;--amber:#FFB000;--paper:#F7F6F2;--line:#E2E0D9;--steel:#5E5D57}
 *{box-sizing:border-box}html,body{margin:0}body{background:var(--ink);color:#fff;font:15px/1.6 "IBM Plex Sans KR",-apple-system,"Hiragino Sans","PingFang SC",sans-serif;min-height:100vh}
 .wrap{max-width:480px;margin:0 auto;padding:22px 16px calc(28px + env(safe-area-inset-bottom))}
 .top{display:flex;justify-content:space-between;align-items:center}
@@ -2265,12 +2276,46 @@ def copy_apply(html, path=''):
                                                '관세는 수령 국가 기준에 따라 부과될 수 있음</div>')
         if _BD_FOOD_OLD in html:
             html = html.replace(_BD_FOOD_OLD, '<div class="bd">냉동·냉장 K-FOOD는 현재 국내 배송만 가능합니다</div>')
+        # 홈 히어로 — 관리자 슬라이드를 서버에서 미리 실어 '기본 슬라이드 → API 교체' 레이아웃 이동(CLS 0.24) 제거
+        if path == '/home' and 'render(MZH_DEFAULT);' in html and '__MZH=' not in html:
+            try:
+                import hero_api
+                hd = hero_api.load_data()
+                if hd and hd.get('slides'):
+                    js = json.dumps(hd, ensure_ascii=False).replace('</', '<\\/')
+                    html = html.replace('render(MZH_DEFAULT);',
+                                        'window.__MZH=' + js + ';render(window.__MZH);', 1)
+                    html = html.replace('fetch("/api/hero",{cache:"no-store"})',
+                                        '(window.__MZH?Promise.reject(0):fetch("/api/hero",{cache:"no-store"}))', 1)
+            except Exception:
+                pass
+        # NEW/DROPS — 세 화면(목록·상세·당첨)이 모두 숨겨진 채 시작해 JS 가 하나를 띄운다. 그 사이 푸터가
+        #   첫 화면에 보였다가 밀려나는 CLS(0.94)를 막도록 한 화면 높이 자리표시를 두고, 화면이 뜨면 제거.
+        if path == '/new-drops' and '<div id="vList" style="display:none">' in html and 'mpHold' not in html:
+            html = html.replace('<div id="vList" style="display:none">',
+                                '<div id="mpHold" aria-hidden="true" style="min-height:calc(100vh - 140px)"></div>'
+                                '<div id="vList" style="display:none">', 1)
+            i = html.lower().rfind('</body>')
+            html = html[:i] + ('<script id="mpHoldJs">(function(){var h=document.getElementById("mpHold");if(!h)return;'
+                               'var ids=["vList","vDetail","vWinners"];function chk(){for(var i=0;i<ids.length;i++){var e=document.getElementById(ids[i]);'
+                               'if(e&&e.style.display!=="none"){h.remove();return true}}return false}'
+                               'if(chk())return;var mo=new MutationObserver(function(){if(chk())mo.disconnect()});'
+                               'ids.forEach(function(id){var e=document.getElementById(id);if(e)mo.observe(e,{attributes:true,attributeFilter:["style"]})});'
+                               'setTimeout(function(){if(document.getElementById("mpHold"))h.remove()},8000)})();</script>') + html[i:]
+        # 접근성: 옵션 셀렉트 레이블
+        if '<select class="opt-select" id="optSel">' in html:
+            html = html.replace('<select class="opt-select" id="optSel">',
+                                '<select class="opt-select" id="optSel" aria-label="옵션 선택">')
+        # 실물 사진이 없는 굿즈 상세 — 단일 이미지 페이저(1 | 1) 숨김 + 사실 그대로 안내
+        if '<div class="glyph-hero">' in html and '<span class="gal-pager">1 | 1</span>' in html:
+            html = html.replace('<span class="gal-pager">1 | 1</span>',
+                                '<span class="gal-pager" style="letter-spacing:.06em">실물 사진 준비 중 · 성수 매장에서 실물 확인 가능</span>', 1)
         # 국내 체크아웃·장바구니: 해외 배송 주문 진입점
         if (path in ('/checkout', '/cart')) and 'mpIntlEntry' not in html and '<div class="cart-layout">' in html:
             bar = ('<div id="mpIntlEntry" style="display:flex;gap:10px;align-items:center;justify-content:space-between;'
                    'flex-wrap:wrap;background:#141414;color:#fff;padding:12px 16px;margin:0 0 16px;font-size:13.5px">'
                    '<span>🌏 <b>해외로 받으시나요?</b> 앨범·굿즈 전 세계 배송 · PayPal·해외카드 결제</span>'
-                   '<a href="/checkout-global" style="background:#E8332A;color:#fff;padding:9px 14px;text-decoration:none;'
+                   '<a href="/checkout-global" style="background:#DC2B24;color:#fff;padding:9px 14px;text-decoration:none;'
                    'font-weight:700;white-space:nowrap">해외 배송으로 주문하기 →</a></div>')
             html = html.replace('<div class="cart-layout">', bar + '<div class="cart-layout">', 1)
     except Exception:
@@ -2306,14 +2351,14 @@ var i=$('mpCpIn');if(i)i.addEventListener('keydown',function(e){if(e.key==='Ente
 try{var q=new URLSearchParams(location.search).get('coupon')||sessionStorage.getItem('mp_cp');if(q&&i){i.value=q;apply()}}catch(e){}
 }catch(e){}})();</script>'''
 
-_NL_BAND = r'''<section id="mpNl" aria-label="Drop alerts" style="background:#141414;color:#fff;border-top:4px solid #E8332A">
+_NL_BAND = r'''<section id="mpNl" aria-label="Drop alerts" style="background:#141414;color:#fff;border-top:4px solid #DC2B24">
 <div style="max-width:1180px;margin:0 auto;padding:28px 16px;display:flex;gap:18px;align-items:center;justify-content:space-between;flex-wrap:wrap">
 <div style="flex:1 1 320px"><div style="font:500 11px 'IBM Plex Mono',monospace;letter-spacing:.14em;color:#FFB000">DROP ALERTS · WORLDWIDE</div>
 <div style="font-family:'Black Han Sans',sans-serif;font-size:26px;line-height:1.2;margin:6px 0 4px">새 드롭·팬사인회 소식을 가장 먼저</div>
 <div style="font-size:13px;color:#bbb">구독하면 첫 주문 10% 쿠폰을 바로 드립니다 · 언제든 수신거부</div></div>
 <form id="mpNlF" style="flex:1 1 360px;display:flex;flex-wrap:wrap;gap:8px" novalidate>
 <input id="mpNlE" type="email" autocomplete="email" inputmode="email" placeholder="이메일 주소" aria-label="이메일 주소" required style="flex:1 1 200px;font:inherit;font-size:16px;padding:12px;border:0;min-width:0">
-<button type="submit" style="font:700 14px inherit;background:#E8332A;color:#fff;border:0;padding:0 18px;min-height:46px;cursor:pointer">구독하기</button>
+<button type="submit" style="font:700 14px inherit;background:#DC2B24;color:#fff;border:0;padding:0 18px;min-height:46px;cursor:pointer">구독하기</button>
 <label style="flex:1 1 100%;font-size:11.5px;color:#aaa;display:flex;gap:6px;align-items:flex-start"><input type="checkbox" id="mpNlC" style="margin-top:2px">맵달SEOUL의 혜택·신상 소식(광고성 정보) 수신에 동의합니다.</label>
 <div id="mpNlM" style="flex:1 1 100%;font-size:13px;min-height:18px" aria-live="polite"></div></form></div></section>
 <script id="mpNlJs">(function(){try{var f=document.getElementById('mpNlF');if(!f)return;f.addEventListener('submit',function(e){e.preventDefault();
@@ -2357,8 +2402,12 @@ def o2o_apply(html, path=''):
         if path == '/order-complete' and 'mpOcOpt' not in html:
             i = html.lower().rfind('</body>')
             html = html[:i] + _OC_OPTIN + html[i:]
-        if (path and path not in ('/checkout', '/cart', '/order-complete', '/account', '/search')
-                and 'id="mpNl"' not in html):
+        # 드롭 알림 밴드 — 본문이 정적인 페이지에만(본문을 JS 로 늦게 그리는 목록 페이지에 넣으면
+        #   밴드가 먼저 보였다가 밀려 내려가 CLS 가 커진다: /new-drops 측정 0.85)
+        _nl_ok = (path in ('/home', '/mapdal-seoul', '/seongsu-limited', '/collections', '/journal', '/kfood',
+                           '/gift-sets', '/support', '/shipping', '/partnership')
+                  or path.startswith('/product-') or path.startswith('/collection-'))
+        if _nl_ok and 'id="mpNl"' not in html:
             j = html.find('<footer')
             if j >= 0:
                 html = html[:j] + _NL_BAND + html[j:]
@@ -2401,3 +2450,26 @@ async def api_order_optin(request: Request):
              (secrets.token_hex(10), _iso(), em, 'email', (r.get('country') or '')[:2], lang, 'order_complete',
               r.get('customer_id') or '', 'd7'))   # 이미 구매 고객 — 웰컴 드립 생략
     return {'ok': True}
+
+
+# ═══════════════════════════ 홈 화면 추가(PWA 매니페스트) ═══════════════════
+#   귀국한 해외 고객이 휴대폰 홈 화면에 맵달을 '앱처럼' 두게 한다 — 재방문 = 재구매 동선.
+#   start_url 에 utm 을 붙여 홈 화면 실행 유입을 그로스 대시보드에서 따로 본다.
+_HEAD_PWA = ('<link rel="icon" href="/favicon.ico" sizes="any"><link rel="icon" type="image/png" href="/icon-192.png">'
+             '<link rel="manifest" href="/manifest.webmanifest">'
+             '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+             '<meta name="apple-mobile-web-app-title" content="MAPDAL">')
+
+
+@growth_router.get('/manifest.webmanifest')
+def manifest(request: Request):
+    lg = request.cookies.get('mp_lang') or ''
+    pre = ('/' + lg) if lg in ('en', 'ja', 'zh') else ''
+    m = {'name': 'MAPDAL SEOUL', 'short_name': 'MAPDAL', 'lang': lg or 'ko',
+         'description': 'K-POP albums, merch & K-FOOD from Seongsu, Seoul — shipped worldwide.',
+         'start_url': pre + '/home?utm_source=homescreen&utm_medium=app', 'scope': '/', 'display': 'standalone',
+         'background_color': '#FFFFFF', 'theme_color': '#141414',
+         'icons': [{'src': '/icon-192.png', 'sizes': '192x192', 'type': 'image/png'},
+                   {'src': '/icon-512.png', 'sizes': '512x512', 'type': 'image/png'},
+                   {'src': '/icon-maskable-512.png', 'sizes': '512x512', 'type': 'image/png', 'purpose': 'maskable'}]}
+    return JSONResponse(m, media_type='application/manifest+json', headers={'Cache-Control': 'public, max-age=86400'})

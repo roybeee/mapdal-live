@@ -1,9 +1,27 @@
 /* MAPDAL SEOUL brand system — public storefront */
-:root{
-  --red:#EE3532;
+/* 디자인 토큰 — 전 페이지 단일 기준 (페이지별 인라인 :root 보다 우선하도록 html:root 사용)
+   · --brand-red #EE3532 : 워드마크·대형 디스플레이 전용
+   · --red       #DC2B24 : UI(버튼·가격·라벨) — 흰 글자/흰 배경 대비 4.7:1 (WCAG AA)
+   · --steel     #66655E : 보조 텍스트 — 흰 배경 5.8:1 · 페이퍼 5.4:1 (종전 #87867F 3.4:1 미달) */
+html:root{
+  --brand-red:#EE3532;
+  --red:#DC2B24;
   --paper:#FFFFFF;
   --line:#E7E5DF;
+  --steel:#66655E;
+  --ink:#141414;
 }
+
+/* 키보드 포커스 — 모든 상호작용 요소에 일관된 표시 (마우스 클릭에는 나타나지 않음) */
+:where(a,button,input,select,textarea,summary,[tabindex]):focus-visible{
+  outline:2px solid var(--red);outline-offset:2px;
+}
+.mp-skip{position:absolute;left:-9999px;top:8px;z-index:10000;background:#141414;color:#fff;padding:10px 14px;font-weight:700}
+.mp-skip:focus{left:8px}
+
+/* 이미지 레이아웃 이동(CLS) 방지 */
+img{max-width:100%}
+.mapdal-wordmark img{aspect-ratio:298/45}
 
 html,body{background:#fff}
 
@@ -47,9 +65,9 @@ body>footer .foot-base,#mpFooter .mp-foot-base{
 }
 body>footer h6,#mpFooter b{color:#141414!important}
 body>footer a,#mpFooter a{color:#343434!important}
-body>footer a:hover,#mpFooter a:hover{color:#EE3532!important}
+body>footer a:hover,#mpFooter a:hover{color:var(--red)!important}
 #mpFooter span{color:#565656!important}
-#mpFooter a[href="/privacy"]{color:#EE3532!important}
+#mpFooter a[href="/privacy"]{color:var(--red)!important}
 body>footer .mapdal-wordmark{width:178px;min-width:178px}
 
 /* Logo treatment for the standalone account page. */
@@ -62,3 +80,22 @@ body>footer .mapdal-wordmark{width:178px;min-width:178px}
   .mapdal-wordmark{width:158px;min-width:158px}
   body>footer .mapdal-wordmark{width:158px;min-width:158px}
 }
+
+/* ── 대비 보정 (WCAG AA) — 어두운 섹션은 밝은 보조색, 붉은 배경 위는 흰색 ── */
+/* 본문 안 <style> 보다 뒤에 오지 않으므로 html body 접두로 우선순위를 높인다 */
+html body .floor .no,html body .floor .en,html body .floor-cap{color:#A3A29B}
+html body .floor:hover .no,html body .floor.active .no,html body .floor:hover .en,html body .floor.active .en{color:#fff}
+html body .mzh .mzh-slide.is-live .btn.white{background:var(--red)}
+.btn.red,.btn-full[style*="var(--red)"]{background:var(--red)}
+
+/* ── 모바일 카테고리 바 자리 예약 (CLS 방지) ──
+   #mpCatBar 는 DOMContentLoaded 에 헤더 끝에 붙는다. 그 전까지 같은 높이의 자리를 미리 잡아
+   첫 화면 이후 헤더가 커지며 본문 전체가 밀리는 현상을 막는다. 바가 생기면 :has 로 자리표시 제거. */
+@media(max-width:1024px){
+  body>header:not(:has(#mpCatBar))::after{content:"";display:block;height:41px;border-top:1px solid #E3E1DB;background:#fff}
+}
+@media(max-width:480px){
+  body>header:not(:has(#mpCatBar))::after{height:37px}
+}
+html body .btn.red{background:var(--red);color:#fff}
+html body .card-artist{color:#52707D}

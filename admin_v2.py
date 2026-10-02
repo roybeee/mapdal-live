@@ -9498,7 +9498,7 @@ TERMS_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta
 
 FOOTER_SNIPPET_TPL = '''<footer id="mpFooter" style="background:#141414;color:#fff;font:12px/1.9 'IBM Plex Sans KR',sans-serif;margin:0;padding:0;border-top:1px solid rgba(255,255,255,.09)">
 <div style="max-width:1440px;margin:0 auto;padding:26px 48px 40px">
-<div style="margin-bottom:10px"><a href="/terms" style="color:#fff;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy" style="color:#FFB000;font-weight:800;text-decoration:none">개인정보처리방침</a></div>
+<div style="margin-bottom:10px"><a href="/terms" style="color:#fff;text-decoration:none;margin-right:16px">이용약관</a><a href="/privacy" style="color:#FFB000;font-weight:800;text-decoration:none;margin-right:16px">개인정보처리방침</a><a href="/track" style="color:#fff;text-decoration:none;margin-right:16px">비회원·해외 주문 조회</a><a href="/checkout-global" style="color:#fff;text-decoration:none">International orders</a></div>
 <div><span style="color:#fff;font-weight:700">맵달서울성수</span> · 공동대표 황인범, 김동경 · 서울특별시 성동구 성수이로16길 5 (성수동2가)<br>
 사업자등록번호 {reg} · 통신판매업신고 {mail_order} · 전화 {phone} · 이메일 {email}<br>
 호스팅서비스 제공: Render Services, Inc.<br>
@@ -13684,10 +13684,32 @@ def sitemap_xml(request: Request):
 _BRAND_CSS_LINK = '<link id="mpBrandCss" rel="stylesheet" href="/brand-system.css">'
 _BRAND_JS_TAG = '<script id="mpBrandJs" defer src="/brand-system.js"></script>'
 
+_LOGO_TEXT_RE = re.compile(r'<(a|div)\s+class="logo"((?:\s+href="[^"]*")?)\s*>\s*MAPDAL\s*<(em|span)>SEOUL</\3>\s*</\1>')
+_WORDMARK_IMG = '<img src="/mapdal-wordmark.svg" alt="MAPDAL SEOUL" width="214" height="32" decoding="async">'
+
+
 def _brand_apply(html):
     """Attach the shared wordmark and white-canvas brand system once per document."""
     if '<head' not in html[:4000].lower():
         return html
+    # 워드마크 서버 치환 — 종전엔 brand-system.js 가 로드 후 바꿔 '텍스트 로고 → 이미지' 깜빡임·레이아웃 이동이 났다.
+    if 'MAPDAL<' in html or 'MAPDAL <' in html:
+        html = _LOGO_TEXT_RE.sub(lambda m: '<%s class="logo mapdal-wordmark"%s aria-label="MAPDAL SEOUL">%s</%s>'
+                                 % (m.group(1), m.group(2), _WORDMARK_IMG, m.group(1)), html)
+    # 폰트 원본 사전 연결 — 첫 텍스트 렌더 지연 단축
+    if 'fonts.googleapis.com' in html and 'rel="preconnect" href="https://fonts.gstatic.com"' not in html:
+        m = re.search(r'<head[^>]*>', html, re.I)
+        if m:
+            html = (html[:m.end()] + '<link rel="preconnect" href="https://fonts.googleapis.com">'
+                    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' + html[m.end():])
+    # 본문 바로가기(키보드·스크린리더)
+    if 'mp-skip' not in html:
+        m = re.search(r'<body[^>]*>', html, re.I)
+        h = html.lower().find('</header>')
+        if m and h > m.end():
+            h += len('</header>')
+            html = html[:h] + '<span id="mpMain" tabindex="-1"></span>' + html[h:]
+            html = html[:m.end()] + '<a class="mp-skip" href="#mpMain">본문 바로가기</a>' + html[m.end():]
     if 'mpBrandCss' not in html:
         i = html.lower().find('</head>')
         html = (html[:i] + _BRAND_CSS_LINK + html[i:]) if i >= 0 else (_BRAND_CSS_LINK + html)
@@ -14033,9 +14055,23 @@ def _inject_auth(html, path='', uid=None):
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
-    if 'mpMobNav' not in html: add += MOBNAV_SNIPPET
+    if 'mpMobNav' not in html:
+        # 레이아웃 CSS(모바일 헤더·내비)는 <head> 로 — 본문 끝에서 늦게 적용되면 첫 화면 후 헤더 높이가
+        # 바뀌며 아래 전체가 밀린다(모바일 CLS 0.38 측정). 스크립트는 종전대로 본문 끝.
+        _mn_end = MOBNAV_SNIPPET.find('</style>') + len('</style>')
+        _h = html.lower().find('</head>')
+        if MOBNAV_SNIPPET.lstrip().startswith('<style') and _mn_end > 8 and _h >= 0:
+            html = html[:_h] + MOBNAV_SNIPPET[:_mn_end] + html[_h:]
+            add += MOBNAV_SNIPPET[_mn_end:]
+        else:
+            add += MOBNAV_SNIPPET
     if 'mpTickerJs' not in html: add += TICKER_SNIPPET
-    if 'mpCardCss' not in html: add += CARD_CSS_SNIPPET
+    if 'mpCardCss' not in html:
+        _h = html.lower().find('</head>')
+        if _h >= 0 and CARD_CSS_SNIPPET.lstrip().startswith('<style'):
+            html = html[:_h] + CARD_CSS_SNIPPET + html[_h:]
+        else:
+            add += CARD_CSS_SNIPPET
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
@@ -16780,4 +16816,15 @@ def serve_site(spath: str, request: Request):
         # 내용 해시 파일명 → 영구 캐시 안전 (교체는 새 해시 파일명으로)
         return Response(data, media_type=mt,
                         headers={'Cache-Control': 'public, max-age=31536000, immutable'})
-    return Response(data, media_type=mt)
+    # ── 이미지 WebP 협상 + 정적 자산 캐시 (2026-10 성능) ──────────────────────
+    #   같은 URL(.jpg/.png) 그대로 두고, 브라우저가 WebP 를 받으면 옆의 .webp(평균 45% 경량)를 준다.
+    #   관리자 DB(히어로 슬라이드 등)에 저장된 기존 경로를 바꾸지 않아도 되는 방식.
+    hdr = {}
+    if mt in ('image/jpeg', 'image/png') and 'image/webp' in (request.headers.get('accept') or ''):
+        wp = os.path.splitext(fp)[0] + '.webp'
+        if os.path.isfile(wp):
+            data, mt = open(wp, 'rb').read(), 'image/webp'
+        hdr['Vary'] = 'Accept'
+    if mt.startswith('image/') or mt in ('text/css', 'application/javascript', 'text/javascript', 'font/woff2'):
+        hdr['Cache-Control'] = 'public, max-age=604800, stale-while-revalidate=86400'
+    return Response(data, media_type=mt, headers=hdr)

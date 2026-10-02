@@ -375,7 +375,7 @@ function bar(){if(D.getElementById('mpLangBar'))return;
  var path=location.pathname.replace(/^\/(en|ja|zh)(?=\/|$)/,'')||'/home';
  var L4=[['ko','한국어'],['en','English'],['ja','日本語'],['zh','简体中文']],LB={ko:'KO',en:'EN',ja:'JA',zh:'中文'};
  var b=D.createElement('span');b.id='mpLangBar';
- b.innerHTML='<button type="button" aria-haspopup="true" aria-expanded="false" aria-label="Language & currency">🌐 '+LB[L]+'</button>'
+ b.innerHTML='<button type="button" aria-haspopup="true" aria-expanded="false" aria-label="'+LB[L]+' — Language &amp; currency">🌐 '+LB[L]+'</button>'
   +'<div class="pop" role="menu" hidden>'+L4.map(function(x){return'<a role="menuitem" hreflang="'+x[0]+'" href="'+(x[0]==='ko'?'':'/'+x[0])+path+location.search+'" data-l="'+x[0]+'"'+(x[0]===L?' aria-current="true"':'')+'>'+x[1]+'</a>'}).join('')
   +'<label>Currency <select aria-label="Currency">'+['KRW','USD','JPY','CNY','EUR','TWD'].map(function(c){return'<option'+(c===CUR?' selected':'')+'>'+c+'</option>'}).join('')+'</select></label></div>';
  var btn=b.querySelector('button'),pop=b.querySelector('.pop');

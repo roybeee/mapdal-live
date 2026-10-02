@@ -457,6 +457,25 @@ _EV_RATE = {}
 _BOT_RE = re.compile(r'bot|crawl|spider|slurp|preview|facebookexternalhit|headless|lighthouse|pingdom|monitor', re.I)
 
 
+_RL = {}
+
+
+def rate_limit(req, key, limit, window_s):
+    """IP·키별 고정창 제한 — 초과 시 429. 단일 인스턴스 메모리(재기동 시 초기화)로 충분한 규모."""
+    ip = _client_ip(req)
+    k = (key, ip)
+    now = time.time()
+    b = _RL.get(k)
+    if not b or now - b[0] > window_s:
+        b = [now, 0]
+    b[1] += 1
+    _RL[k] = b
+    if len(_RL) > 20000:
+        _RL.clear()
+    if b[1] > limit:
+        raise HTTPException(429, 'Too many requests — please try again later')
+
+
 def _touch_from_cookie(req, name):
     try:
         raw = urllib.parse.unquote(req.cookies.get(name) or '')
@@ -1070,6 +1089,7 @@ def coupon_finalize(oid):
 @growth_router.post('/api/coupon/check')
 async def api_coupon_check(req: Request):
     """체크아웃 미리보기 — 할인액 계산(실제 적용은 /api/orders 에서 서버가 재검증)."""
+    rate_limit(req, 'coupon', 30, 600)     # 코드 대입 방지
     d = await req.json()
     sub = int(d.get('sub') or 0)
     email = str(d.get('email') or '').strip().lower()
@@ -1141,6 +1161,7 @@ _CH_OK = {'email', 'whatsapp', 'line', 'wechat', 'kakao', 'instagram'}
 @growth_router.post('/api/contacts')
 async def api_contact(req: Request):
     """매장 QR·푸터·체크아웃 동의 캡처. 이메일 또는 메신저 핸들 1개 필수 + 광고 수신 동의 필수."""
+    rate_limit(req, 'contact', 40, 600)    # 쿠폰 대량 발급·임의 주소 웰컴메일 남용 방지 (매장 와이파이 공용 IP 고려)
     ensure()
     d = await req.json()
     email = str(d.get('email') or '').strip().lower()[:80]
@@ -1846,6 +1867,23 @@ def g_qr_save(request: Request, body: dict = Body(...)):
     return {'ok': True, 'url': _site() + '/visit?qr=' + code}
 
 
+@growth_router.get('/admin/api/growth/qr.svg')
+def g_qr_svg(request: Request, code: str = ''):
+    """매장 QR 인쇄용 SVG — 외부 CDN 없이 서버에서 생성(벡터라 포스터·영수증 어느 크기로 뽑아도 선명)."""
+    _admin(request)
+    code = re.sub(r'[^a-z0-9-]', '', (code or '').lower())[:30]
+    if not code:
+        raise HTTPException(400, 'code')
+    import io
+    import qrcode, qrcode.image.svg
+    img = qrcode.make(_site() + '/visit?qr=' + code, image_factory=qrcode.image.svg.SvgPathImage,
+                      error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=2)
+    buf = io.BytesIO()
+    img.save(buf)
+    return Response(buf.getvalue(), media_type='image/svg+xml',
+                    headers={'Content-Disposition': 'inline; filename="mapdal-qr-%s.svg"' % code})
+
+
 @growth_router.get('/admin/api/growth/contacts.csv')
 def g_contacts_csv(request: Request):
     _admin(request, 2)
@@ -1853,9 +1891,12 @@ def g_contacts_csv(request: Request):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(['created', 'email', 'channel', 'handle', 'country', 'lang', 'source', 'consent', 'unsub', 'coupon', 'customer_id'])
+    def cell(v):
+        v = '' if v is None else str(v)
+        return ("'" + v) if v[:1] in ('=', '+', '-', '@', '\t', '\r') else v   # 엑셀 수식 주입 방지
     for r in _rows('SELECT * FROM mp_contacts ORDER BY created DESC'):
-        w.writerow([r.get(k) or '' for k in ('created', 'email', 'channel', 'handle', 'country', 'lang', 'source',
-                                              'consent', 'unsub', 'coupon', 'customer_id')])
+        w.writerow([cell(r.get(k)) for k in ('created', 'email', 'channel', 'handle', 'country', 'lang', 'source',
+                                             'consent', 'unsub', 'coupon', 'customer_id')])
     return Response('﻿' + buf.getvalue(), media_type='text/csv; charset=utf-8',
                     headers={'Content-Disposition': 'attachment; filename="mapdal_contacts.csv"'})
 
@@ -1978,7 +2019,6 @@ svg text{font:11px "IBM Plex Mono",monospace;fill:var(--steel)}
 <section id="st"><div class="panel"><h3>연동 상태</h3><p class="h">Render 환경변수로 켭니다. 설정 즉시(재배포 후) 전 페이지에 반영됩니다.</p><div id="stT"></div></div>
 <div class="panel"><h3>표시 환율 (KRW 1원당)</h3><p class="h">해외 고객에게 보여주는 참고 금액용. 결제는 항상 원화(KRW)로 진행됩니다.</p><div id="fxT"></div><button class="btn" id="fxS">환율 저장</button></div></section>
 </main><div id="toast"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 const $=s=>document.querySelector(s),ROLE='__ROLE__';
 const won=n=>n==null?'—':'₩'+Math.round(n).toLocaleString('ko-KR'),num=n=>n==null?'—':Number(n).toLocaleString('ko-KR');
@@ -2017,8 +2057,7 @@ async function co(){const d=await api('/admin/api/growth/cohorts'),n=d.cohorts.l
 async function o2o(){const d=await api('/admin/api/growth/o2o'+q());
  $('#oK').innerHTML=[['QR 스캔',num(d.qr.reduce((a,x)=>a+x.scans,0))],['연락처 확보',num(d.lead_total)],['웰컴쿠폰 사용 주문',num(d.home_orders)+'건'],['웰컴쿠폰 매출',won(d.home_revenue)],['그중 해외 주문',num(d.home_intl)+'건'],['매장 유입 매출(QR 터치)',won(d.store_revenue)]]
  .map(x=>'<div class="kpi"><small>'+x[0]+'</small><b>'+x[1]+'</b></div>').join('');
- $('#qrL').innerHTML=d.qr.map((x,i)=>'<div class="qr"><div id="qr'+i+'"></div><b>'+esc(x.code)+'</b><br>'+esc(x.label)+'<br><span class="mut">스캔 '+x.scans+'</span><br><a href="'+esc(x.url)+'" target="_blank">링크</a></div>').join('');
- d.qr.forEach((x,i)=>{try{new QRCode(document.getElementById('qr'+i),{text:x.url,width:150,height:150,correctLevel:QRCode.CorrectLevel.M})}catch(e){}});
+ $('#qrL').innerHTML=d.qr.map((x,i)=>{const sv='/admin/api/growth/qr.svg?code='+encodeURIComponent(x.code);return '<div class="qr"><div><img src="'+sv+'" width="150" height="150" alt="QR '+esc(x.code)+'"></div><b>'+esc(x.code)+'</b><br>'+esc(x.label)+'<br><span class="mut">스캔 '+x.scans+'</span><br><a href="'+sv+'" download="mapdal-qr-'+esc(x.code)+'.svg">인쇄용 SVG</a> · <a href="'+esc(x.url)+'" target="_blank">랜딩 보기</a></div>'}).join('');
  $('#ldT').innerHTML=tbl(['소스','채널','국가','건수'],d.leads.map(x=>[esc(x.source),esc(x.channel),esc(x.country||'?'),num(x.n)]))}
 async function sp(){const d=await api('/admin/api/growth/spend'+q());$('#spT').innerHTML=tbl(['날짜','채널','캠페인','광고비','노출','클릭','출처'],d.rows.slice(0,300).map(r=>[r.day,esc(r.channel),esc(r.campaign),won(r.spend),num(r.impressions),num(r.clicks),esc(r.src)]))}
 async function cp(){const d=await api('/admin/api/growth/coupons');$('#cpT').innerHTML=tbl(['코드','할인','최소주문','최대','범위','기간','잔여','사용','할인액','상태','메모'],

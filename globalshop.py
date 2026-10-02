@@ -192,6 +192,7 @@ def quote(items, country, coupon_code='', email='', customer_id='', lock_c=None)
 
 @global_router.post('/api/intl/quote')
 async def api_quote(req: Request):
+    _g().rate_limit(req, 'intl_quote', 120, 600)
     d = await req.json()
     cid, email = '', str(d.get('email') or '').strip().lower()
     try:
@@ -290,6 +291,7 @@ def _clean(s, n=120):
 @global_router.post('/api/intl/orders')
 async def api_intl_order(req: Request, response: Response):
     """해외 주문 생성 — 재고 차감 + PENDING 주문 + (PayPal) 결제 주문 생성. 반환: orderId, paypalOrderId."""
+    _g().rate_limit(req, 'intl_order', 8, 3600)   # 미결제 주문으로 재고를 묶는 남용 방지
     ensure()
     a = _app()
     d = await req.json()

@@ -222,6 +222,29 @@ def _js_escape(v, q):
     return v.replace(q, '\\' + q)
 
 
+_CMP_BEFORE = ('===', '==', '!==', '!=', 'case', 'indexOf(', 'includes(', 'startsWith(', 'endsWith(',
+               'split(', '.test(', '[', 'has(', 'get(', 'getItem(', 'setItem(', 'lastIndexOf(')
+_CMP_AFTER = ('===', '==', '!==', '!=')
+
+
+def _is_logic_literal(src, a, b, q):
+    """비교·키·조회에 쓰이는 리터럴인지 — 이런 리터럴을 번역하면 서버가 내려준 한국어 값과의
+    비교(예: status==='접수')가 깨진다. 화면에 보이는 값은 브라우저 런타임이 텍스트 노드에서 번역한다."""
+    if q == '`':
+        return False
+    pre = src[max(0, a - 1 - 16):a - 1].rstrip()
+    post = src[b + 1:b + 1 + 6].lstrip()
+    if pre.endswith(_CMP_BEFORE):
+        return True
+    if post.startswith(_CMP_AFTER):
+        return True
+    if post.startswith(':') and pre.endswith(('{', ',')):
+        return True                                   # 객체 키 {'한글': …}
+    if post.startswith(']') and pre.endswith('['):
+        return True
+    return False
+
+
 def tr_script(src, d):
     if not _HANGUL.search(src):
         return src
@@ -231,6 +254,8 @@ def tr_script(src, d):
     out, pos = [], 0
     for a, b, q, body in lits:
         if not _HANGUL.search(body):
+            continue
+        if _is_logic_literal(src, a, b, q):
             continue
         raw = _js_unescape(body)
         k = norm(raw)

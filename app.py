@@ -364,7 +364,7 @@ _STATIC_DIR = os.path.join(BASE, 'static')
 _HOME_FILE = 'mapdal_home_mockup_v1.html'
 _DYNAMIC_CLEAN_ROUTES = {'/account'}
 
-_I18N_BOT = re.compile(r'bot|crawl|spider|slurp|facebookexternalhit|kakaotalk-scrap|preview|lighthouse', re.I)
+_I18N_BOT = re.compile(r'bot|crawl|spider|slurp|yeti|daum|facebookexternalhit|kakaotalk-scrap|preview|lighthouse|headless', re.I)
 
 @app.middleware('http')
 async def clean_urls(request, call_next):

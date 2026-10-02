@@ -4219,7 +4219,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 .inv-status{font-size:11px;font-weight:700}.inv-status.out{color:var(--bad)}.inv-status.low{color:#9a6b00}.inv-status.ok{color:var(--ok)}
 @media(max-width:900px){.p-summary{grid-template-columns:repeat(2,1fr)}.group-head{grid-template-columns:auto 65px 1fr auto}.group-head>.gsource,.group-head>.gstock{display:none}.variant-wrap{overflow-x:auto}}
 </style></head><body>
-<header><h1>MAPDAL<span>SEOUL</span></h1><span class="who" id="who"></span><button class="btn sm ghost" id="pwbtn" style="background:none;color:#bbb;border-color:#555" onclick="pwModal()">비밀번호</button><button class="btn sm ghost" style="background:none;color:#bbb;border-color:#555" onclick="logout()">로그아웃</button><nav id="nav"></nav></header>
+<header><h1>MAPDAL<span>SEOUL</span></h1><span class="who" id="who"></span><a class="btn sm" href="/admin/growth" style="background:#E8332A;color:#fff;border-color:#E8332A;text-decoration:none">그로스 엔진 · ROAS · O2O</a><button class="btn sm ghost" id="pwbtn" style="background:none;color:#bbb;border-color:#555" onclick="pwModal()">비밀번호</button><button class="btn sm ghost" style="background:none;color:#bbb;border-color:#555" onclick="logout()">로그아웃</button><nav id="nav"></nav></header>
 <main>
 <section id="t-dash"><div class="loading">불러오는 중…</div></section>
 <section id="t-orders" style="display:none">

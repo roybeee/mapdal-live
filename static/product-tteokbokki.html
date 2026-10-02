@@ -454,7 +454,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 <div class="pdp-tabs">
   <div class="tab-bar">
     <button class="on" data-tab="desc">상품설명</button>
-    <button data-tab="rev">리뷰&amp;포토<b>1,204</b></button>
+    <button data-tab="rev">리뷰&amp;포토<b id="mpRevCnt"></b></button>
     <button data-tab="qa">Q&amp;A</button>
   </div>
 
@@ -526,53 +526,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
   </div>
 
   <!-- 리뷰&포토 -->
-  <div class="tab-panel" id="tab-rev">
-    <div class="rev-sum">
-      <div class="big"><span class="stars">★★★★★</span>4.8<small>총 1,204건</small></div>
-      <div class="attr-bars">
-        <div class="attr-row"><span class="al">맵기</span><span class="at">딱 좋아요</span><span class="bar"><i style="width:72%"></i></span><span class="pc">72%</span></div>
-        <div class="attr-row"><span class="al">조리편의</span><span class="at">간편해요</span><span class="bar"><i style="width:89%"></i></span><span class="pc">89%</span></div>
-        <div class="attr-row"><span class="al">재구매</span><span class="at">또 살래요</span><span class="bar"><i style="width:81%"></i></span><span class="pc">81%</span></div>
-      </div>
-    </div>
-    <div class="photo-strip">
-      <span class="ph"><img src="/img/e/9a03f6d1d9a6.webp" alt="포토리뷰 1" loading="lazy" decoding="async"></span>
-      <span class="ph"><img src="/img/e/4f6ab714a8f9.webp" alt="포토리뷰 2" loading="lazy" decoding="async"></span>
-      <span class="ph"><img src="/img/e/10f39cd7641e.webp" alt="포토리뷰 3" loading="lazy" decoding="async"></span>
-      <span class="ph"><img src="/img/e/da8e517f9d09.webp" alt="포토리뷰 4" loading="lazy" decoding="async"></span>
-      <span class="ph more-ph">더보기 +</span>
-    </div>
-    <div class="rev-filters">
-      <select><option>리뷰 유형</option><option>포토리뷰</option><option>일반리뷰</option></select>
-      <select><option>상품 옵션</option><option>오리지널</option><option>치즈맛</option><option>2입 세트</option></select>
-      <select><option>맵기 필터</option><option>맵찔이</option><option>맵고수</option></select>
-      <span class="fit-toggle"><span class="sw" id="fitSw"></span>내 입맛 맞춤</span>
-      <div class="rev-sort">
-        <button class="on">유용한 순</button><button>최신순</button><button>평점 높은순</button><button>평점 낮은순</button>
-      </div>
-    </div>
-    <div class="rev-item">
-      <div class="rh"><span class="avatar">M</span><span class="uid">mina***</span><span class="topb">TOP 42</span><span class="taste">맵고수 · 성수 단골</span><span class="stars" style="font-size:12px">★★★★★</span><span>2026.06.28 · 성수 픽업</span></div>
-      <div class="opt">[옵션] 오리지널 · 매콤한맛 250g</div>
-      <p>팝업 갔다가 1F에서 픽업했어요. 매장에서 먹던 그 맛이랑 거의 똑같아서 놀랐습니다. 떡이 안 퍼지는 게 포인트. 라이브에서 소개된 대로 마지막에 30초 젓는 게 진짜 중요해요.</p>
-      <div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>26</b></button></div>
-    </div>
-    <div class="rev-item">
-      <div class="rh"><span class="avatar">J</span><span class="uid">jay***</span><span class="taste">맵찔이 · 해외배송(US)</span><span class="stars" style="font-size:12px">★★★★★</span><span>2026.06.21</span></div>
-      <div class="opt">[옵션] 치즈맛 250g</div>
-      <p>LA까지 배송 잘 왔어요. 관세 미리 낸 금액 그대로라 추가 결제가 없던 점이 좋았습니다. 치즈맛은 순한 편이라 아이도 잘 먹어요. 다음엔 세트로 주문할 예정.</p>
-      <div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>19</b></button></div>
-    </div>
-    <div class="rev-item">
-      <div class="rh"><span class="avatar">S</span><span class="uid">sora***</span><span class="taste">맵찔이</span><span class="stars" style="font-size:12px">★★★★☆</span><span>2026.06.15 · 선물</span></div>
-      <div class="opt">[옵션] [기획] 오리지널+치즈 2입 세트</div>
-      <p>맛은 만족. 다만 매운 거 잘 못 드시는 분은 꼭 치즈로 시작하세요. 오리지널은 진짜 한국 기준 매운맛입니다. 세트 구성이 선물하기 좋아요.</p>
-      <div class="rev-note">ⓘ 해당 리뷰는 성분과 내용물이 동일한 상품에 작성된 것으로, 용량, 구성(기획 세트, 증정 등), 패키지 등에 차이가 있을 수 있습니다.</div>
-      <div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>11</b></button></div>
-    </div>
-  </div>
-
-  <!-- Q&A -->
+  <div class="tab-panel" id="tab-rev"><div id="mpRevHost"></div></div>
   <div class="tab-panel" id="tab-qa">
     <div class="qa-btns"><button>상품 문의</button><button>배송·반품·교환 문의</button></div>
     <div class="qa-hint">배송·반품·교환 문의와 답변은 맵달APP 1:1 문의에서도 확인해 보세요 &gt;</div>
@@ -593,8 +547,8 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <div class="now"><span class="pct">18%</span><span class="amt">₩4,500~</span></div>
       <div class="unit">(100g당 1,800원~)</div>
     </div>
-    <div class="rating-row"><span class="stars">★★★★★</span><b>4.8</b><a href="#" onclick="openTab('rev');return false">리뷰 1,204건</a></div>
-    <div class="viewers"><span id="vCount">137</span>명이 보고 있어요</div>
+    <div class="rating-row" id="mpRate" hidden></div>
+    
 
     <select class="opt-select" id="optSel">
       <option value="" selected disabled>옵션을 선택해 주세요</option>
@@ -660,7 +614,6 @@ thumbs.forEach((b,i)=>b.addEventListener('click',()=>setImg(i)));
 
 // ===== 실시간 뷰어 카운트 =====
 let v=137;
-setInterval(()=>{v=Math.max(80,v+Math.floor(Math.random()*11)-5);document.getElementById('vCount').textContent=v;},4000);
 
 // ===== 옵션 우선 구조 =====
 const OPTS={
@@ -795,5 +748,24 @@ function scan(){var as=document.querySelectorAll('a[href]'),fresh=[];
   fresh.forEach(function(x){mkBtn(x[0],x[1])})})}
 function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go._t=setTimeout(scan,400)}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
-})();</script></body>
+})();</script><script id="mpTrustJs">(function(){try{
+var q=new URLSearchParams(location.search);
+var pid=(typeof PID!=='undefined'&&PID)?PID:(function(){
+ if(/\/album-detail/.test(location.pathname)&&q.get('uid'))return'k2g::'+q.get('uid');
+ var m=location.pathname.match(/^\/(product-[A-Za-z0-9._-]+?)(?:\.html)?$/);return m?m[1]:null})();
+if(!pid)return;
+function go(){
+ fetch('/api/reviews?product_id='+encodeURIComponent(pid)).then(function(r){return r.ok?r.json():null}).then(function(d){
+  var n=(d&&d.count)||0,a=(d&&d.avg)||0,rr=document.getElementById('mpRate'),rc=document.getElementById('mpRevCnt');
+  if(rc)rc.textContent=n?String(n):'';
+  if(rr&&n){var s='';for(var i=1;i<=5;i++)s+=(i<=Math.round(a)?'★':'☆');
+   rr.innerHTML='<span class="stars">'+s+'</span><b>'+a.toFixed(1)+'</b><a href="#" onclick="try{openTab(\'rev\')}catch(e){}return false">구매인증 리뷰 '+n+'건</a>';
+   rr.hidden=false}
+ }).catch(function(){});
+ /* 리뷰 위젯 id 는 문자열을 쪼개 쓴다 — admin_v2 는 본문에 그 id 문자열이 있으면 위젯을 주입하지 않는다 */
+ var host=document.getElementById('mpRevHost'),w=document.getElementById('mpRev'+'iews');
+ if(host&&w&&w.parentNode!==host)host.appendChild(w);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();
+}catch(e){}})();</script></body>
 </html><script id="mpFootWhite">(function(){try{var els=document.querySelectorAll("footer *,footer");for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";if(/사업자등록번호|통신판매업신고|맵달서울성수|MEAL ZIP/.test(t)&&t.length<420&&e.children.length<10){e.style.color="#fff";}}}catch(e){}})();</script>

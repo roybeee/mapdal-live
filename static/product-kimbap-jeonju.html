@@ -448,7 +448,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
     <div class="pdp-tabs">
       <div class="tab-bar">
         <button class="on" data-tab="desc">상품설명</button>
-        <button data-tab="rev">리뷰&amp;포토<b>417</b></button>
+        <button data-tab="rev">리뷰&amp;포토<b id="mpRevCnt"></b></button>
         <button data-tab="qa">Q&amp;A</button>
       </div>
       <div class="tab-panel on" id="tab-desc">
@@ -489,17 +489,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
           <div class="rec-rail"><a class="rec-card" href="/product-kimbap-signature"><span class="pimg" style="--tint:#F3EDE4;padding:12px 10px"><img src="/img/e/da8e517f9d09.webp" alt="맵달 김밥 시그니처" loading="lazy" decoding="async"></span><h5>맵달 김밥 시그니처</h5><div class="rp"><b>—</b>₩3,900</div></a><a class="rec-card" href="/product-kimbap-tuna"><span class="pimg" style="--tint:#F3EDE4;padding:12px 10px"><img src="/img/e/8ae2d6d29822.webp" alt="맵달 김밥 묵은지참치" loading="lazy" decoding="async"></span><h5>맵달 김밥 묵은지참치</h5><div class="rp"><b>—</b>₩3,900</div></a><a class="rec-card" href="/product-bowl-hambak"><span class="bimg" style="display:block;position:relative;background:#010101;margin:-16px -14px 0;text-align:center"><img src="/img/e/74f26625e354.webp" alt="맵달 BOWL 함박스테이크" style="max-height:140px;width:auto;display:inline-block" loading="lazy" decoding="async"></span><h5>맵달 BOWL 함박스테이크</h5><div class="rp"><b>—</b>₩6,900</div></a><a class="rec-card" href="/product-bowl-japchae"><span class="bimg" style="display:block;position:relative;background:#010101;margin:-16px -14px 0;text-align:center"><img src="/img/e/19b22e9158f7.webp" alt="맵달 BOWL 잡채덮밥" style="max-height:140px;width:auto;display:inline-block" loading="lazy" decoding="async"></span><h5>맵달 BOWL 잡채덮밥</h5><div class="rp"><b>—</b>₩6,900</div></a><a class="rec-card" href="/product-tteokbokki"><span class="pimg" style="--tint:#F6D6C6;padding:12px 10px"><img src="/img/e/9a03f6d1d9a6.webp" alt="맵달 떡볶이 컵" loading="lazy" decoding="async"></span><h5>맵달 떡볶이 컵</h5><div class="rp"><b>18%</b>₩4,500~</div></a></div>
         </div>
       </div>
-      <div class="tab-panel" id="tab-rev">
-        <div class="rev-sum">
-          <div class="big"><span class="stars">★★★★★</span>4.8<small>총 417건</small></div>
-          <div class="attr-bars">
-            <div class="attr-row"><span class="al">맛</span><span class="at">만족해요</span><span class="bar"><i style="width:84%"></i></span><span class="pc">84%</span></div>
-            <div class="attr-row"><span class="al">조리편의</span><span class="at">간편해요</span><span class="bar"><i style="width:91%"></i></span><span class="pc">91%</span></div>
-            <div class="attr-row"><span class="al">재구매</span><span class="at">또 살래요</span><span class="bar"><i style="width:79%"></i></span><span class="pc">79%</span></div>
-          </div>
-        </div>
-        <div class="rev-item"><div class="rh"><span class="avatar">J</span><span class="uid">jj***</span><span class="stars" style="font-size:12px">★★★★★</span><span>2026.06 · 맵달드림</span></div><div class="opt">[옵션] 전주비빔 단품</div><p>비빔밥 양념 맛이 제대로 납니다. 매콤한 김밥 찾으면 이거.</p><div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>22</b></button></div></div><div class="rev-item"><div class="rh"><span class="avatar">S</span><span class="uid">spice***</span><span class="stars" style="font-size:12px">★★★★★</span><span>2026.06 · 맵달드림</span></div><div class="opt">[옵션] 전주비빔 단품</div><p>떡볶이 컵이랑 같이 먹으면 맵단맵단 조합 완성.</p><div class="rf"><a href="#" style="color:var(--steel)">신고하기</a><button class="helpful">도움돼요 👍 <b>22</b></button></div></div>
-      </div>
+      <div class="tab-panel" id="tab-rev"><div id="mpRevHost"></div></div>
       <div class="tab-panel" id="tab-qa">
         <div class="qa-btns"><button>상품 문의</button><button>배송·반품·교환 문의</button></div>
         <div class="qa-item"><span class="qtag">배송 문의 · 답변완료</span><div class="q">Q. 냉동 상태로 해외 배송이 가능한가요?</div><div class="a">콜드체인 대응 국가에 한해 가능합니다. 체크아웃에서 배송지 입력 시 배송 가능 여부와 관세 포함 금액이 자동 확인됩니다.</div></div>
@@ -516,8 +506,8 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
       <div class="now"><span class="amt">₩3,900~</span></div>
       <div class="unit">(1줄당 3,700원~)</div>
     </div>
-    <div class="rating-row"><span class="stars">★★★★★</span><b>4.8</b><a href="#" onclick="openTab('rev');return false">리뷰 417건</a></div>
-    <div class="viewers"><span id="vCount">97</span>명이 보고 있어요</div>
+    <div class="rating-row" id="mpRate" hidden></div>
+    
     <select class="opt-select" id="optSel"><option value="" selected disabled>옵션을 선택해 주세요</option><option value="one">전주비빔 1줄 — ₩3,900</option><option value="three">전주비빔 3줄 묶음 — ₩11,100 (5%↓)</option><option value="set">[기획] 김밥 6종 세트 — ₩22,200 (5%↓)</option></select>
     <div class="opt-lines" id="optLines"></div>
     <div class="total-row"><span class="tl">구매수량 <b id="totQty">0</b>개<small>배송비 별도</small></span><span class="tv" id="total">총 0원</span></div>
@@ -560,8 +550,6 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
 
 
 <script>
-let v=parseInt(document.getElementById('vCount').textContent);
-setInterval(()=>{v=Math.max(20,v+Math.floor(Math.random()*9)-4);document.getElementById('vCount').textContent=v;},4000);
 const OPTS={"one": {"name": "전주비빔 1줄", "price": 3900}, "three": {"name": "전주비빔 3줄 묶음", "price": 11100}, "set": {"name": "[기획] 김밥 6종 세트", "price": 22200}};
 let cart={};const fmt=n=>n.toLocaleString('ko-KR');
 function render(){const box=document.getElementById('optLines');box.innerHTML='';let tq=0,tp=0;
@@ -650,5 +638,24 @@ function scan(){var as=document.querySelectorAll('a[href]'),fresh=[];
   fresh.forEach(function(x){mkBtn(x[0],x[1])})})}
 function go(){scan();try{new MutationObserver(function(){clearTimeout(go._t);go._t=setTimeout(scan,400)}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go)}else{go()}
-})();</script></body>
+})();</script><script id="mpTrustJs">(function(){try{
+var q=new URLSearchParams(location.search);
+var pid=(typeof PID!=='undefined'&&PID)?PID:(function(){
+ if(/\/album-detail/.test(location.pathname)&&q.get('uid'))return'k2g::'+q.get('uid');
+ var m=location.pathname.match(/^\/(product-[A-Za-z0-9._-]+?)(?:\.html)?$/);return m?m[1]:null})();
+if(!pid)return;
+function go(){
+ fetch('/api/reviews?product_id='+encodeURIComponent(pid)).then(function(r){return r.ok?r.json():null}).then(function(d){
+  var n=(d&&d.count)||0,a=(d&&d.avg)||0,rr=document.getElementById('mpRate'),rc=document.getElementById('mpRevCnt');
+  if(rc)rc.textContent=n?String(n):'';
+  if(rr&&n){var s='';for(var i=1;i<=5;i++)s+=(i<=Math.round(a)?'★':'☆');
+   rr.innerHTML='<span class="stars">'+s+'</span><b>'+a.toFixed(1)+'</b><a href="#" onclick="try{openTab(\'rev\')}catch(e){}return false">구매인증 리뷰 '+n+'건</a>';
+   rr.hidden=false}
+ }).catch(function(){});
+ /* 리뷰 위젯 id 는 문자열을 쪼개 쓴다 — admin_v2 는 본문에 그 id 문자열이 있으면 위젯을 주입하지 않는다 */
+ var host=document.getElementById('mpRevHost'),w=document.getElementById('mpRev'+'iews');
+ if(host&&w&&w.parentNode!==host)host.appendChild(w);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();
+}catch(e){}})();</script></body>
 </html><script id="mpFootWhite">(function(){try{var els=document.querySelectorAll("footer *,footer");for(var i=0;i<els.length;i++){var e=els[i],t=e.textContent||"";if(/사업자등록번호|통신판매업신고|맵달서울성수|MEAL ZIP/.test(t)&&t.length<420&&e.children.length<10){e.style.color="#fff";}}}catch(e){}})();</script>

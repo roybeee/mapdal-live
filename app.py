@@ -8,7 +8,7 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 import os, re, json, secrets, datetime, base64, hashlib, threading
 import urllib.request, urllib.error, urllib.parse
 from contextlib import contextmanager
-from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi import FastAPI, Request, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 
@@ -98,7 +98,8 @@ def _vbank_due() -> str:
         due += datetime.timedelta(days=1)
     return due.strftime('%Y%m%d%H%M')
 
-ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', 'mapdal-admin-2026')
+# 추측 가능한 기본값을 두지 않는다 — 미설정이면 마스터 토큰 로그인 자체가 비활성(admin_v2 가 빈 값 거부).
+ADMIN_TOKEN     = os.getenv('ADMIN_TOKEN', '')
 FREE_SHIP_OVER, SHIP_FEE = 30000, 3000
 # ── NEW/DROPS 배송·적립 특칙 ─────────────────────────────────────────────
 #   드롭 상품(mpd:: 프리픽스)은 한정수량·개별출고 특성상 금액과 무관하게
@@ -281,7 +282,8 @@ def _has_ga_cols() -> bool:
 _ORDER_EXTRA_COLS = ('customer_id', 'member_id', 'contact_phone_norm',
                      'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
                      'ga_cid', 'ga_sid', 'ga_mp_sent', 'pay_log',
-                     'client_ip', 'country', 'geo')      # 구매 국가(접속 국가) 2026-09-01 — admin_v2 가 기록
+                     'client_ip', 'country', 'geo',      # 구매 국가(접속 국가) 2026-09-01 — admin_v2 가 기록
+                     'attr', 'coupon', 'discount')       # 유입 어트리뷰션·쿠폰 2026-10 — growth.py 가 기록
 
 def _add_order_col(col: str) -> bool:
     """컬럼 1개 = 트랜잭션 1개. 반드시 이 단위를 유지한다.
@@ -590,7 +592,7 @@ def _require_buyer_email(buyer: dict, member: dict = None) -> str:
     return e
 
 @app.post('/api/orders')
-async def create_order(req: Request):
+async def create_order(req: Request, response: Response):
     body = await req.json()
     items, buyer = body.get('items') or [], body.get('buyer') or {}
     ship = body.get('shipMethod', 'standard')
@@ -683,6 +685,16 @@ async def create_order(req: Request):
         raise
     except Exception:
         pass
+    # ── 쿠폰 (2026-10 · growth) ─────────────────────────────────────────────
+    #   유효성(기간·잔여·첫 주문 여부)은 주문 트랜잭션 '밖'에서 읽기로 확정하고,
+    #   트랜잭션 안에서는 DB 접근 없는 순수 계산(coupon_amount)만 한다 — PG abort 방지.
+    #   최소금액 미달 등은 트랜잭션 안에서 400 → 재고차감까지 함께 롤백된다.
+    coupon = None
+    if str(body.get('coupon') or '').strip():
+        import growth
+        coupon = growth.coupon_check(body.get('coupon'), buyer.get('email') or '', customer_id, phone_norm,
+                                     bool(body.get('intl')))
+    discount = 0
     changed_stock_ids = []
     with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
         sub, resolved = 0, []
@@ -715,7 +727,10 @@ async def create_order(req: Request):
             ship_fee = DROP_SHIP_FEE
         else:
             ship_fee = 0 if sub >= FREE_SHIP_OVER else SHIP_FEE
-        amount = sub + ship_fee
+        if coupon:
+            import growth
+            discount = growth.coupon_amount(coupon, sub)
+        amount = sub + ship_fee - discount
         order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
         # ga_* 컬럼 존재 여부는 지연 프로브(_has_ga_cols, 1회 판정 캐시)로 확정한다.
         #   트랜잭션 내부 try/except 폴백은 PG 에서 트랜잭션 abort 를 유발하므로 금지.
@@ -751,6 +766,22 @@ async def create_order(req: Request):
     #   결제창(클릭 제스처 내 동기 XHR) 응답 지연 0. 실패해도 주문·결제에 영향 없음.
     try:
         import admin_v2 as _av; _av.order_geo_capture(req, body, order_id)
+    except Exception:
+        pass
+    # ── 유입 어트리뷰션 · 쿠폰 보류 · 주문 조회 쿠키 (growth, 실패 무해) ──
+    try:
+        import growth
+        growth.order_attr_capture(req, order_id, body)
+        if coupon and discount:
+            growth.coupon_hold(order_id, coupon['code'], discount)
+            with db() as c:
+                c.exec('UPDATE orders SET coupon=?, discount=? WHERE order_id=?',
+                       (coupon['code'], str(discount), order_id))
+    except Exception as _ge:
+        print('[growth] post-create %s: %s' % (order_id, _ge), flush=True)
+    try:
+        response.set_cookie(_OV_COOKIE, _ov_cookie_value(req, order_id), max_age=90 * 86400,
+                            httponly=True, samesite='lax', secure=req.url.scheme == 'https' or SITE_ORIGIN.startswith('https'))
     except Exception:
         pass
     name0 = resolved[0]['n'][:28]
@@ -796,7 +827,7 @@ async def create_order(req: Request):
     #   기기에 맞는 쪽을 선택한다(서버 UA 판별 결과도 함께 전달).
     inicis_mobile = _ini_mobile_params(order_id, amount, order_name, buyer, origin, pay_sel)
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
-            'sub': sub, 'shipFee': ship_fee, 'inicis': inicis,
+            'sub': sub, 'shipFee': ship_fee, 'discount': discount, 'inicis': inicis,
             'inicisMobile': inicis_mobile,
             'mobilePayUrl': 'https://mobile.inicis.com/smart/payment/',
             'isMobile': _is_mobile_ua(req)}
@@ -1546,17 +1577,74 @@ def _ini_net_cancel(net_cancel_url: str, auth_token: str):
     except Exception:
         pass   # 망취소 실패는 로깅만 (여기선 무시) — 재고/주문은 FAILED로 남음
 
+# ── 주문 조회 권한 (2026-10) ──────────────────────────────────────────────
+#   주문번호(MD-날짜-6hex)는 추측 범위가 좁다. 운송장(=수령인 일부 정보 조회 가능)은
+#   ① 주문한 브라우저(서명 쿠키 mp_ov) ② 로그인 소유 회원 에게만 전체 공개하고,
+#   그 외에는 끝 4자리만 보여준다. 존재하지 않는 주문번호 반복 조회는 IP 단위로 제한한다.
+_OV_COOKIE = 'mp_ov'
+_OV_MISS = {}
+
+def _ov_key() -> bytes:
+    return hashlib.sha256(('mp-ov:' + (os.getenv('GROWTH_SECRET') or ADMIN_TOKEN or DATABASE_URL or 'local')).encode()).digest()
+
+def _ov_sig(oid: str) -> str:
+    import hmac as _h
+    return _h.new(_ov_key(), oid.encode(), hashlib.sha256).hexdigest()[:16]
+
+def _ov_cookie_value(req: Request, oid: str) -> str:
+    """최근 주문 8건까지 'oid.sig' 를 '|' 로 이어 보관(비회원 다건 주문 대응)."""
+    cur = [x for x in (req.cookies.get(_OV_COOKIE) or '').split('|') if x and not x.startswith(oid + '.')]
+    return '|'.join(([oid + '.' + _ov_sig(oid)] + cur)[:8])
+
+def _ov_ok(req: Request, oid: str, customer_id: str = '') -> bool:
+    import hmac as _h
+    for x in (req.cookies.get(_OV_COOKIE) or '').split('|'):
+        o, _, sg = x.partition('.')
+        if o == oid and sg and _h.compare_digest(sg, _ov_sig(oid)):
+            return True
+    if customer_id:
+        try:
+            import admin_v2 as _av
+            m = _av.member_of(req)
+            return bool(m and m.get('customer_id') == customer_id)
+        except Exception:
+            return False
+    return False
+
+def _ov_miss_limited(req: Request) -> bool:
+    import time as _t
+    ip = (req.headers.get('x-forwarded-for') or '').split(',')[0].strip() or (req.client.host if req.client else '')
+    now = _t.time()
+    b = _OV_MISS.get(ip)
+    if not b or now - b[0] > 600:
+        b = [now, 0]
+    _OV_MISS[ip] = b
+    if len(_OV_MISS) > 5000:
+        _OV_MISS.clear()
+    return b[1] >= 30
+
+def _ov_miss(req: Request):
+    ip = (req.headers.get('x-forwarded-for') or '').split(',')[0].strip() or (req.client.host if req.client else '')
+    b = _OV_MISS.get(ip)
+    if b:
+        b[1] += 1
+
 @app.get('/api/orders/{order_id}')
-def get_order(order_id: str):
+def get_order(order_id: str, req: Request):
     """주문 조회. 가상계좌 컬럼이 없는 구형 DB 에서도 500 이 나지 않도록 분기한다."""
+    if _ov_miss_limited(req):
+        raise HTTPException(429, '조회가 너무 많습니다. 잠시 후 다시 시도해 주세요')
     base = 'order_id,created,status,amount,items,ship_method'
     cols = (base + ',pay_method,vbank_num,vbank_name,vbank_holder,vbank_due'
             ) if _has_vbank_cols() else base
     if _has_ship_cols():
         cols += ',fulfill,tracking,courier'
     with db() as c:
-        row = c.one('SELECT %s FROM orders WHERE order_id=?' % cols, (order_id,))
-    if not row: raise HTTPException(404, 'not found')
+        row = c.one('SELECT %s,customer_id FROM orders WHERE order_id=?' % cols, (order_id,))
+    if not row:
+        _ov_miss(req)
+        raise HTTPException(404, 'not found')
+    owner = _ov_ok(req, order_id, row.pop('customer_id', '') or '')
     try:
         row['items'] = json.loads(row['items'] or '[]')
     except Exception:
@@ -1565,37 +1653,20 @@ def get_order(order_id: str):
     row['vbank'] = {'num': row.pop('vbank_num', '') or '', 'bank': row.pop('vbank_name', '') or '',
                     'holder': row.pop('vbank_holder', '') or '', 'due': row.pop('vbank_due', '') or ''}
     row.setdefault('pay_method', '')
-    # 비회원도 주문번호만으로 배송 추적이 가능하도록 운송장 정보를 함께 내려준다.
+    # 비회원도 주문한 브라우저에서는 배송 추적이 가능하도록 운송장 정보를 함께 내려준다.
     for k in ('fulfill', 'tracking', 'courier'):
         row.setdefault(k, '')
+    if not owner and row.get('tracking'):
+        t = str(row['tracking'])
+        row['tracking'] = ('*' * max(0, len(t) - 4)) + t[-4:]
+        row['tracking_masked'] = True
     return row
 
-@app.get('/admin', response_class=HTMLResponse)
-def admin(token: str = Query('')):
-    if token != ADMIN_TOKEN: raise HTTPException(403, 'forbidden')
-    with db() as c:
-        rows = c.all('SELECT * FROM orders ORDER BY created DESC LIMIT 300')
-        paid = c.one("SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS s FROM orders WHERE status='PAID'")
-    tr = ''
-    for r in rows:
-        buyer, items = json.loads(r['buyer']), json.loads(r['items'])
-        inm = items[0]['n'][:22] + (f' 외 {len(items)-1}' if len(items) > 1 else '')
-        color = {'PAID':'#0a7d38','PENDING':'#b58900','FAILED':'#c0392b'}.get(r['status'],'#333')
-        rcpt = f"<a href='{r['receipt_url']}' target='_blank'>영수증</a>" if r['receipt_url'] else '-'
-        tr += (f"<tr><td>{r['order_id']}</td><td>{r['created'][5:16]}</td>"
-               f"<td style='color:{color};font-weight:700'>{r['status']}</td>"
-               f"<td style='text-align:right'>{r['amount']:,}</td><td>{inm}</td>"
-               f"<td>{buyer.get('name','')}</td><td>{buyer.get('phone','')}</td>"
-               f"<td>{r['ship_method']}</td><td>{rcpt}</td></tr>")
-    return f"""<!doctype html><meta charset=utf-8><title>MAPDAL 주문 관리</title>
-<style>body{{font-family:'Malgun Gothic',sans-serif;margin:30px;background:#F7F6F2}}h1{{font-size:20px}}
-.kpi{{display:inline-block;background:#141414;color:#fff;padding:10px 18px;margin:0 8px 16px 0;font-size:13px}}
-table{{border-collapse:collapse;width:100%;background:#fff;font-size:12.5px}}
-th,td{{border:1px solid #ddd;padding:8px 10px}}th{{background:#141414;color:#fff;font-size:11px}}</style>
-<h1>MAPDAL SEOUL — 주문 관리</h1>
-<span class="kpi">결제완료 {paid['n']}건</span><span class="kpi">결제액 ₩{paid['s']:,}</span>
-<span class="kpi">DB: {"PostgreSQL" if IS_PG else "SQLite(로컬)"}</span>
-<table><tr><th>주문번호</th><th>일시</th><th>상태</th><th>금액</th><th>품목</th><th>주문자</th><th>연락처</th><th>배송</th><th>영수증</th></tr>{tr}</table>"""
+@app.get('/admin')
+def admin_legacy():
+    """구 관리자(/admin?token=) 폐기 — URL 토큰은 브라우저 기록·로그에 남고, 주문자 정보를
+    이스케이프 없이 렌더링하던 화면이었다. 세션 로그인 기반 신규 관리자로 이동한다."""
+    return RedirectResponse('/admin/dashboard', status_code=301)
 
 @app.get('/healthz')
 def healthz():
@@ -1622,6 +1693,13 @@ try:
     app.include_router(hero_router)
 except Exception as _e:
     print('hero_api load skipped:', _e)
+try:
+    # growth(어트리뷰션·이벤트·쿠폰·O2O·그로스 대시보드)는 admin_v2 의 catch-all(/{spath})보다 먼저 등록한다.
+    from growth import growth_router, startup as _growth_startup
+    app.include_router(growth_router)
+    _growth_startup()
+except Exception as _e:
+    print('growth load skipped:', _e)
 try:
     from admin_v2 import admin_router
     app.include_router(admin_router)

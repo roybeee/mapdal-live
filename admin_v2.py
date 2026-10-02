@@ -1491,7 +1491,7 @@ def api_login(request: Request, body: dict = Body(...)):
     tok = (body.get('token') or '').strip()
     if tok:  # 마스터 토큰 비상 로그인
         key = 'tk:' + ip; guard(key)
-        if admin_token() and tok == admin_token():
+        if admin_token() and hmac.compare_digest(str(tok or ''), admin_token()):
             fail_clear(key)
             sid = make_session('__master__')
             audit({'name': '마스터', 'role': 'OWNER'}, '로그인', '', '마스터 토큰 / ' + ip)
@@ -2291,7 +2291,9 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
     #   품절 해제는 잔여 재고가 있을 때만 하므로 이중으로 안전하다.
     ph = VBANK_EXPIRE_PENDING_H
     try:
-        pend = rows("SELECT * FROM orders WHERE status='PENDING'") or []
+        # FAILED(결제 인증·승인 실패)도 생성 시점에 재고를 차감한 상태다 — 종전에는 정리 대상에서
+        # 빠져 실패 건마다 재고가 영구히 묶였다(2026-10). PENDING 과 같은 나이·복원 규칙을 적용한다.
+        pend = rows("SELECT * FROM orders WHERE status IN ('PENDING','FAILED')") or []
     except Exception:
         pend = []
     for r in pend:
@@ -7565,7 +7567,6 @@ max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
     <h1>%(name)s</h1>
     <div class="price-block">%(pricehtml)s</div>
     <div class="stock-line %(bcls)s">%(bmsg)s</div>
-    <div class="viewers"><span id="vCount">%(viewers)d</span>명이 보고 있어요</div>
     <div class="qty-row"><span style="font-size:13px;font-weight:600">수량</span>
       <div class="qty-ctl"><button id="qm">−</button><span id="qv">1</span><button id="qp">＋</button></div></div>
     <div class="total-row"><span class="tl">총 상품 금액</span><span class="tv" id="pTot">₩%(price_fmt)s</span></div>
@@ -7618,8 +7619,6 @@ function addItem(){var items=ldc();var ex=items.find(function(i){return i.id===P
 document.getElementById('btnCart').onclick=function(){if(SOLD)return;addItem();location.href='/cart'};
 document.getElementById('btnBuy').onclick=function(){if(SOLD)return;addItem();location.href='/checkout'};
 cbadge();
-// 뷰어 카운터
-var v=%(viewers)d;setInterval(function(){v=Math.max(12,v+Math.floor(Math.random()*9)-4);var el=document.getElementById('vCount');if(el)el.textContent=v},4000);
 // 탭·아코디언
 document.querySelectorAll('.tab-bar button').forEach(function(b){b.addEventListener('click',function(){
  document.querySelectorAll('.tab-bar button').forEach(function(x){x.classList.toggle('on',x===b)});
@@ -7791,7 +7790,7 @@ def pdp(pid: str):
         _seed = 0
     viewers = 60 + (_seed % 80)
     _img_og = img if img.startswith('http') else (('https://mapdal.kr' + img) if img.startswith('/') else OG_IMAGE_URL)
-    return HTMLResponse(_brand_apply(_PDP_HTML % {
+    return HTMLResponse(_track_apply(_brand_apply(_PDP_HTML % {
         'name': h(r.get('name')), 'namejs': json.dumps(str(r.get('name') or '')),
         'pricehtml': pricehtml, 'price_fmt': format(sale, ','), 'pricejs': sale,
         'bcls': 'no' if soldout else 'ok',
@@ -7808,7 +7807,7 @@ def pdp(pid: str):
         'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
         'shiprows': shiprows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
-        'relatedsnippet': _RELATED_WIDGET_SNIPPET}))
+        'relatedsnippet': _RELATED_WIDGET_SNIPPET}), '/p/' + pid))
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 SIGNUP_BONUS = 2000
@@ -8915,7 +8914,7 @@ def account_page(request: Request):
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     if m:
         mdata = {'ok': True}
-        return HTMLResponse(_brand_apply(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False))))
+        return HTMLResponse(_track_apply(_brand_apply(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False))), '/account'))
     _prov = [
         ('kakao',  '/auth/kakao',  'TALK · 카카오로 3초만에 시작하기',
          'background:#FEE500;color:#191919;border-color:#FEE500;font-weight:800',
@@ -8934,7 +8933,7 @@ def account_page(request: Request):
            _style if _on else 'background:#efeee9;color:#9b9a94;border-color:#e3e1db;font-weight:700',
            _label, '' if _on else ' (준비 중)')
         for _k, _href, _label, _style, _on in _prov)
-    return HTMLResponse(_brand_apply('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
+    return HTMLResponse(_track_apply(_brand_apply('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
         '</head><body><div class="box"><h1>MAPDAL<span>SEOUL</span></h1><div class="sub">SIGN IN / SIGN UP</div>'
         '<div style="background:#fff3df;border-left:4px solid #FFB000;padding:9px 11px;font-size:12px;margin-bottom:14px"><b>최초 가입 2,000P</b> · 한 고객당 한 번만 지급</div>'
         + social +
@@ -8972,7 +8971,7 @@ def account_page(request: Request):
         'try{await post("/api/member/signup",{name:document.getElementById("sn").value,gender:g,phone:document.getElementById("sph").value,birth:document.getElementById("sbi").value,email:document.getElementById("se").value,password:p,terms:document.getElementById("sterms").checked,privacy:document.getElementById("sprivacy").checked,marketing:document.getElementById("smarketing").checked});location.reload()}catch(e){show(e.message)}}'
         'let RID="";async function resetSend(){try{const r=await post("/api/member/password-reset/send",{email:document.getElementById("re").value,phone:document.getElementById("rp").value});RID=r.reset_id;document.getElementById("rverify").style.display="";show(r.dry?"테스트 모드: 관리자 알림 로그에서 인증번호를 확인하세요":"인증번호를 발송했습니다")}catch(e){show(e.message)}}'
         'async function resetVerify(){try{await post("/api/member/password-reset/verify",{reset_id:RID,code:document.getElementById("rc").value,password:document.getElementById("rnw").value});alert("비밀번호가 변경되었습니다. 다시 로그인해 주세요.");mode(0)}catch(e){show(e.message)}}'
-        '</script></body></html>'))
+        '</script></body></html>'), '/account'))
 
 @admin_router.get('/admin/api/members')
 def api_members(request: Request):
@@ -13831,8 +13830,9 @@ function idFromUrl(u){try{
   return'k2g::'+(u.searchParams.get('id')||'');
  return u.pathname.replace(/\.html$/,'').slice(1)}catch(e){return''}}
 function viewItem(P){try{
- var id=(P==='/album-detail')?idFromUrl(new URL(location.href)):P.slice(1);
- var nm=pageName(),pr=priceFromDom();
+ var isP=P.indexOf('/p/')===0;
+ var id=(P==='/album-detail')?idFromUrl(new URL(location.href)):(isP?((typeof PID!=='undefined'&&PID)?String(PID):decodeURIComponent(P.slice(3))):P.slice(1));
+ var nm=pageName(),pr=(isP&&typeof PRICE!=='undefined'&&PRICE>0)?PRICE:priceFromDom();
  var it={item_id:id,item_name:nm||id,item_category:cat(id,nm)};if(pr>0)it.price=pr;
  var pp={items:[it]};if(pr>0){pp.currency='KRW';pp.value=pr}
  ev('view_item',pp)}catch(e){}}
@@ -13873,7 +13873,7 @@ function boot(){try{
    var c3=[],cr3=cartRaw(),k;for(k=0;k<cr3.length;k++)c3.push(toIt(cr3[k]));
    if(c3.length)ev('add_payment_info',{currency:'KRW',value:val(c3),payment_type:'INIStdPay',items:c3})
   }catch(e){}},true)}
- else if(P.indexOf('/product-')===0||P==='/album-detail'){viewItem(P)}
+ else if(P.indexOf('/product-')===0||P==='/album-detail'||P.indexOf('/p/')===0){viewItem(P)}
  else if(P==='/shop'){listOnce(0)}
 }catch(e){}}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',boot)}else{boot()}
@@ -13907,8 +13907,9 @@ def _ecom_snippet():
     """GA4 전자상거래 퍼널 런타임 — GA4_ID 설정 시에만 주입(마커 mpEcomJs).
     mpAnalytics 와 마커를 분리한 이유: 관리자 편집으로 구 스니펫이 본문에
     베이크된 페이지에도 퍼널 계측이 독립적으로 주입되어야 하기 때문."""
-    ga = re.sub(r'[^A-Za-z0-9_-]', '', os.environ.get('GA4_ID', ''))
-    return _MP_ECOM_JS if ga else ''
+    # 2026-10: growth 이벤트 버스가 gtag 호출을 자사 원장(mp_events)·광고 픽셀로 함께 보내므로
+    #   GA4 미설정이어도 퍼널 이벤트를 발생시킨다(gtag 는 growth head 스크립트가 항상 정의).
+    return _MP_ECOM_JS
 
 # ── 대표 문의 이메일 단일화 (구 주소 → CONTACT_MAIL) ──────────────────
 #   자사 노출 주소를 대표 1개로 모은다. 정적 파일·DB 편집본·상품 상세가
@@ -13924,6 +13925,24 @@ def contact_mail_apply(text):
     if not text: return text
     if '@mealzip.kr' not in text and 'mapdal.seoul@gmail.com' not in text: return text
     return _LEGACY_MAIL_RE.sub(CONTACT_MAIL, text)
+
+
+def _track_apply(html, path=''):
+    """계측 전용 주입 — 사이트 공용 셸(_inject_auth)을 쓰지 않는 독립 화면(/p/ 상세·/account)에도
+    GA4·이벤트 버스·퍼널 런타임·동의 배너를 붙인다. 종전에는 이 화면들에 계측이 전혀 없어
+    관리자 등록 상품의 view_item·add_to_cart 와 회원가입/로그인 전환이 통째로 누락됐다(2026-10)."""
+    try:
+        import growth
+        html = growth.html_apply(html, path)
+        add = ''
+        if 'mpAnalytics' not in html: add += _analytics_snippet()
+        add += growth.body_snippet(html)
+        if 'mpEcomJs' not in html: add += _ecom_snippet()
+        if 'mpReviews' not in html and path.startswith('/p/'): add += _REVIEW_SNIPPET
+        i = html.lower().rfind('</body>')
+        return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
+    except Exception:
+        return html
 
 
 def _inject_auth(html, path='', uid=None):
@@ -13942,6 +13961,11 @@ def _inject_auth(html, path='', uid=None):
     html = _seo_apply(html, path, uid)
     html = _inject_og(html)
     html = _brand_apply(html)
+    try:
+        import growth
+        html = growth.html_apply(html, path)      # 가짜 사회적 증거 제거 · 어트리뷰션/동의(head) — 멱등
+    except Exception:
+        growth = None
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
@@ -13955,6 +13979,9 @@ def _inject_auth(html, path='', uid=None):
     if 'mpDropRecover' not in html: add += ENTRYRECOVER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
     if 'mpAnalytics' not in html: add += _analytics_snippet()
+    if growth is not None:
+        try: add += growth.body_snippet(html)     # 이벤트 버스(Meta·TikTok·카카오·Google Ads·자사 원장) + 동의 배너
+        except Exception: pass
     if 'mpEcomJs' not in html: add += _ecom_snippet()
     if 'mpKakaoCh' not in html: add += _kakao_channel_snippet()
     if 'mpReviews' not in html and (path == '/album-detail' or path.startswith('/product-') or 'qna-wrap' in html):
@@ -14245,6 +14272,11 @@ def order_notify_async(oid, event):
     try:
         import threading
         threading.Thread(target=_order_notify, args=(oid, event), daemon=True).start()
+    except Exception:
+        pass
+    try:
+        import growth                              # 이메일 · Meta/TikTok 서버전환 · 쿠폰 확정 · 이벤트 원장
+        growth.on_order_event_async(oid, event)
     except Exception:
         pass
 

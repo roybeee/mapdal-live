@@ -511,7 +511,7 @@ nav.main a.top.drops:hover,nav.main a.top.drops.active-page{border-bottom-color:
     <div class="price-block">
       <div class="now"><span class="pct" id="pPct"></span><span class="amt" id="pNow"></span></div>
     </div>
-    <div class="viewers"><span id="vCount">88</span>명이 보고 있어요</div>
+    
     <div class="qty-row"><span style="font-size:13px;font-weight:600">수량</span>
       <div class="qty-ctl"><button id="qm">−</button><span id="qv">1</span><button id="qp">＋</button></div></div>
     <div class="total-row"><span class="tl">총 상품 금액</span><span class="tv" id="pTot"></span></div>
@@ -620,8 +620,6 @@ if(location.protocol!=='file:'){
   fetch('k2g_texts.json').then(x=>x.json()).then(j=>{DET=j;renderDetail();}).catch(()=>{});
 }
 // 뷰어 카운터
-let v=60+(+uid%80);document.getElementById('vCount').textContent=v;
-setInterval(()=>{v=Math.max(20,v+Math.floor(Math.random()*9)-4);document.getElementById('vCount').textContent=v;},4000);
 // 탭·아코디언
 document.querySelectorAll('.tab-bar button').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.tab-bar button').forEach(x=>x.classList.toggle('on',x===b));

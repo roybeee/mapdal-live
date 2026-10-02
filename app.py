@@ -335,6 +335,9 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title='MAPDAL SEOUL API v2', lifespan=lifespan)
+# 응답 압축 — HTML(페이지당 100KB+)·다국어 사전(언어당 ~190KB)·카탈로그 JSON 전송량을 70~85% 줄인다.
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 @app.middleware('http')
 async def account_security_headers(req: Request, call_next):
@@ -361,10 +364,41 @@ _STATIC_DIR = os.path.join(BASE, 'static')
 _HOME_FILE = 'mapdal_home_mockup_v1.html'
 _DYNAMIC_CLEAN_ROUTES = {'/account'}
 
+_I18N_BOT = re.compile(r'bot|crawl|spider|slurp|facebookexternalhit|kakaotalk-scrap|preview|lighthouse', re.I)
+
 @app.middleware('http')
 async def clean_urls(request, call_next):
+    # ── 다국어 접두사 (/en · /ja · /zh) — 2026-10 i18n ─────────────────────────
+    #   접두사를 떼어 request.state.lang 에 싣고, 나머지 경로는 기존 클린 URL 규칙을 그대로 탄다.
+    #   최종 HTML 은 admin_v2._serve_html·growth(/visit)·/p/·/account 가 i18n.localize 로 번역한다.
+    request.state.lang = None
     if request.method in ('GET', 'HEAD'):
-        p = request.url.path
+        _p0 = request.url.path
+        if len(_p0) >= 3 and _p0[1:3] in ('en', 'ja', 'zh') and (len(_p0) == 3 or _p0[3] == '/'):
+            request.state.lang = _p0[1:3]
+            rest = _p0[3:] or '/home'
+            if rest == '/':
+                rest = '/home'
+            if rest.endswith('.html'):
+                q = ('?' + request.url.query) if request.url.query else ''
+                return RedirectResponse('/' + request.state.lang + ('/home' if rest[1:] in (_HOME_FILE, 'index.html') else rest[:-5]) + q, status_code=301)
+            request.scope['path'] = rest
+        elif _p0 in ('/', '/home') and not request.cookies.get('mp_lang') \
+                and not _I18N_BOT.search(request.headers.get('user-agent') or ''):
+            # 첫 방문 해외 브라우저 → 브라우저 언어 버전으로 안내(한 번 고른 언어는 mp_lang 쿠키가 기억)
+            al = (request.headers.get('accept-language') or '').lower().strip()
+            lang = al[:2] if al[:2] in ('en', 'ja', 'zh') else ''
+            if lang:
+                q = ('?' + request.url.query) if request.url.query else ''
+                return RedirectResponse('/%s/home%s' % (lang, q), status_code=302)
+    if request.method in ('GET', 'HEAD'):
+        p = request.scope['path']
+        if p == '/checkout' and request.query_params.get('dom') != '1' and (
+                (request.state.lang in ('en', 'ja', 'zh')) or
+                (request.state.lang is None and request.cookies.get('mp_lang') in ('en', 'ja', 'zh'))):
+            # 해외 언어로 보는 고객은 해외 배송 체크아웃이 기본(국내 배송은 화면 하단 링크 · ?dom=1)
+            lg = request.state.lang or request.cookies.get('mp_lang')
+            return RedirectResponse('/%s/checkout-global' % lg, status_code=302)
         if p == '/home':
             # 클린 주소 → 실제 홈 파일을 내부 매핑 (주소창은 /home 유지)
             request.scope['path'] = '/' + _HOME_FILE
@@ -1700,6 +1734,12 @@ try:
     _growth_startup()
 except Exception as _e:
     print('growth load skipped:', _e)
+try:
+    # 해외 직구 체크아웃(/checkout-global · PayPal) — 국내 이니시스 흐름과 분리
+    from globalshop import global_router
+    app.include_router(global_router)
+except Exception as _e:
+    print('globalshop load skipped:', _e)
 try:
     from admin_v2 import admin_router
     app.include_router(admin_router)

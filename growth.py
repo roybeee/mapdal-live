@@ -213,8 +213,8 @@ _RE_RATING = re.compile(r'<div class="rating-row">.*?</div>', re.S)
 _RE_REVTAB_CNT = re.compile(r'(data-tab="rev">[^<]*)<b>[\d,]+</b>')
 _RE_REVPANEL = re.compile(r'(<div class="tab-panel" id="tab-rev">).*?(\s*<div class="tab-panel" id="tab-qa">)', re.S)
 _OLD_QA = ('전 세계 배송 가능합니다. 관세·세금은 결제 시 선지불(DDP)되어 수령 시 추가 비용이 없습니다.')
-NEW_QA = ('해외 배송 가능 여부는 상품마다 다릅니다. 결제 단계에서 국가를 선택하시면 배송 가능 여부와 '
-          '배송비·관세(DDP)가 바로 계산됩니다. 냉동·냉장 K-FOOD는 현재 국내 배송만 가능합니다.')
+NEW_QA = ('해외 배송 가능 여부는 상품마다 다릅니다. 해외 배송 주문 화면에서 국가를 선택하시면 배송 가능 여부와 '
+          '배송비가 바로 계산되며, 관세는 수령 국가 기준에 따라 부과될 수 있습니다. 냉동·냉장 K-FOOD는 현재 국내 배송만 가능합니다.')
 
 _TRUST_JS = r"""<script id="mpTrustJs">(function(){try{
 var q=new URLSearchParams(location.search);
@@ -254,6 +254,10 @@ def trust_apply(html, path=''):
             html = _RE_REVPANEL.sub(r'\1<div id="mpRevHost"></div></div>\2', html, count=1)
         if _OLD_QA in html:
             html = html.replace(_OLD_QA, NEW_QA)
+        # 제거된 가짜 리뷰 패널 안에 있던 요소를 참조하던 스크립트 — null 안전화
+        if "document.getElementById('fitSw').addEventListener" in html:
+            html = html.replace("document.getElementById('fitSw').addEventListener",
+                                "(document.getElementById('fitSw')||document.createElement('i')).addEventListener")
         if ('mpRate' in html or 'mpRevHost' in html) and _TRUST_MARK not in html:
             i = html.lower().rfind('</body>')
             html = (html[:i] + _TRUST_JS + html[i:]) if i >= 0 else html + _TRUST_JS
@@ -1201,13 +1205,13 @@ _WT = {
            '맵달SEOUL 온라인 스토어에서 매장에서 본 앨범·굿즈를 그대로 만나보세요. 첫 온라인 주문에 쓰실 수 있는 10% 쿠폰을 드립니다.',
            '쿠폰 코드', '온라인 스토어 둘러보기', '유효기간 180일 · 3만원 이상 주문 시 · 최대 3만원 할인'),
     'en': ('Your MAPDAL SEOUL welcome gift', 'Thanks for visiting us in Seongsu',
-           'Keep the Seoul vibe going. Shop the albums and merch you saw in store at mapdal.kr. We ship worldwide with duties and taxes included (DDP). Here is 10% off your first online order.',
+           'Keep the Seoul vibe going. Shop the albums and merch you saw in store at mapdal.kr. We ship albums and merch to 50+ countries, tracked from Seoul. Here is 10% off your first online order.',
            'Your code', 'Shop online', 'Valid 180 days · min. order ₩30,000 · up to ₩30,000 off'),
     'ja': ('MAPDAL SEOULからのウェルカムギフト', '聖水店へのご来店ありがとうございます',
-           '店舗でご覧になったアルバムやグッズは mapdal.kr でいつでもお買い求めいただけます。関税込み（DDP）で海外発送に対応しています。初回オンライン注文で使える10%クーポンをお送りします。',
+           '店舗でご覧になったアルバムやグッズは mapdal.kr でいつでもお買い求めいただけます。ソウルから50か国以上へ追跡付きで発送します。初回オンライン注文で使える10%クーポンをお送りします。',
            'クーポンコード', 'オンラインストアへ', '有効期限180日 · ₩30,000以上のご注文 · 最大₩30,000割引'),
     'zh': ('MAPDAL SEOUL 欢迎礼', '感谢您光临圣水店',
-           '店内看到的专辑和周边，回国后也能在 mapdal.kr 购买。支持国际配送，关税已含（DDP）。送您首次线上订单 10% 优惠券。',
+           '店内看到的专辑和周边，回国后也能在 mapdal.kr 购买。从首尔发往50多个国家，全程可追踪。送您首次线上订单 10% 优惠券。',
            '优惠码', '前往线上商店', '有效期180天 · 订单满₩30,000 · 最高减₩30,000'),
 }
 
@@ -1247,10 +1251,10 @@ _LT = {
         'ko': ('[맵달SEOUL] 성수가 그리울 때', '쿠폰이 아직 남아 있어요',
                '매장에서 받으신 첫 주문 10% 쿠폰을 아직 사용하지 않으셨어요. 새로 들어온 앨범과 굿즈를 확인해 보세요.', '신상품 보기'),
         'en': ('Missing Seoul already?', 'Your 10% welcome code is still waiting',
-               'Bring a piece of Seongsu home. New albums and merch drop every week, shipped worldwide with duties included.', 'See new arrivals'),
+               'Bring a piece of Seongsu home. New albums and merch drop every week, shipped worldwide from Seoul.', 'See new arrivals'),
         'ja': ('ソウルが恋しくなったら', 'ウェルカムクーポンがまだ使えます',
-               '聖水のひとときをご自宅でも。毎週新しいアルバムとグッズが入荷しています。関税込みで海外発送対応。', '新着を見る'),
-        'zh': ('想念首尔了吗？', '您的 10% 欢迎优惠券还未使用', '把圣水的回忆带回家。每周上新专辑与周边，国际配送含税。', '查看新品')},
+               '聖水のひとときをご自宅でも。毎週新しいアルバムとグッズが入荷し、ソウルから海外へ発送しています。', '新着を見る'),
+        'zh': ('想念首尔了吗？', '您的 10% 欢迎优惠券还未使用', '把圣水的回忆带回家。每周上新专辑与周边，从首尔发往全球。', '查看新品')},
     'winback': {
         'ko': ('[맵달SEOUL] 오랜만이에요, 다시 만나요', '돌아오신 걸 환영하는 10% 쿠폰',
                '지난 주문 이후 새로운 드롭이 많이 열렸어요. 다음 주문에 쓰실 수 있는 쿠폰을 드립니다.', '쇼핑하러 가기'),
@@ -2056,7 +2060,7 @@ _VISIT_HTML = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 .wrap{max-width:480px;margin:0 auto;padding:22px 16px calc(28px + env(safe-area-inset-bottom))}
 .top{display:flex;justify-content:space-between;align-items:center}
 .logo{font-family:"Black Han Sans",sans-serif;font-size:24px;letter-spacing:.01em}.logo em{font-style:normal;color:var(--red)}
-.lang{display:flex;gap:4px}.lang button{font:600 12px "IBM Plex Mono",monospace;background:transparent;color:#bbb;border:1px solid #444;padding:6px 8px;cursor:pointer;min-width:38px;min-height:34px}
+.lang{display:flex;gap:4px}.lang button{font:600 12px "IBM Plex Mono",monospace;background:transparent;color:#bbb;border:1px solid #444;padding:6px 8px;cursor:pointer;min-width:40px;min-height:36px;white-space:nowrap}
 .lang button.on{background:#fff;color:var(--ink);border-color:#fff}
 .tick{font:500 11.5px "IBM Plex Mono",monospace;color:var(--amber);letter-spacing:.12em;margin:26px 0 8px}
 h1{font-family:"Black Han Sans",sans-serif;font-weight:400;font-size:38px;line-height:1.12;margin:0 0 12px}
@@ -2080,7 +2084,7 @@ input:focus,select:focus{outline:2px solid var(--red);outline-offset:-1px}
 </style></head><body>
 <div class="wrap">
  <div class="top"><div class="logo">MAPDAL<em>SEOUL</em></div>
-  <div class="lang" role="group" aria-label="Language"><button data-l="en">EN</button><button data-l="ja">日本</button><button data-l="zh">中文</button><button data-l="ko">한국</button></div></div>
+  <div class="lang" role="group" aria-label="Language"><button data-l="en">EN</button><button data-l="ja">JA</button><button data-l="zh">中文</button><button data-l="ko">KO</button></div></div>
  <div class="tick" data-i="tick"></div>
  <h1 data-i="h1"></h1>
  <p class="lead" data-i="lead"></p>
@@ -2113,22 +2117,22 @@ input:focus,select:focus{outline:2px solid var(--red);outline-offset:-1px}
 var QR='__QR__';
 var T={
 en:{tick:'SEONGSU FLAGSHIP · THANK YOU FOR VISITING',h1:'Take Seoul<br><b>home with you.</b>',lead:'Loved what you found in Seongsu? Keep shopping the same K-pop albums, merch and Seoul-made goods online, and get <b>10% off your first online order</b>.',
- p1:'<b>Ships worldwide</b>Duties & taxes included (DDP)',p2:'<b>Official albums</b>Counted toward the charts',p3:'<b>Drop alerts</b>New releases, first',how:'Where should we send your code?',email:'Email',email_opt:'Email (optional, for order updates)',wa:'WhatsApp number (with country code)',line:'LINE ID',wechat:'WeChat ID',ig:'Instagram @handle',
+ p1:'<b>Ships worldwide</b>Albums & merch to 50+ countries',p2:'<b>Official albums</b>Counted toward the charts',p3:'<b>Drop alerts</b>New releases, first',how:'Where should we send your code?',email:'Email',email_opt:'Email (optional, for order updates)',wa:'WhatsApp number (with country code)',line:'LINE ID',wechat:'WeChat ID',ig:'Instagram @handle',
  country:'Where are you from?',consent:'I agree to receive MAPDAL SEOUL offers and new-drop news. You can unsubscribe at any time.',submit:'Get my 10% code',
  done_h:'Your welcome code',done_p:'Use it at checkout on mapdal.kr within 180 days (min. ₩30,000, up to ₩30,000 off). Screenshot this screen to keep it.',shop:'Shop online now',store:'Explore the 4-floor store',
  addr:'MAPDAL SEOUL · 5 Seongsui-ro 16-gil, Seongdong-gu, Seoul · Open daily 11:00–21:00',privacy:'Privacy policy',e_need:'Please enter your contact.',e_mail:'Please check your email address.',e_ok:'Please tick the consent box.',e_net:'Something went wrong. Please try again.'},
 ja:{tick:'聖水フラッグシップ · ご来店ありがとうございます',h1:'ソウルを、<br><b>おうちでも。</b>',lead:'聖水で見つけたK-POPアルバムやグッズを、帰国後もオンラインで。<b>初回オンライン注文が10%オフ</b>になるクーポンをお送りします。',
- p1:'<b>海外発送</b>関税・税込み（DDP）',p2:'<b>公式アルバム</b>チャートに反映',p3:'<b>新作通知</b>いち早くお届け',how:'クーポンの受け取り方法',email:'メールアドレス',email_opt:'メールアドレス（任意・注文のご案内用）',wa:'WhatsApp番号（国番号から）',line:'LINE ID',wechat:'WeChat ID',ig:'Instagram @アカウント',
+ p1:'<b>海外発送</b>アルバム・グッズを50か国以上へ',p2:'<b>公式アルバム</b>チャートに反映',p3:'<b>新作通知</b>いち早くお届け',how:'クーポンの受け取り方法',email:'メールアドレス',email_opt:'メールアドレス（任意・注文のご案内用）',wa:'WhatsApp番号（国番号から）',line:'LINE ID',wechat:'WeChat ID',ig:'Instagram @アカウント',
  country:'お住まいの国',consent:'MAPDAL SEOULからのお得な情報・新作のお知らせを受け取ることに同意します。いつでも配信停止できます。',submit:'10%クーポンを受け取る',
  done_h:'ウェルカムクーポン',done_p:'mapdal.kr のお支払い画面で180日以内にご利用ください（₩30,000以上・最大₩30,000割引）。この画面をスクリーンショットしてください。',shop:'オンラインストアへ',store:'4フロアの店舗を見る',
  addr:'MAPDAL SEOUL · ソウル市城東区聖水二路16ギル5 · 毎日11:00–21:00',privacy:'プライバシーポリシー',e_need:'連絡先を入力してください。',e_mail:'メールアドレスをご確認ください。',e_ok:'同意にチェックしてください。',e_net:'エラーが発生しました。もう一度お試しください。'},
 zh:{tick:'圣水旗舰店 · 感谢光临',h1:'把首尔<br><b>带回家。</b>',lead:'在圣水看中的 K-POP 专辑和周边，回国后也能在线购买。送您<b>首次线上订单 10% 优惠</b>。',
- p1:'<b>全球配送</b>含关税（DDP）',p2:'<b>官方专辑</b>计入榜单',p3:'<b>新品提醒</b>第一时间通知',how:'优惠码发送到哪里？',email:'电子邮箱',email_opt:'电子邮箱（选填，用于订单通知）',wa:'WhatsApp 号码（含国家代码）',line:'LINE ID',wechat:'微信号',ig:'Instagram 账号',
+ p1:'<b>全球配送</b>专辑与周边发往50多个国家',p2:'<b>官方专辑</b>计入榜单',p3:'<b>新品提醒</b>第一时间通知',how:'优惠码发送到哪里？',email:'电子邮箱',email_opt:'电子邮箱（选填，用于订单通知）',wa:'WhatsApp 号码（含国家代码）',line:'LINE ID',wechat:'微信号',ig:'Instagram 账号',
  country:'您来自哪里？',consent:'我同意接收 MAPDAL SEOUL 的优惠和新品资讯，可随时退订。',submit:'领取 10% 优惠码',
  done_h:'您的欢迎优惠码',done_p:'请在180天内于 mapdal.kr 结账时使用（满₩30,000，最高减₩30,000）。建议截图保存。',shop:'立即线上购物',store:'了解四层旗舰店',
  addr:'MAPDAL SEOUL · 首尔城东区圣水二路16街5 · 每天 11:00–21:00',privacy:'隐私政策',e_need:'请输入联系方式。',e_mail:'请检查邮箱地址。',e_ok:'请勾选同意。',e_net:'出错了，请重试。'},
 ko:{tick:'성수 플래그십 · 방문해 주셔서 감사합니다',h1:'성수의 맵달을,<br><b>집에서도.</b>',lead:'매장에서 본 앨범·굿즈를 온라인에서 그대로. <b>첫 온라인 주문 10% 쿠폰</b>을 드려요.',
- p1:'<b>전국·해외 배송</b>해외는 관세 포함(DDP)',p2:'<b>공식 앨범</b>차트 반영',p3:'<b>드롭 알림</b>신상 가장 먼저',how:'쿠폰을 어디로 보내드릴까요?',email:'이메일',email_opt:'이메일 (선택 · 주문 안내용)',wa:'WhatsApp 번호 (국가번호 포함)',line:'LINE ID',wechat:'WeChat ID',ig:'인스타그램 @계정',
+ p1:'<b>전국·해외 배송</b>앨범·굿즈 50여 개국',p2:'<b>공식 앨범</b>차트 반영',p3:'<b>드롭 알림</b>신상 가장 먼저',how:'쿠폰을 어디로 보내드릴까요?',email:'이메일',email_opt:'이메일 (선택 · 주문 안내용)',wa:'WhatsApp 번호 (국가번호 포함)',line:'LINE ID',wechat:'WeChat ID',ig:'인스타그램 @계정',
  country:'국가',consent:'맵달SEOUL의 혜택·신상 소식 수신에 동의합니다. 언제든 수신거부할 수 있습니다.',submit:'10% 쿠폰 받기',
  done_h:'웰컴 쿠폰 코드',done_p:'mapdal.kr 결제 단계에서 180일 이내 사용 (3만원 이상 · 최대 3만원 할인). 화면을 캡처해 두세요.',shop:'온라인 스토어 바로가기',store:'4개 층 매장 둘러보기',
  addr:'맵달SEOUL · 서울 성동구 성수이로16길 5 · 매일 11:00–21:00',privacy:'개인정보처리방침',e_need:'연락처를 입력해 주세요.',e_mail:'이메일 주소를 확인해 주세요.',e_ok:'수신 동의에 체크해 주세요.',e_net:'오류가 발생했습니다. 다시 시도해 주세요.'}};
@@ -2166,6 +2170,7 @@ def html_apply(html, path=''):
     """admin_v2._inject_auth 끝단에서 호출 — 신뢰 정합화 + head 스크립트 (멱등)."""
     try:
         html = trust_apply(html, path)
+        html = copy_apply(html, path)
         if not mail_enabled() and '주문 확인 메일을 보내드렸습니다. ' in html:
             # 메일 미연동 상태에서 '메일 보냈다'는 거짓 안내를 하지 않는다.
             html = html.replace('주문 확인 메일을 보내드렸습니다. ', '')
@@ -2188,3 +2193,83 @@ def startup():
         start_scheduler()
         _ensure_flusher()
     threading.Thread(target=_go, daemon=True).start()
+
+
+# ═══════════════════════════ 다국어 사전 (브라우저 런타임용) ══════════════
+@growth_router.get('/i18n/{lang}.json')
+def i18n_dict(lang: str):
+    try:
+        import i18n
+        if lang not in i18n.LANGS:
+            raise HTTPException(404)
+        return JSONResponse(i18n.load(lang), headers={'Cache-Control': 'public, max-age=86400'})
+    except HTTPException:
+        raise
+    except Exception:
+        return JSONResponse({}, headers={'Cache-Control': 'no-cache'})
+
+
+# ═══════════════════════════ 배송 문구 정합화 (DDP 과장 제거) ═════════════
+#   종전 문구는 '전 세계 DDP·추가 결제 없음'을 약속했지만 실제로는 해외 주문이 막혀 있었다.
+#   해외 체크아웃(/checkout-global) 오픈에 맞춰 실제 정책과 일치시키고 진입 링크를 붙인다.
+_FOOD_PAGE = re.compile(r'^/(product-bowl-|product-kimbap-|product-tteokbokki)')
+_COPY_COMMON = (
+    ('<td>전 세계 배송 가능 · 관세·세금 선지불(DDP)</td>',
+     '<td>전 세계 배송 가능 · 결제 시 배송비 확정 · 관세는 수령 국가 기준</td>'),
+    ('<td>식품 수입 규제에 따라 국가별 상이 · 체크아웃 자동 확인 · 관세 선지불(DDP)</td>',
+     '<td>현재 국내 배송 전용 (냉동·냉장 식품 해외 배송 준비 중)</td>'),
+    ('<tr><th>글로벌배송 (DDP)</th><td><b>관세·세금 선지불</b> — 체크아웃에서 배송지 입력 시 관세 포함 최종 금액이 확정되며 '
+     '수령 시 추가 비용이 없습니다. 배송 가능 국가는 품목(특히 식품)에 따라 자동 확인됩니다.</td></tr>',
+     '<tr><th>글로벌배송</th><td><b>앨범·굿즈 전 세계 배송</b> — <a href="/checkout-global">해외 배송 주문</a>(PayPal·해외카드)에서 '
+     '국가를 선택하면 배송비와 예상 도착일이 확정됩니다. 관세·부가세는 수령 국가 기준에 따라 수령 시 부과될 수 있으며, '
+     '관세 선지불(DDP) 가능 국가는 결제 화면에 별도로 표시됩니다. 냉동·냉장 K-FOOD는 국내 배송 전용입니다.</td></tr>'),
+    ('해외 주문 반품 시 국제 회수 운임이 발생할 수 있으며, DDP로 선지불된 관세는 국가별 환급 규정에 따릅니다',
+     '해외 주문 반품 시 국제 회수 운임이 발생할 수 있으며, 관세·부가세 환급은 수령 국가의 규정에 따릅니다'),
+    ('일반·맵달드림 당일배송·성수 픽업·글로벌 DDP, 그리고 냉동식품 콜드체인 4단계까지.',
+     '일반·맵달드림 당일배송·성수 픽업·글로벌 배송, 그리고 냉동식품 콜드체인 4단계까지.'),
+    ('<li>Worldwide DDP shipping available</li>', '<li>Worldwide shipping · PayPal &amp; cards</li>'),
+    ('해외 배송 시 결제 단계에서 관세·세금이 선지불(DDP)로 자동 합산됩니다.',
+     '해외 배송은 해외 배송 주문 화면에서 국가별 배송비가 자동 계산되며, 관세는 수령 국가 기준에 따라 부과될 수 있습니다.'),
+    ('에서 배송지 입력 시 자동 확인됩니다. 관세·세금은 선지불(DDP)되어 수령 시 추가 비용이 없습니다.',
+     '에서 배송지 입력 시 자동 확인됩니다. 관세·부가세는 수령 국가 기준에 따라 수령 시 부과될 수 있습니다.'),
+    ('<td>관세·세금 선지불(DDP) · 식품 수입 규제에 따라 국가별 배송 가능 여부 상이 (체크아웃 자동 확인)</td>',
+     '<td>현재 국내 배송 전용 (냉동·냉장 식품 해외 배송 준비 중)</td>'),
+    ('관세·세금 선지불(DDP) — 받는 분에게 추가 청구 없음', '해외 배송 — 결제 시 배송비 확정 · 관세는 수령 국가 기준'),
+    ('배송비·관세(DDP)가 바로 계산됩니다.', '배송비가 바로 계산되며, 관세는 수령 국가 기준에 따라 부과될 수 있습니다.'),
+    ('<div class="a">가능합니다. 식품 수입 규제에 따라 배송 가능 국가가 다르며, 체크아웃에서 배송지 입력 시 자동 확인됩니다. '
+     '관세·부가세는 수령 국가 기준에 따라 수령 시 부과될 수 있습니다.</div>',
+     '<div class="a">냉동·냉장 K-FOOD는 현재 국내 배송만 가능합니다. 앨범·굿즈는 해외 배송 주문에서 전 세계로 보내드립니다.</div>'),
+)
+_BV_OLD = '<div class="bv">관세·세금 <b>선지불(DDP)</b> · 추가 결제 없음</div>'
+_BD_GOODS_OLD = '<div class="bd">전 세계 배송 가능 · 체크아웃에서 배송지 입력 시 최종 금액 자동 확정</div>'
+_BD_FOOD_OLD = '<div class="bd">콜드체인 대응 국가에 한함 · 체크아웃에서 자동 확인</div>'
+
+
+def copy_apply(html, path=''):
+    if not isinstance(html, str):
+        return html
+    try:
+        for a, b in _COPY_COMMON:
+            if a in html:
+                html = html.replace(a, b)
+        if _BV_OLD in html:
+            if _FOOD_PAGE.match(path or ''):
+                html = html.replace(_BV_OLD, '<div class="bv"><b>국내 배송 전용</b> · 해외 배송 준비 중</div>')
+            else:
+                html = html.replace(_BV_OLD, '<div class="bv"><b>전 세계 배송</b> · 결제 시 배송비 확정</div>')
+        if _BD_GOODS_OLD in html:
+            html = html.replace(_BD_GOODS_OLD, '<div class="bd">50여 개국 배송 · 해외 배송 주문에서 국가 선택 시 배송비·예상 도착일 자동 계산 · '
+                                               '관세는 수령 국가 기준에 따라 부과될 수 있음</div>')
+        if _BD_FOOD_OLD in html:
+            html = html.replace(_BD_FOOD_OLD, '<div class="bd">냉동·냉장 K-FOOD는 현재 국내 배송만 가능합니다</div>')
+        # 국내 체크아웃·장바구니: 해외 배송 주문 진입점
+        if (path in ('/checkout', '/cart')) and 'mpIntlEntry' not in html and '<div class="cart-layout">' in html:
+            bar = ('<div id="mpIntlEntry" style="display:flex;gap:10px;align-items:center;justify-content:space-between;'
+                   'flex-wrap:wrap;background:#141414;color:#fff;padding:12px 16px;margin:0 0 16px;font-size:13.5px">'
+                   '<span>🌏 <b>해외로 받으시나요?</b> 앨범·굿즈 전 세계 배송 · PayPal·해외카드 결제</span>'
+                   '<a href="/checkout-global" style="background:#E8332A;color:#fff;padding:9px 14px;text-decoration:none;'
+                   'font-weight:700;white-space:nowrap">해외 배송으로 주문하기 →</a></div>')
+            html = html.replace('<div class="cart-layout">', bar + '<div class="cart-layout">', 1)
+    except Exception:
+        pass
+    return html

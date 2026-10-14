@@ -9936,7 +9936,9 @@ def _home_drops_html():
         cards = []
         for c in picks:
             if c['status'] == 'ON_SALE':
-                st = '응모중' if set(c.get('cats') or []) & _HOME_DROPS_ENTRY_CATS else '진행중'
+                _cs = set(c.get('cats') or [])
+                st = ('응모중' if _cs & _HOME_DROPS_ENTRY_CATS
+                      else ('예약판매중' if 'PREORDER' in _cs else '진행중'))
                 cls, meta = 'live', _home_drops_fmt(c['sales_end'], '마감')
             elif c['status'] == 'UPCOMING':
                 st, cls, meta = '오픈 예정', 'soon', _home_drops_fmt(c['sales_start'], '오픈')
@@ -10242,6 +10244,7 @@ DROP_CATS = [
     ('GIFT',      '스페셜 특전', 'linear-gradient(135deg,#5E0F35,#B71F18)'),
     ('POPUP',     '팝업',        'linear-gradient(135deg,#3A3A3A,#141414)'),
     ('RELEASE',   '신보 발매',   'linear-gradient(135deg,#B71F18,#E8332A)'),
+    ('PREORDER',  '예약판매',    'linear-gradient(135deg,#1F3A93,#3E7BFA)'),   # 2026-10-14 신설 — 판매 상태 문구가 '예약판매'로 표시됨
 ]
 DROP_CAT_MAP = {c[0]: c for c in DROP_CATS}
 

@@ -2735,6 +2735,37 @@ def api_catalog_groups_merge(request: Request, body: dict = Body(...)):
     audit(a, '상품그룹병합', target, '%d개 그룹 · %d SKU 이동' % (len(ids), moved))
     return {'ok': True, 'target_id': target, 'moved': moved}
 
+@admin_router.post('/admin/api/catalog/groups/status')
+def api_catalog_groups_status(request: Request, body: dict = Body(...)):
+    """선택 그룹 일괄 판매상태 변경(2026-10-15). 단건 수정(api_catalog_group_update)과 동일 규칙:
+    그룹·SKU sale_status 동기화 + products.soldout = (상태≠ACTIVE) OR 재고 소진."""
+    a = get_actor(request); need(a, 2, '상품 일괄 판매상태 변경')
+    ids = list(dict.fromkeys(str(x) for x in (body.get('group_ids') or []) if x))
+    status = str(body.get('sale_status') or '').upper()
+    if not ids: raise HTTPException(400, '상품그룹을 선택하세요')
+    if status not in ('ACTIVE', 'PAUSED', 'HIDDEN', 'SOLD_OUT'): raise HTTPException(400, '판매상태 오류')
+    if len(ids) > 500: raise HTTPException(400, '한 번에 500개까지 처리할 수 있습니다')
+    ph = ','.join(['?'] * len(ids))
+    found = [r['id'] for r in rows('SELECT id FROM product_groups WHERE id IN (%s)' % ph, tuple(ids))]
+    if not found: raise HTTPException(404, '존재하는 그룹이 없습니다')
+    stamp, ops, skus = now_iso(), [], 0
+    fph = ','.join(['?'] * len(found))
+    ops.append(('UPDATE product_groups SET sale_status=?,updated_at=? WHERE id IN (%s)' % fph, tuple([status, stamp] + found)))
+    ops.append(('UPDATE product_variants SET sale_status=?,updated_at=? WHERE group_id IN (%s)' % fph, tuple([status, stamp] + found)))
+    for v in rows('''SELECT v.legacy_product_id,b.is_tracked,b.on_hand,b.reserved,b.external_status
+        FROM product_variants v LEFT JOIN inventory_balances b ON b.variant_id=v.id
+        WHERE v.group_id IN (%s)''' % fph, tuple(found)):
+        skus += 1
+        inventory_out = ((num(v.get('is_tracked')) and num(v.get('on_hand')) - num(v.get('reserved')) <= 0)
+                         or (not num(v.get('is_tracked')) and v.get('external_status') == 'OUT'))
+        ops.append(('UPDATE products SET soldout=? WHERE id=?',
+                    (1 if status != 'ACTIVE' or inventory_out else 0, v['legacy_product_id'])))
+    runmany(ops)
+    audit(a, '상품일괄판매상태', ','.join(found[:20]) + ('…' if len(found) > 20 else ''),
+          '%s · %d그룹 · %d SKU' % (status, len(found), skus))
+    return {'ok': True, 'status': status, 'groups': len(found), 'skus': skus,
+            'missing': [x for x in ids if x not in found]}
+
 @admin_router.post('/admin/api/catalog/group/split')
 def api_catalog_group_split(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 2, '상품그룹 분리')
@@ -4257,7 +4288,10 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
    <button class="btn" onclick="loadCatalog(1)">검색</button><button class="btn ghost" onclick="resetCatalog()">초기화</button>
    <button class="btn ghost" id="catalogCsv" onclick="location.href='/admin/api/catalog.csv'">CSV</button>
    <button class="btn red" id="pnew" onclick="location.href='/admin/products/new'">+ 상품 등록</button></div>
-   <div class="toolbar"><button class="btn sm ghost" id="mergeBtn" onclick="mergeSelectedGroups()">선택 그룹 병합</button>
+   <div class="toolbar"><label class="hint" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="gselAll" onchange="toggleAllGroups(this.checked)">전체 선택</label>
+   <button class="btn sm ghost" id="mergeBtn" onclick="mergeSelectedGroups()">선택 그룹 병합</button>
+   <button class="btn sm" id="soldoutBtn" style="background:#c0392b;color:#fff" onclick="bulkGroupStatus('SOLD_OUT')">선택 품절처리</button>
+   <button class="btn sm ghost" id="resumeBtn" onclick="bulkGroupStatus('ACTIVE')">선택 판매재개</button>
    <span class="hint">검색 예: <b>dept:kpop</b> · <b>source:k2g</b> · <b>sku:KPOP-000123</b> · <b>artist:엔하이픈</b>. 상품그룹을 누르면 SKU가 펼쳐집니다.</span></div>
    <div id="catalogList" class="loading">불러오는 중…</div>
   </div>
@@ -4748,6 +4782,12 @@ async function loadReview(page){reviewPage=page;const q=new URLSearchParams({pag
  $('#reviewList').innerHTML='<div class="loading">검토 대상을 불러오는 중…</div>';try{const d=await api('/admin/api/catalog/groups?'+q);
  $('#reviewList').innerHTML=`<div class="group-list">${d.rows.map(g=>groupCard(g,true)).join('')||'<div class="empty-state">검토할 상품이 없습니다.</div>'}</div>${pager(page,d,'loadReview')}`
  }catch(e){$('#reviewList').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function toggleAllGroups(on){document.querySelectorAll('.gsel').forEach(x=>{x.checked=on})}
+async function bulkGroupStatus(status){const ids=[...document.querySelectorAll('.gsel:checked')].map(x=>x.value);if(!ids.length)return toast('상품그룹을 선택하세요');
+ const label=status==='SOLD_OUT'?'품절처리':status==='ACTIVE'?'판매재개':status;
+ if(!confirm(`선택한 ${ids.length}개 상품그룹을 ${label}할까요?${status==='SOLD_OUT'?'\n(그룹의 모든 SKU가 품절로 표시되며 구매가 막힙니다. 판매재개로 되돌릴 수 있습니다.)':''}`))return;
+ try{const r=await api('/admin/api/catalog/groups/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_ids:ids,sale_status:status})});
+  toast(`${r.groups}개 그룹 · ${r.skus} SKU ${label} 완료`);const all=$('#gselAll');if(all)all.checked=false;loadCatalog(catalogPage||1);loadProductSummary()}catch(e){toast(e.message)}}
 async function mergeSelectedGroups(){const ids=[...document.querySelectorAll('.gsel:checked')].map(x=>x.value);if(ids.length<2)return toast('병합할 그룹을 2개 이상 선택하세요');
  if(!confirm(`선택한 ${ids.length}개 그룹을 첫 번째 그룹으로 병합할까요?\nSKU와 기존 상품 ID는 유지됩니다.`))return;
  try{await api('/admin/api/catalog/groups/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_ids:ids,target_id:ids[0]})});toast('그룹을 병합했습니다');loadCatalog(1);loadProductSummary()}catch(e){toast(e.message)}}

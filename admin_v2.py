@@ -11952,6 +11952,7 @@ def _fb_toolbar_html(mode):
             '<label class="chk"><input type="checkbox" id="mpFcall">FANCALL</label>'
             '<label class="chk"><input type="checkbox" id="mpFsign">팬싸인회</label>'
             '<label class="chk"><input type="checkbox" id="mpFlucky">럭키드로우</label>'
+            '<label class="chk"><input type="checkbox" id="mpFpre">예약판매</label>'
             '</span>'
         )
     return (
@@ -11971,7 +11972,7 @@ def _fb_toolbar_html(mode):
 # [Q4] JS — 원본 sync() 말미에서 호출되는 확장 훅. 원본 전역(F,Q,K2G,VIEW,ptr,
 #   albumEligible,renderBatch,K2G_FIRST 등)을 그대로 사용. 앨범은 VIEW 정렬/필터 후
 #   재렌더, 자체상품(col-card)은 DOM 정렬. 개수는 표시중 항목 합산.
-_FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(function(){
+_FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20261015.1 */(function(){
   var T=document.getElementById('mpTools'); if(!T) return;
   var MODE=T.dataset.mode, grid=document.getElementById('shopGrid');
   // 최초 카탈로그 순번을 별도 보존한다. 품절 플래그(r[5])가 바뀌어도
@@ -12021,6 +12022,8 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(func
     if(/럭키\s*드로우|럭드|LUCKY[\s_-]*DRAW/i.test(n)) types.push('luckydraw');
     if(/대면\s*사인회|팬\s*사인회|팬싸인회|팬싸|FAN[\s_-]*SIGN/i.test(n)) types.push('fansign');
     if(/영상\s*통화|영통|FAN[\s_-]*CALL|FANCALL/i.test(n)) types.push('fancall');
+    // 예약판매: 【예약특전】·예약판매·PRE-ORDER·선주문 — 【예약특전종료】는 제외
+    if(/예약\s*판매|예약\s*특전(?!\s*종료)|예약\s*구매|선\s*주문|PRE[\s_-]*ORDER/i.test(n)) types.push('preorder');
     return types;
   }
   function selectedTypes(){
@@ -12028,6 +12031,7 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(func
     if((document.getElementById('mpFcall')||{}).checked) selected.push('fancall');
     if((document.getElementById('mpFsign')||{}).checked) selected.push('fansign');
     if((document.getElementById('mpFlucky')||{}).checked) selected.push('luckydraw');
+    if((document.getElementById('mpFpre')||{}).checked) selected.push('preorder');
     return selected;
   }
   // 원본 VIEW(앨범 데이터셋)에 정렬/필터 적용본을 만들어 되돌려줌
@@ -12038,7 +12042,7 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20260715.3 */(func
     if(hide) v=v.filter(function(r){return !r[5];});          // r[5]=품절
     // 미선택은 전체, 복수 선택은 행사 유형 합집합(OR)
     if(selected.length) v=v.filter(function(r){
-      var types=eventTypes(r[2]);
+      var types=eventTypes(String(r[2]||'')+' '+String(r[7]||'')); // r[7]=관리자 지정 라벨
       return selected.some(function(type){return types.indexOf(type)!==-1;});
     });
     if(s==='asc')  v.sort(function(a,b){return ((a[4]||0)-(b[4]||0))||(opos(a)-opos(b));});
@@ -12170,6 +12174,16 @@ def _feedback_apply(html):
                 'VIEW=Q?K2G.filter(r=>r[2].toLowerCase().includes(Q)):K2G;',
                 'VIEW=Q?K2G.filter(r=>r[2].toLowerCase().includes(Q)):K2G;'
                 'if(window.__mpBuildView)VIEW=window.__mpBuildView(VIEW);', 1)
+        # 예약판매 카드 라벨(2026-10-15): k2gTag에 preorder 분기 + 배지 색(DROP_CATS PREORDER 계열) — 멱등
+        if 'mpPreTag' not in html:
+            html = html.replace(
+                "if(/스페셜 이벤트/.test(n))return['video','EVENT'];",
+                "/*mpPreTag*/if(/예약\\s*판매|예약\\s*특전(?!\\s*종료)|예약\\s*구매|선\\s*주문|PRE[\\s_-]*ORDER/i.test(n))"
+                "return['preorder','예약판매'];"
+                "if(/스페셜 이벤트/.test(n))return['video','EVENT'];", 1)
+            html = html.replace(
+                "luckydraw:'#B36B00',setb:'#050505'}",
+                "luckydraw:'#B36B00',preorder:'#1F3A93',setb:'#050505'}", 1)
         # JS 주입 (body 말미는 _inject_auth가 처리하나, 여기선 즉시 삽입해 순서 보장)
         if 'id="mpListToolsJs"' not in html:
             _b = html.lower().rfind('</body>')

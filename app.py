@@ -722,6 +722,13 @@ async def create_order(req: Request, response: Response):
         raise
     except Exception:
         pass
+    # 노출기간 밖(예정·종료) 상품 차단 — 관리자 미리보기·캐시된 장바구니로도 결제 불가 (fail-open 동일)
+    try:
+        import admin_v2 as _av2; _av2.product_exposure_gate(items)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     # ── 쿠폰 (2026-10 · growth) ─────────────────────────────────────────────
     #   유효성(기간·잔여·첫 주문 여부)은 주문 트랜잭션 '밖'에서 읽기로 확정하고,
     #   트랜잭션 안에서는 DB 접근 없는 순수 계산(coupon_amount)만 한다 — PG abort 방지.

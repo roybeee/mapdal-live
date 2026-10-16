@@ -1015,6 +1015,82 @@ def is_new_product(created_at, now=None):
     except Exception:
         return False
 
+# ── 상품 노출기간 (2026-10-16) — 고객 노출 시작·종료 시각 지정 ──────────────
+#   배경: 상품 등록 즉시 /p/… 페이지와 SHOP 카드가 전체 공개됨 → 발매일 맞춤 공개,
+#   기간 한정 판매(예: 팝업·사인회 굿즈)처럼 "언제부터 · 언제까지 보일지"를 지정한다.
+#   컬럼(products): show_from · show_until — 'YYYY-MM-DDTHH:MM' KST 벽시계, 빈값 = 제한 없음.
+#   판정 원칙(드롭 예약공개와 동일): 상태를 저장하지 않고 요청 시각(KST)으로 매번 계산
+#   → 스케줄러 없이 시각 도달 즉시 노출/종료. 저장값·비교축 모두 KST naive.
+#   적용 범위: SHOP 카드(_mp_shop_cards) · 상품 상세(/p/) · 관련상품 위젯 · 아티스트관 굿즈
+#   · K2G 카탈로그(JSON/인덱스) · 홈 KPOP 코너 · 사이트맵 · 결제 생성(product_exposure_gate).
+#   관리자 세션은 노출 전/후에도 /p/ 상세를 열 수 있다(상단 미리보기 띠) — 결제는 차단.
+#   60초 캐시(K2G 카탈로그·아티스트 인덱스·홈 코너)는 경계 시각에서 최대 1분 지연될 수 있다.
+_PROD_SCHED_COLS = ('show_from', 'show_until')
+
+def _prod_dt(s):
+    """'YYYY-MM-DDTHH:MM'(KST) → naive datetime, 실패 시 None."""
+    s = str(s or '').strip().replace(' ', 'T')
+    if not s: return None
+    try: return datetime.datetime.fromisoformat(s[:16])
+    except Exception: return None
+
+def _prod_sched_norm(v):
+    """입력값 정규화 — 빈값은 '' · 형식 오류는 ValueError."""
+    s = str(v or '').strip().replace(' ', 'T')[:16]
+    if not s: return ''
+    if not _prod_dt(s): raise ValueError('노출 시각 형식이 올바르지 않습니다 (예: 2026-10-20T10:00)')
+    return s
+
+def _prod_sched_sel():
+    """SELECT 절에 덧붙일 노출기간 컬럼 — 마이그레이션 전 DB 에서도 안전."""
+    pc = _state.get('pcols') or ()
+    return ''.join(', ' + c for c in _PROD_SCHED_COLS if c in pc)
+
+def product_visible(r, now=None):
+    """일반 방문자에게 노출 중인가 — show_from 도달 전·show_until 경과 후면 False."""
+    if not isinstance(r, dict): return True
+    fr, to = _prod_dt(r.get('show_from')), _prod_dt(r.get('show_until'))
+    if not fr and not to: return True
+    now = now or kst_now()
+    if fr and now < fr: return False
+    if to and now >= to: return False
+    return True
+
+def product_sched_state(r, now=None):
+    """('always'|'live'|'scheduled'|'ended', 관리자 표시 문구)."""
+    fr, to = _prod_dt((r or {}).get('show_from')), _prod_dt((r or {}).get('show_until'))
+    if not fr and not to: return 'always', '상시 노출'
+    now = now or kst_now()
+    f = lambda d: d.strftime('%m-%d %H:%M')
+    if fr and now < fr: return 'scheduled', '노출 예정 %s' % f(fr) + (' ~ %s' % f(to) if to else '')
+    if to and now >= to: return 'ended', '노출 종료 %s' % f(to)
+    return 'live', '노출 중' + (' ~ %s' % f(to) if to else '')
+
+def product_exposure_gate(items):
+    """노출기간 밖(예정·종료) 상품이 주문에 섞이면 400 — 링크 직접 접근·캐시된 장바구니 선점 방지.
+    app.py /api/orders · globalshop 이 drop_purchase_gate 와 같은 자리에서 호출. 조회 실패는 통과(fail-open)."""
+    pc = _state.get('pcols') or ()
+    if not all(c in pc for c in _PROD_SCHED_COLS): return
+    pids = {str((it or {}).get('id') or '').strip() for it in (items or []) if isinstance(it, dict)}
+    pids.discard('')
+    if not pids: return
+    cands = set()
+    for p in pids:
+        cands.add(p)
+        if '::' in p:
+            l, rgt = p.split('::', 1)
+            if l and not l.endswith('.html'): cands.add(l + '.html::' + rgt)
+    marks = ','.join(['?'] * len(cands))
+    nm = _state.get('pname') or 'id'
+    rs = rows('SELECT id, %s AS name, show_from, show_until FROM products WHERE id IN (%s)' % (nm, marks), tuple(cands))
+    now = kst_now()
+    for r in rs:
+        if not product_visible(r, now):
+            st, _ = product_sched_state(r, now)
+            raise HTTPException(400, ('아직 판매가 시작되지 않은 상품입니다 — 노출 시작 후 구매할 수 있습니다 (%s)'
+                                      if st == 'scheduled' else '판매 기간이 종료된 상품입니다 (%s)')
+                                % str(r.get('name') or r['id'])[:40])
+
 _BADGE_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 def badge_color(value):
     value = str(value or '').strip()
@@ -1366,7 +1442,7 @@ def ensure_ready():
         except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids',
-                'info_rows', 'ship_rows'):
+                'info_rows', 'ship_rows', 'show_from', 'show_until'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -2519,11 +2595,11 @@ def _catalog_variant_rows(group_ids):
     nm, pr = _state['pname'] or 'id', _state['pprice'] or 'price'
     return rows('''SELECT v.id AS variant_id,v.legacy_product_id,v.group_id,v.sku,v.option_name,
         v.source,v.sale_status,v.stock_mode,v.metadata,v.created_at,
-        p.%s AS product_name,p.%s AS price,p.list_price,p.stock,p.soldout,p.img,
+        p.%s AS product_name,p.%s AS price,p.list_price,p.stock,p.soldout,p.img%s,
         b.is_tracked,b.on_hand,b.reserved,b.incoming,b.reorder_point,b.external_status,b.updated_at AS inventory_updated
         FROM product_variants v LEFT JOIN products p ON p.id=v.legacy_product_id
         LEFT JOIN inventory_balances b ON b.variant_id=v.id
-        WHERE v.group_id IN (%s) ORDER BY v.group_id,v.sku''' % (nm, pr, ph), tuple(group_ids))
+        WHERE v.group_id IN (%s) ORDER BY v.group_id,v.sku''' % (nm, pr, _prod_sched_sel().replace(', ', ',p.'), ph), tuple(group_ids))
 
 def _catalog_variant_json(r):
     tracked = num(r.get('is_tracked')) == 1
@@ -2537,6 +2613,8 @@ def _catalog_variant_json(r):
             'reserved': num(r.get('reserved')), 'available': available, 'incoming': num(r.get('incoming')),
             'reorder_point': num(r.get('reorder_point')), 'external_status': r.get('external_status') or '',
             'image': r.get('img') or '', 'created_at': r.get('created_at') or '',
+            'show_from': str(r.get('show_from') or ''), 'show_until': str(r.get('show_until') or ''),
+            'exposure': dict(zip(('state', 'label'), product_sched_state(r))),
             'metadata': jload(r.get('metadata'), {}) or {}}
 
 @admin_router.get('/admin/api/catalog/summary')
@@ -2618,7 +2696,10 @@ def api_catalog_groups(request: Request):
                     'review_reasons': _catalog_review_reasons(g, vv), 'image': g.get('image') or '',
                     'created_at': g.get('created_at') or '', 'variant_count': len(vv), 'variants': vv,
                     'available': sum(v['available'] or 0 for v in tracked),
-                    'external_count': len([v for v in vv if not v['tracked']])})
+                    'external_count': len([v for v in vv if not v['tracked']]),
+                    # 그룹 노출 요약 — SKU 중 하나라도 예정/종료면 그 상태를 대표로 표시 (예정 > 종료 > 노출중)
+                    'exposure': next((v['exposure'] for st in ('scheduled', 'ended', 'live')
+                                      for v in vv if v.get('exposure', {}).get('state') == st), None)})
     return {'total': total, 'page': page, 'size': size, 'rows': out}
 
 @admin_router.get('/admin/api/catalog/group')
@@ -4757,10 +4838,11 @@ function summaryDrill(kind){
  setTimeout(()=>{const v=$('#pv-'+PMODE);if(v)v.scrollIntoView({behavior:'smooth',block:'start'})},80)
 }
 function reviewChips(g){return (g.review_reasons||[]).map(x=>`<span class="meta-chip warn">${esc(x)}</span>`).join('')}
+function expChip(x){if(!x||x.state==='always')return '';const c=x.state==='scheduled'?'background:#1d4ed8;color:#fff':x.state==='ended'?'background:#6b7280;color:#fff':'background:#15803d;color:#fff';return `<span class="meta-chip" style="${c}" title="고객 노출 기간(KST)">⏱ ${esc(x.label)}</span>`}
 function variantRows(g){return (g.variants||[]).map(v=>{const inv=v.tracked
  ?`<span class="inv-status ${(v.available||0)<=0?'out':(v.available||0)<=v.reorder_point?'low':'ok'}">가용 ${v.available} / 실재고 ${v.on_hand}</span>`
  :`<span class="inv-status ${v.external_status==='OUT'?'out':'ok'}">외부연동 · ${v.external_status==='OUT'?'판매불가':v.external_status==='AVAILABLE'?'판매가능':'확인필요'}</span>`;
- return `<tr><td class="mono">${esc(v.sku)}</td><td class="variant-name">${esc(v.name)}<div class="group-sub">기존 ID · ${esc(v.legacy_id)}</div></td><td class="right mono">${won(v.list_price||v.price)}</td><td>${inv}</td><td style="white-space:nowrap">${can(2)?`<button class="btn sm" onclick="editDetail('${esc(v.legacy_id)}')">상품편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" target="_blank" href="/p/${encodeURIComponent(v.legacy_id)}">보기</a>${can(2)?` <button class="btn sm ghost" style="color:#c0392b" onclick="deleteCatalogProduct('${esc(v.legacy_id)}')">삭제</button>`:''}</td></tr>`}).join('')}
+ return `<tr><td class="mono">${esc(v.sku)}</td><td class="variant-name">${esc(v.name)} ${expChip(v.exposure)}<div class="group-sub">기존 ID · ${esc(v.legacy_id)}</div></td><td class="right mono">${won(v.list_price||v.price)}</td><td>${inv}</td><td style="white-space:nowrap">${can(2)?`<button class="btn sm" onclick="editDetail('${esc(v.legacy_id)}')">상품편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" target="_blank" href="/p/${encodeURIComponent(v.legacy_id)}">보기</a>${can(2)?` <button class="btn sm ghost" style="color:#c0392b" onclick="deleteCatalogProduct('${esc(v.legacy_id)}')">삭제</button>`:''}</td></tr>`}).join('')}
 function groupCard(g,reviewOnly){const bad=g.review_state!=='READY'||g.confidence<80;const stock=g.external_count
  ?`외부연동 ${g.external_count}${g.available?' · 가용 '+g.available:''}`:`가용 ${g.available}`;
  return `<div class="group-card ${bad?'needs-review':''}" data-gid="${esc(g.id)}">
@@ -4768,7 +4850,7 @@ function groupCard(g,reviewOnly){const bad=g.review_state!=='READY'||g.confidenc
  ${reviewOnly||!can(2)?'<span></span>':`<input class="gsel" type="checkbox" value="${esc(g.id)}" onclick="event.stopPropagation()">`}
  <div><span class="dept-chip">${esc(g.department)}</span><div class="group-code">${esc(g.code)}</div></div>
  <div><div class="group-title">${esc(g.title)}</div><div class="group-sub">${esc(g.brand_artist||g.product_type)} · SKU ${g.variant_count}개 · ${esc((g.created_at||'').slice(0,10))}</div><div style="margin-top:5px">${reviewChips(g)}</div></div>
- <div class="gsource"><span class="meta-chip">${esc(srcLabel(g.source))}</span><span class="meta-chip ${g.sale_status==='ACTIVE'?'ok':'warn'}">${esc(g.sale_status)}</span></div>
+ <div class="gsource"><span class="meta-chip">${esc(srcLabel(g.source))}</span><span class="meta-chip ${g.sale_status==='ACTIVE'?'ok':'warn'}">${esc(g.sale_status)}</span>${expChip(g.exposure)}</div>
  <div class="gstock">${esc(stock)}</div>
  <div style="display:flex;align-items:center;gap:10px"><div class="quality">${g.confidence}%<div class="quality-bar"><i style="width:${g.confidence}%"></i></div></div>${can(2)?`<button class="btn sm" onclick="openCatalogGroup('${esc(g.id)}')">그룹편집</button>`:''}</div></div>
  <div class="variant-wrap"><table><tr><th>SKU</th><th>상품/옵션</th><th class="right">정가</th><th>재고상태</th><th></th></tr>${variantRows(g)||'<tr><td colspan="5" class="loading">SKU 없음</td></tr>'}</table></div></div>`}
@@ -6593,13 +6675,17 @@ def _related_admin_item(r):
             'img': img, 'price': num(r.get('price')),
             'soldout': bool(num(r.get('soldout')) or num(r.get('stock')) <= 0)}
 
-def _related_items(ids):
+def _related_items(ids, public=False):
+    """public=True 면 노출기간 밖(예정·종료) 상품을 제외한다 — 관리자 편집 화면은 전부 표시."""
     ids = _related_id_list(ids)
     if not ids: return []
     nm, pr = _state['pname'] or 'id', _state['pprice'] or 'price'
     marks = ','.join(['?'] * len(ids))
-    rs = rows('SELECT id, %s AS name, %s AS price, stock, soldout, img FROM products WHERE id IN (%s)'
-              % (nm, pr, marks), tuple(ids))
+    rs = rows('SELECT id, %s AS name, %s AS price, stock, soldout, img%s FROM products WHERE id IN (%s)'
+              % (nm, pr, _prod_sched_sel(), marks), tuple(ids))
+    if public:
+        _now = kst_now()
+        rs = [r for r in rs if product_visible(r, _now)]
     by_id = {r['id']: _related_admin_item(r) for r in rs}
     return [by_id[x] for x in ids if x in by_id]
 
@@ -6704,6 +6790,21 @@ def api_product_create(request: Request, body: dict = Body(...)):
         vals.append(clean_blocks(blocks) if blocks is not None else (body.get('detail_html') or '').strip()[:100000])
     if 'gallery' in _state['pcols']:
         cols.append('gallery'); vals.append(_clean_gallery(body.get('gallery')))
+    # (누락 보완) 등록 화면이 보내는 구매정보·배송/교환 탭이 등록 시점에 버려지던 문제 — 수정 API 와 동일 규칙으로 저장
+    for k, lim in (('info_rows', 3000), ('ship_rows', 3000)):
+        if k in _state['pcols'] and body.get(k) is not None:
+            cols.append(k); vals.append(str(body.get(k) or '').strip()[:lim])
+    # 노출기간 — 빈값은 제한 없음, 시작 ≥ 종료면 거부
+    sched = {}
+    if all(c in _state['pcols'] for c in _PROD_SCHED_COLS):
+        try:
+            sched = {c: _prod_sched_norm(body.get(c)) for c in _PROD_SCHED_COLS}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if sched['show_from'] and sched['show_until'] and sched['show_from'] >= sched['show_until']:
+            raise HTTPException(400, '노출 종료 시각은 시작 시각보다 뒤여야 합니다')
+        for c in _PROD_SCHED_COLS:
+            cols.append(c); vals.append(sched[c])
     run('INSERT INTO products(%s) VALUES(%s)' % (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals))
     if 'related_ids' in _state['pcols'] and body.get('related_ids') is not None:
         try:
@@ -6713,9 +6814,13 @@ def api_product_create(request: Request, body: dict = Body(...)):
             raise
     try: catalog_product_from_legacy(pid)
     except Exception: pass
-    audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s' % (
+    audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s%s' % (
         name, format(price, ','), (' · 할인 %d%% → 판매 ₩%s' % (dc, format(disc_price(price, dc), ','))) if dc else '',
-        stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류')))
+        stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류'),
+        (' / 노출 %s~%s' % (sched.get('show_from') or '즉시', sched.get('show_until') or '무기한')).replace('T', ' ')
+        if (sched.get('show_from') or sched.get('show_until')) else ''))
+    try: _k2g_cache_bust(); _sitemap_cache['xml'] = None
+    except Exception: pass
     try: _artist_cache_bust()   # 아티스트 굿즈 자동 매칭 즉시 반영
     except Exception: pass
     return {'ok': True, 'id': pid, 'url': '/p/' + pid}
@@ -6853,7 +6958,7 @@ def api_product_detail_get(request: Request):
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
     for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids', 'list_price',
-              'info_rows', 'ship_rows'):
+              'info_rows', 'ship_rows', 'show_from', 'show_until'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -6885,6 +6990,8 @@ def api_product_detail_get(request: Request):
         'gallery': r.get('gallery') or '',
         'categories': [{'value': k, 'label': l} for k, l in PRODUCT_CATEGORIES],
         'url': '/p/' + r['id'],
+        'show_from': str(r.get('show_from') or ''), 'show_until': str(r.get('show_until') or ''),
+        'exposure': dict(zip(('state', 'label'), product_sched_state(r))),
     }
 
 @admin_router.post('/admin/api/products/detail/update')
@@ -6935,6 +7042,20 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         sets.append('stock=?'); args.append(s)
         sets.append('soldout=?'); args.append(1 if s == 0 else 0)
         log.append('stock')
+    # 노출기간 — 두 값 중 하나라도 오면 둘 다 재검증(시작<종료). 비우면 제한 해제.
+    if any(c in body for c in _PROD_SCHED_COLS) and all(c in _state['pcols'] for c in _PROD_SCHED_COLS):
+        cur = one('SELECT show_from, show_until FROM products WHERE id=?', (pid,)) or {}
+        try:
+            fr = _prod_sched_norm(body['show_from']) if 'show_from' in body else str(cur.get('show_from') or '')
+            to = _prod_sched_norm(body['show_until']) if 'show_until' in body else str(cur.get('show_until') or '')
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if fr and to and fr >= to: raise HTTPException(400, '노출 종료 시각은 시작 시각보다 뒤여야 합니다')
+        if fr != str(cur.get('show_from') or '') or to != str(cur.get('show_until') or ''):
+            sets += ['show_from=?', 'show_until=?']; args += [fr, to]
+            log.append(('노출 %s~%s' % (fr or '즉시', to or '무기한')).replace('T', ' '))
+            try: _sitemap_cache['xml'] = None
+            except Exception: pass
     related_changed = 'related_ids' in body and 'related_ids' in _state['pcols']
     if not sets and not priced and not related_changed: raise HTTPException(400, '변경할 값 없음')
     if sets:
@@ -7077,6 +7198,18 @@ h2{font-size:19px;margin-bottom:18px}
  <div class="f"><label>배송/교환 탭</label>
   <textarea id="fship" rows="5" placeholder="한 줄에 하나씩 · 형식: 제목|내용&#10;예)&#10;국내배송|3,000원 (30,000원 이상 무료)&#10;교환/반품|미개봉·미사용에 한해 수령 7일 이내"></textarea>
   <span style="font-size:12px;color:#888">비워두면 기본 배송 안내가 표시됩니다. 최대 12행.</span></div>
+</div>
+<div class="card"><h3>노출 기간 <span style="font-weight:400;color:#aaa">— 고객에게 보이는 시간</span></h3>
+ <div class="f" style="margin-bottom:10px">
+  <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px;color:var(--black)"><input type="radio" name="fexp" value="now" checked onchange="expUI()"> <b>즉시 노출</b> <span style="color:#888;font-weight:400">저장 즉시 SHOP·상세페이지에 공개</span></label>
+  <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px;color:var(--black);margin-top:6px"><input type="radio" name="fexp" value="range" onchange="expUI()"> <b>기간 지정</b> <span style="color:#888;font-weight:400">시작·종료 시각을 정해 자동 공개/종료</span></label>
+ </div>
+ <div id="expBox" class="row2" style="display:none">
+  <div class="f"><label>노출 시작 <span style="font-weight:400;color:#aaa">— 비우면 즉시</span></label><input type="datetime-local" id="fsf" step="60" style="width:100%;font:inherit;font-size:14px;padding:10px 12px;border:1px solid #ccc;background:#fff"></div>
+  <div class="f"><label>노출 종료 <span style="font-weight:400;color:#aaa">— 비우면 무기한</span></label><input type="datetime-local" id="fsu" step="60" style="width:100%;font:inherit;font-size:14px;padding:10px 12px;border:1px solid #ccc;background:#fff"></div>
+ </div>
+ <div class="hint">한국시간(KST) 기준 · 시각 도달 시 자동으로 공개되고 종료 시각이 지나면 SHOP·검색·관련상품에서 사라집니다. 공개 전·종료 후에는 관리자만 상품 페이지를 열어 확인할 수 있고, 결제는 노출 기간 안에서만 가능합니다. 재고·품절과는 별개로 동작합니다.</div>
+ <div id="expStat" class="hint" style="margin-top:6px;font-weight:700;color:var(--black)"></div>
 </div>
 <div class="card"><h3>대표 이미지</h3>
  <div id="fzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
@@ -7225,28 +7358,42 @@ async function init(){
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
   const v=$('#viewBtn');v.href=d.url;v.style.display='';
-  $('#stat').textContent=d.soldout?'상태: 품절':'상태: 판매중';
+  $('#stat').textContent=(d.soldout?'상태: 품절':'상태: 판매중')+(d.exposure&&d.exposure.state!=='always'?' · '+d.exposure.label:'');
+  expLoad(d.show_from,d.show_until,d.exposure);
   if(new URLSearchParams(location.search).get('created')==='1'){toast('등록 완료! 상세 내용을 이어서 편집할 수 있습니다.');history.replaceState(null,'','/admin/products/edit?id='+encodeURIComponent(PAGE.id));}
  }catch(e){if(e.message!=='세션 만료'){alert('상품을 불러올 수 없습니다: '+e.message);location.href='/admin/dashboard';}}
 }
+/* ── 노출 기간 (예약 공개 · 종료) ─────────────────────────────── */
+function expMode(){const r=document.querySelector('input[name=fexp]:checked');return r?r.value:'now'}
+function expVals(){if(expMode()!=='range')return {show_from:'',show_until:''};return {show_from:($('#fsf').value||'').slice(0,16),show_until:($('#fsu').value||'').slice(0,16)}}
+function expLabel(v){const f=s=>s?s.replace('T',' '):'';if(!v.show_from&&!v.show_until)return '상시 노출';
+ const now=new Date(),pad=n=>String(n).padStart(2,'0'),cur=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(now.getDate())+'T'+pad(now.getHours())+':'+pad(now.getMinutes());
+ if(v.show_from&&cur<v.show_from)return '노출 예정 · '+f(v.show_from)+(v.show_until?' ~ '+f(v.show_until):'')+' 에 자동 공개';
+ if(v.show_until&&cur>=v.show_until)return '노출 종료 · '+f(v.show_until)+' 이후 고객에게 보이지 않음';
+ return '노출 중'+(v.show_until?' · '+f(v.show_until)+' 까지':'')}
+function expUI(){const on=expMode()==='range';$('#expBox').style.display=on?'':'none';$('#expStat').textContent=on?expLabel(expVals()):'';}
+function expLoad(sf,su,ex){const on=!!(sf||su);document.querySelector('input[name=fexp][value='+(on?'range':'now')+']').checked=true;$('#fsf').value=sf||'';$('#fsu').value=su||'';expUI();}
+document.addEventListener('change',e=>{if(e.target&&(e.target.id==='fsf'||e.target.id==='fsu'))expUI()});
 async function save(){
  const name=$('#fn').value.trim(),cat=$('#fc').value;
  if(!name)return toast('상품명을 입력하세요');
  if(!cat)return toast('카테고리를 선택하세요');
  const pr=fpCalc();
  if(pr.dc>0&&pr.base<=0)return toast('할인율을 적용하려면 먼저 정가를 입력하세요');
+ const ex=expVals();
+ if(ex.show_from&&ex.show_until&&ex.show_from>=ex.show_until)return toast('노출 종료 시각은 시작 시각보다 뒤여야 합니다');
  const btn=$('#saveBtn');btn.disabled=true;
  try{
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
+     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),...ex})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id)})});
-  toast('저장되었습니다');
+    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),...ex})});
+  toast('저장되었습니다');expUI();
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
 }
@@ -7458,7 +7605,7 @@ def api_public_related(request: Request):
             % (nm, pr), (pid,))
     if not r:
         return {'rows': []}
-    related = _related_items(r.get('related_ids'))
+    related = _related_items(r.get('related_ids'), public=True)
     if not related:
         return {'rows': []}
     return {'rows': [_related_public_item(_related_admin_item(r))] +
@@ -7715,12 +7862,25 @@ def pdp(pid: str, request: Request):
     # (버그 수정) info_rows·ship_rows 가 SELECT 목록에서 빠져 있어 관리자가 저장한
     # 상품별 구매정보·배송/교환 커스텀 행이 상세페이지에 전혀 반영되지 않았다.
     for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'list_price',
-              'info_rows', 'ship_rows', 'badge', 'badge_color', 'discount_pct'):
+              'info_rows', 'ship_rows', 'badge', 'badge_color', 'discount_pct', 'show_from', 'show_until'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r:
         return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center"><h2>상품을 찾을 수 없습니다</h2><a href="/shop">SHOP으로</a>', status_code=404)
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+    # 노출기간 밖 — 관리자 세션만 열람(상단 미리보기 띠), 일반 방문자는 안내 404 (검색엔진 색인 방지)
+    _exp_state, _exp_label = product_sched_state(r)
+    _exp_banner = ''
+    if _exp_state in ('scheduled', 'ended'):
+        if not _actor_soft(request):
+            _msg = ('아직 공개되지 않은 상품입니다' if _exp_state == 'scheduled' else '판매가 종료된 상품입니다')
+            return HTMLResponse('<meta charset=utf-8><meta name="robots" content="noindex"><body style="font-family:sans-serif;padding:60px;text-align:center">'
+                                '<h2>%s</h2><p style="color:#777">%s</p><a href="/shop">SHOP으로</a>'
+                                % (_msg, '노출 시작 시각에 자동으로 공개됩니다.' if _exp_state == 'scheduled' else '다른 상품을 둘러보세요.'),
+                                status_code=404)
+        _exp_banner = ('<div style="position:sticky;top:0;z-index:9999;background:#1d4ed8;color:#fff;font:700 13px/1.4 sans-serif;'
+                       'padding:10px 16px;text-align:center">관리자 미리보기 — %s · 일반 고객에게는 보이지 않으며 결제가 차단됩니다</div>'
+                       % h(_exp_label))
     soldout = num(r.get('soldout')) or num(r.get('stock')) <= 0
     img = (r.get('img') or '').strip()
     # 카테고리 칩 → 해당 목록으로 이동 (앨범은 KPOP(음반) 전용관 직행)
@@ -7864,7 +8024,7 @@ def pdp(pid: str, request: Request):
         'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
         'shiprows': shiprows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
-        'relatedsnippet': _RELATED_WIDGET_SNIPPET}), '/p/' + pid), request)
+        'relatedsnippet': _RELATED_WIDGET_SNIPPET}), '/p/' + pid).replace('</head><body>', '</head><body>' + _exp_banner, 1), request)
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 SIGNUP_BONUS = 2000
@@ -10053,11 +10213,12 @@ def _home_kpop_html():
         ensure_ready()
         if not _state['pcols'] or not _state['pname'] or not _state['pprice']:
             return ''
-        rs = rows("SELECT id, %s AS name, %s AS price, img, soldout, created_at "
+        rs = rows("SELECT id, %s AS name, %s AS price, img, soldout, created_at%s "
                   "FROM products WHERE id LIKE ? AND COALESCE(soldout,0)=0 "
-                  "ORDER BY COALESCE(created_at,'') DESC, id DESC LIMIT 16"
-                  % (_state['pname'], _state['pprice']), ('k2g::%',))
-        rs = [r for r in rs if num(r.get('price')) > 0][:8]
+                  "ORDER BY COALESCE(created_at,'') DESC, id DESC LIMIT 24"
+                  % (_state['pname'], _state['pprice'], _prod_sched_sel()), ('k2g::%',))
+        _now = kst_now()
+        rs = [r for r in rs if num(r.get('price')) > 0 and product_visible(r, _now)][:8]
         if not rs:
             _HOME_KPOP_CACHE.update(t=time.time(), body='')
             return ''
@@ -11572,7 +11733,10 @@ def _mp_shop_cards():
         for c in ('img', 'category', 'badge', 'badge_color', 'created_at'):
             if c in _state['pcols']:
                 sel += ', ' + c
+        sel += _prod_sched_sel()
         rs = rows('SELECT %s FROM products WHERE id LIKE ? ORDER BY id' % sel, ('mp::%',))
+        _now = kst_now()
+        rs = [r for r in rs if product_visible(r, _now)]   # 노출기간 밖(예정·종료) 상품은 카드 생성 제외
     except Exception:
         return ''
     if not rs:
@@ -11815,11 +11979,13 @@ def _k2g_catalog_json():
     ensure_ready()
     if not _state['pcols'] or not _state['pname'] or not _state['pprice']:
         return None
-    rs = rows("SELECT id, %s AS name, %s AS price, list_price, img, soldout, created_at, badge, badge_color FROM products "
+    rs = rows("SELECT id, %s AS name, %s AS price, list_price, img, soldout, created_at, badge, badge_color%s FROM products "
               "WHERE id LIKE ? ORDER BY COALESCE(sort_order, 999999999), id"
-              % (_state['pname'], _state['pprice']), ('k2g::%',))
+              % (_state['pname'], _state['pprice'], _prod_sched_sel()), ('k2g::%',))
     if not rs:
         return '[]' if _k2g_removed_set() else None   # 전부 삭제한 상태면 빈 카탈로그, 미백필이면 정적 폴백
+    _now = kst_now()
+    rs = [r for r in rs if product_visible(r, _now)]   # 노출기간 밖 앨범 제외 (60초 캐시 — 경계에서 ≤1분 지연)
     out = []
     for r in rs:
         sale, was = num(r.get('price')), num(r.get('list_price'))
@@ -13710,10 +13876,11 @@ def _sitemap_xml():
         pass
     try:
         ensure_ready()
-        for r in rows("SELECT id FROM products WHERE id LIKE ? ORDER BY id", ('mp::%',)):
-            locs.append(SITE_ORIGIN + '/p/' + str(r['id']))
-        for r in rows("SELECT id FROM products WHERE id LIKE ? ORDER BY COALESCE(sort_order,999999999), id", ('k2g::%',)):
-            locs.append(SITE_ORIGIN + '/album-detail?uid=' + str(r['id'])[5:])
+        _ss, _now = _prod_sched_sel(), kst_now()
+        for r in rows("SELECT id%s FROM products WHERE id LIKE ? ORDER BY id" % _ss, ('mp::%',)):
+            if product_visible(r, _now): locs.append(SITE_ORIGIN + '/p/' + str(r['id']))
+        for r in rows("SELECT id%s FROM products WHERE id LIKE ? ORDER BY COALESCE(sort_order,999999999), id" % _ss, ('k2g::%',)):
+            if product_visible(r, _now): locs.append(SITE_ORIGIN + '/album-detail?uid=' + str(r['id'])[5:])
     except Exception:
         pass                                          # DB 미준비 시 페이지만이라도 제공 (fail-open)
     try:
@@ -15434,9 +15601,11 @@ def _artist_catalog_index():
     try: ensure_ready()
     except Exception: pass
     nm, pr = _state.get('pname') or 'name', _state.get('pprice') or 'price'
-    cols = 'id, %s AS name, %s AS price, img, soldout, list_price, sort_order, created_at' % (nm, pr)
+    cols = 'id, %s AS name, %s AS price, img, soldout, list_price, sort_order, created_at%s' % (nm, pr, _prod_sched_sel())
     try:
         rs = rows('SELECT ' + cols + ' FROM products WHERE id LIKE ?', ('k2g::%',))
+        _now = kst_now()
+        rs = [r for r in rs if product_visible(r, _now)]
     except Exception:
         rs = []
     idx, fails = {}, 0
@@ -15790,13 +15959,15 @@ def _artist_goods_auto(art_row, exclude_ids):
         return []
     nm, pr = _state.get('pname') or 'name', _state.get('pprice') or 'price'
     try:
-        rs = rows('SELECT id, %s AS name, %s AS price, img, soldout, stock, list_price, created_at '
-                  'FROM products WHERE id LIKE ?' % (nm, pr), ('mp::%',))
+        rs = rows('SELECT id, %s AS name, %s AS price, img, soldout, stock, list_price, created_at%s '
+                  'FROM products WHERE id LIKE ?' % (nm, pr, _prod_sched_sel()), ('mp::%',))
     except Exception:
         return []
     out = []
+    _now = kst_now()
     for r in rs:
         if str(r['id']) in exclude_ids: continue
+        if not product_visible(r, _now): continue
         name = str(r.get('name') or '')
         hit = any((a in name) if kind == 'sub' else bool(a.search(name)) for kind, a in pats)
         if not hit: continue

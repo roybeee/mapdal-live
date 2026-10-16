@@ -415,6 +415,7 @@ async def api_intl_order(req: Request, response: Response):
             customer_id = ''
     try:
         _av().drop_purchase_gate(items)
+        _av().product_exposure_gate(items)
     except HTTPException:
         raise
     except Exception:

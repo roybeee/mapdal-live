@@ -1301,11 +1301,29 @@ def _prod_tabs_load(pid):
     r = one('SELECT tabs FROM products WHERE id=?', (pid,))
     return _prod_tabs_norm((r or {}).get('tabs'))
 
+_TAB_IMG_LINE_RE = re.compile(r'^https?://\S+?\.(?:jpe?g|png|webp|gif|avif)(?:\?\S*)?$', re.I)
+_TAB_IMG_DIRECTIVE_RE = re.compile(r'^\[(?:이미지|img|image)\]\s*(https?://\S+)$', re.I)
+
 def _prod_tab_body_html(body):
-    """줄글 → 안전한 HTML (이스케이프 · 줄바꿈 유지 · URL 자동 링크)."""
-    e = (str(body or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
-    e = re.sub(r'(https?://[^\s<]+)', r'<a href="\1" target="_blank" rel="noopener">\1</a>', e)
-    return '<div class="mpt-body">%s</div>' % e.replace('\n', '<br>')
+    """줄글 → 안전한 HTML. 줄바꿈 유지 · URL 자동 링크 · 이미지 주소만 있는 줄(또는 '[이미지] URL')은 그림으로.
+    드래그&드롭 업로드는 편집기에서 '[이미지] https://…' 한 줄을 끼워 넣는다."""
+    def esc(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+    out, buf = [], []
+    def flush():
+        if not buf: return
+        e = esc('\n'.join(buf))
+        e = re.sub(r'(https?://[^\s<]+)', r'<a href="\1" target="_blank" rel="noopener">\1</a>', e)
+        out.append('<p>%s</p>' % e.replace('\n', '<br>')); buf.clear()
+    for line in str(body or '').replace('\r\n', '\n').split('\n'):
+        s = line.strip()
+        m = _TAB_IMG_DIRECTIVE_RE.match(s)
+        u = (m.group(1) if m else (s if _TAB_IMG_LINE_RE.match(s) else ''))
+        if u and _safe_url(u):
+            flush(); out.append('<figure><img src="%s" alt="" loading="lazy"></figure>' % esc(_safe_url(u)))
+        else:
+            buf.append(line.rstrip())
+    flush()
+    return '<div class="mpt-body detail">%s</div>' % ''.join(out)
 
 def hex_or_empty(value):
     """썸네일 배경 등 선택적 색상 — #RRGGBB 만 허용, 아니면 ''(기본 그라데이션)."""
@@ -5516,7 +5534,7 @@ async function saveTicker(){try{
 
 /* ── NEW/DROPS 이벤트 허브 관리 ─────────────────────────────── */
 /* 대시보드 공용 이미지 업로드 헬퍼 — 상품 편집 폼과 동일 구현 (배너 탭 업로드도 이 함수를 사용) */
-function shrinkImage(file,maxW=1600,quality=0.9,maxH=12000){
+function shrinkImage(file,maxW=2400,quality=0.92,maxH=16000){
  /* 폭 기준 축소 — 종전엔 긴 변 기준 1600px 이라 세로로 긴 상세 이미지(예 1000×6000)가 267px 폭으로 뭉개졌다.
     이제 폭 1600px·높이 12000px 상한만 두고 확대는 하지 않는다. PNG 투명도는 JPEG 변환 시 사라지므로 PNG 는 PNG 유지. */
  return new Promise((resolve)=>{
@@ -5524,7 +5542,8 @@ function shrinkImage(file,maxW=1600,quality=0.9,maxH=12000){
   const img=new Image();const url=URL.createObjectURL(file);
   img.onload=()=>{URL.revokeObjectURL(url);
    let{width:w,height:h}=img;
-   if(w<=maxW&&h<=maxH&&file.size<1500*1024){resolve(file);return;}
+   /* 원본 화질 유지 — 서버 상한(8MB) 안이고 폭이 maxW 이하면 재인코딩 없이 원본 그대로 올린다 */
+   if(file.size<=7.5*1024*1024&&w<=maxW&&h<=maxH){resolve(file);return;}
    const s=Math.min(1,maxW/w,maxH/h);const cw=Math.round(w*s),ch=Math.round(h*s);
    if(s>=1&&file.type==='image/png'){resolve(file);return;}
    const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
@@ -5814,6 +5833,23 @@ async function drWinXlsx(inp){var f=inp.files&&inp.files[0];inp.value='';if(!f)r
   else ta.value=cur+'\n'+lines.join('\n');
   toast('엑셀 '+lines.length+'명 반영 — [저장]을 눌러야 사이트에 게시됩니다')
  }catch(e){toast('엑셀 처리 실패: '+(e.message||e))}}
+/* ── 추가 탭(제목+내용) + 내용 칸 이미지 드래그&드롭/붙여넣기 업로드 ── */
+function drXTabCard(t){t=t||{};return `<div class="drxtab" style="border:1px solid #ddd;background:#fafaf7;padding:9px;margin-bottom:8px">
+ <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input class="dx_title" maxlength="30" placeholder="탭 제목 * — 예) 굿즈 안내" style="flex:1;min-width:160px" value="${esc(t.title||'')}">
+  <button class="btn sm ghost" type="button" onclick="drXTabMove(this,-1)">↑</button><button class="btn sm ghost" type="button" onclick="drXTabMove(this,1)">↓</button><button class="btn sm ghost" type="button" style="color:var(--bad)" onclick="this.closest('.drxtab').remove()">탭 삭제</button></div>
+ <textarea class="dx_body mp-imgdrop" rows="7" placeholder="탭 내용 * — 이미지를 여기에 드래그&드롭하면 업로드되어 삽입됩니다" style="width:100%;margin-top:6px;font-size:13px;line-height:1.6">${esc(t.body||'')}</textarea></div>`}
+function drXTabMove(btn,dir){const c=btn.closest('.drxtab');if(!c)return;const p=c.parentNode;if(dir<0){if(c.previousElementSibling)p.insertBefore(c,c.previousElementSibling)}else{if(c.nextElementSibling)p.insertBefore(c.nextElementSibling,c)}}
+function drXTabAdd(){if(document.querySelectorAll('#dr_xtabs .drxtab').length>=6)return toast('추가 탭은 최대 6개입니다');$('#dr_xtabs').insertAdjacentHTML('beforeend',drXTabCard());$('#dr_xtabs').lastElementChild.querySelector('.dx_title').focus()}
+function drXTabsCollect(){return [...document.querySelectorAll('#dr_xtabs .drxtab')].map(c=>({title:c.querySelector('.dx_title').value.trim(),body:c.querySelector('.dx_body').value.trim()})).filter(x=>x.title&&x.body)}
+function mpInsertAtCursor(ta,text){const s=ta.selectionStart??ta.value.length,e=ta.selectionEnd??s,v=ta.value;const pre=v.slice(0,s),post=v.slice(e);
+ const ins=(pre&&!pre.endsWith('\n')?'\n':'')+text+(post&&!post.startsWith('\n')?'\n':'');ta.value=pre+ins+post;const p=(pre+ins).length;ta.setSelectionRange(p,p);ta.dispatchEvent(new Event('input',{bubbles:true}))}
+async function mpImgDropHandle(ta,files){files=[...(files||[])].filter(f=>/^image\//.test(f.type));if(!files.length)return;ta.classList.add('busy');
+ for(const f of files){try{toast('이미지 업로드 중…');const u=await uploadFile(f);mpInsertAtCursor(ta,'[이미지] '+u)}catch(e){if(e.message!=='세션 만료')toast('업로드 실패: '+e.message)}}
+ ta.classList.remove('busy');toast('이미지 '+files.length+'장 삽입 — 저장을 눌러야 반영됩니다')}
+document.addEventListener('dragover',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(ta){e.preventDefault();ta.style.outline='2px dashed #E8332A'}});
+document.addEventListener('dragleave',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(ta)ta.style.outline=''});
+document.addEventListener('drop',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(!ta)return;e.preventDefault();ta.style.outline='';mpImgDropHandle(ta,e.dataTransfer.files)});
+document.addEventListener('paste',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(!ta||!e.clipboardData)return;const fs=[...e.clipboardData.files||[]].filter(f=>/^image\//.test(f.type));if(fs.length){e.preventDefault();mpImgDropHandle(ta,fs)}});
 const DROPT_KINDS=[['album','앨범'],['card','포토카드'],['ticket','응모권'],['gift','특전'],['etc','기타']];
 function drOptItem(it){it=it||{};
  return `<div style="display:flex;gap:6px;margin-bottom:5px">
@@ -5932,8 +5968,10 @@ const _pub=r?(r._pub||(r.on===false?'off':'now')):'off';   /* 새 이벤트 기�
  <button class="btn sm ghost" type="button" onclick="drOptAdd()">+ 옵션 추가</button>
  <div class="hint" style="margin-top:5px">가격을 입력한 옵션은 사이트에서 <b>수량 선택 카드</b>(메이크스타형)로 표시되고, 저장하면 구매용 상품이 자동 생성·연동됩니다. 재고를 비우면 무제한 판매이며, <b>저장할 때마다 입력한 재고 수치로 재설정</b>됩니다. 가격 없이 이름만 넣으면 예전처럼 안내 목록으로만 표시됩니다. 구매형 옵션이 하나라도 있으면 [구매 링크] 버튼 대신 옵션 카드가 노출됩니다.</div></span>
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
- <b>상세 콘텐츠</b><span><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지·영상을 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_htmlvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_html')"><input id="dr_htmlvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_html','dr_htmlvurl')">링크로 영상 삽입</button></div><div class="hint" style="margin-top:4px;font-size:11px">영상 파일은 mp4·webm·mov, 최대 50MB (10~30초 클립 권장). 유튜브·비메오 링크는 16:9 반응형 플레이어로, 그 밖의 mp4 주소는 재생 컨트롤이 있는 플레이어로 삽입됩니다.</div></span>
- <b>특전 콘텐츠</b><span><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOPTOGETHER X 맵달SEOUL 특전 섹션 HTML — 이미지·영상을 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_benefitvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_benefit')"><input id="dr_benefitvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_benefit','dr_benefitvurl')">링크로 영상 삽입</button></div></span>
+ <b>상세 콘텐츠</b><span><div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="hint" style="display:inline;white-space:nowrap">탭 이름</span><input id="dr_tab_info" maxlength="30" value="${esc(v.tab_info_title||'')}" placeholder="이벤트 안내" style="flex:0 0 240px"></div><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지·영상을 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_htmlvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_html')"><input id="dr_htmlvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_html','dr_htmlvurl')">링크로 영상 삽입</button></div><div class="hint" style="margin-top:4px;font-size:11px">영상 파일은 mp4·webm·mov, 최대 50MB (10~30초 클립 권장). 유튜브·비메오 링크는 16:9 반응형 플레이어로, 그 밖의 mp4 주소는 재생 컨트롤이 있는 플레이어로 삽입됩니다.</div></span>
+ <b>특전 콘텐츠</b><span><div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="hint" style="display:inline;white-space:nowrap">탭 이름</span><input id="dr_tab_benefit" maxlength="40" value="${esc(v.tab_benefit_title||'')}" placeholder="KPOPTOGETHER X 맵달SEOUL 특전" style="flex:0 0 300px"></div><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOPTOGETHER X 맵달SEOUL 특전 섹션 HTML — 이미지·영상을 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_benefitvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_benefit')"><input id="dr_benefitvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_benefit','dr_benefitvurl')">링크로 영상 삽입</button></div></span>
+ <b>추가 탭</b><span><div id="dr_xtabs">${(v.extra_tabs||[]).map(drXTabCard).join('')}</div><button class="btn sm ghost" type="button" onclick="drXTabAdd()">+ 탭 추가</button>
+ <div class="hint" style="margin-top:4px">특전 탭 다음에 순서대로 붙습니다(최대 6). 내용 칸에 이미지를 <b>드래그&amp;드롭</b>하거나 붙여넣으면 업로드되어 그 자리에 들어갑니다. 줄바꿈은 그대로 표시됩니다.</div></span>
  <b>응모 전 유의사항</b><span><span class="hint">입력한 내용이 그대로 표시됩니다 — 번호·기호를 직접 적어 주세요. 빈 줄은 문단 간격으로 표시됩니다.</span>
  <textarea id="dr_te_extra" rows="14" style="width:100%;margin-top:6px" placeholder="예)&#10;1) 본 이벤트는 맵달SEOUL 온라인몰 회원·비회원 모두 참여 가능합니다.&#10;2) 개인정보 기재 책임은 본인에게 있습니다.">${esc(v.entry_extra||'')}</textarea></span>
  <b>대면 팬사인회<br>당첨자 유의사항</b><span><span class="hint">유형에 [팬사인회]가 선택된 이벤트에 표시됩니다. 입력한 그대로 노출되며, 비우면 섹션이 표시되지 않습니다.</span>
@@ -5977,7 +6015,7 @@ async function saveDrop(id){try{
   image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
   schedule:sched,options:drOptsCollect(),
-  chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,
+  chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,tab_info_title:$('#dr_tab_info').value.trim(),tab_benefit_title:$('#dr_tab_benefit').value.trim(),extra_tabs:drXTabsCollect(),
   benefit_html:$('#dr_benefit').value,
   winner_fansign_extra:$('#dr_twf_extra').value,
   winner_videocall_extra:$('#dr_twv_extra').value,
@@ -7500,7 +7538,7 @@ h2{font-size:19px;margin-bottom:18px}
  <div id="fzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
  <input id="ffile" type="file" accept="image/*" style="display:none"><input id="fi" type="hidden">
  <div id="fpv" style="margin-top:10px"></div>
- <div class="hint">업로드 시 폭 1600px 기준으로만 축소·압축됩니다 — 세로로 긴 상세 이미지도 화질이 유지됩니다.</div>
+ <div class="hint">7.5MB 이하·폭 2400px 이하 이미지는 원본 그대로 저장됩니다(재압축 없음). 그보다 크면 폭 2400px 기준으로만 축소합니다.</div>
  <div class="f" style="margin-top:20px;padding-top:16px;border-top:1px dashed #e3e1db"><label>썸네일 뒷배경 컬러 <span style="font-weight:400;color:#aaa">— 판매 페이지 첫 상단 이미지 영역</span></label>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
    <input type="color" id="fhb" value="#FBE9DF" style="width:54px;height:40px;padding:2px;border:1px solid #ccc;background:#fff;cursor:pointer" oninput="hbSync('picker')">
@@ -7543,7 +7581,7 @@ h2{font-size:19px;margin-bottom:18px}
  <div class="f" style="margin-top:22px;padding-top:18px;border-top:1px dashed #e3e1db"><label>추가 탭 <span style="font-weight:400;color:#aaa">— 제목과 내용을 직접 편집 · 최대 6개 · 탭 바 오른쪽에 순서대로 붙습니다</span></label>
   <div id="ptTabs"></div>
   <button class="btn sm" type="button" onclick="ptAdd()">+ 탭 추가</button>
-  <span class="hint" style="display:block">줄바꿈은 그대로 표시되고 URL은 링크로 바뀝니다. 예) "Track List" · "앨범 사양" · "이벤트 안내"</span></div>
+  <span class="hint" style="display:block">줄바꿈은 그대로 표시되고 URL은 링크로 바뀝니다. 내용 칸에 이미지를 <b>드래그&amp;드롭</b>하거나 붙여넣으면 업로드되어 그 자리에 들어갑니다. 예) "Track List" · "앨범 사양" · "이벤트 안내"</span></div>
 </div>
 <div class="card"><h3><span class="no">7</span>관련 상품<small>상세페이지 추천</small></h3>
  <div class="rel-search"><input id="relQ" type="text" placeholder="상품명 또는 상품 ID 검색" onkeydown="if(event.key==='Enter'){event.preventDefault();relSearch()}" oninput="relTyping()"><button class="btn sm" type="button" onclick="relSearch()">검색</button></div>
@@ -7570,7 +7608,7 @@ async function api(p,opt){const r=await fetch(p,opt);
 const PCATS=[['','— 카테고리 선택 —'],['album','앨범 / 음반'],['md','굿즈 / MD'],['kfood','K-FOOD'],['apparel','어패럴'],['living','리빙 / 홈']];
 function catOptions(sel){return PCATS.map(c=>`<option value="${c[0]}"${c[0]===(sel||'')?' selected':''}>${c[1]}</option>`).join('')}
 
-function shrinkImage(file,maxW=1600,quality=0.9,maxH=12000){
+function shrinkImage(file,maxW=2400,quality=0.92,maxH=16000){
  /* 폭 기준 축소 — 종전엔 긴 변 기준 1600px 이라 세로로 긴 상세 이미지(예 1000×6000)가 267px 폭으로 뭉개졌다.
     이제 폭 1600px·높이 12000px 상한만 두고 확대는 하지 않는다. PNG 투명도는 JPEG 변환 시 사라지므로 PNG 는 PNG 유지. */
  return new Promise((resolve)=>{
@@ -7578,7 +7616,8 @@ function shrinkImage(file,maxW=1600,quality=0.9,maxH=12000){
   const img=new Image();const url=URL.createObjectURL(file);
   img.onload=()=>{URL.revokeObjectURL(url);
    let{width:w,height:h}=img;
-   if(w<=maxW&&h<=maxH&&file.size<1500*1024){resolve(file);return;}
+   /* 원본 화질 유지 — 서버 상한(8MB) 안이고 폭이 maxW 이하면 재인코딩 없이 원본 그대로 올린다 */
+   if(file.size<=7.5*1024*1024&&w<=maxW&&h<=maxH){resolve(file);return;}
    const s=Math.min(1,maxW/w,maxH/h);const cw=Math.round(w*s),ch=Math.round(h*s);
    if(s>=1&&file.type==='image/png'){resolve(file);return;}
    const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
@@ -7730,10 +7769,19 @@ function expLabel(v){const f=s=>s?s.replace('T',' '):'';if(!v.show_from&&!v.show
 function expUI(){const on=expMode()==='range';$('#expBox').style.display=on?'':'none';$('#expStat').textContent=on?expLabel(expVals()):'';}
 function expLoad(sf,su,ex){const on=!!(sf||su);document.querySelector('input[name=fexp][value='+(on?'range':'now')+']').checked=true;$('#fsf').value=sf||'';$('#fsu').value=su||'';expUI();}
 /* ── 설명 탭 편집기 ── */
+function mpInsertAtCursor(ta,text){const s=ta.selectionStart??ta.value.length,e=ta.selectionEnd??s,v=ta.value;const pre=v.slice(0,s),post=v.slice(e);
+ const ins=(pre&&!pre.endsWith('\n')?'\n':'')+text+(post&&!post.startsWith('\n')?'\n':'');ta.value=pre+ins+post;const p=(pre+ins).length;ta.setSelectionRange(p,p)}
+async function mpImgDropHandle(ta,files){files=[...(files||[])].filter(f=>/^image\//.test(f.type));if(!files.length)return;
+ for(const f of files){try{toast('이미지 업로드 중…');const u=await uploadFile(f);mpInsertAtCursor(ta,'[이미지] '+u)}catch(e){if(e.message!=='세션 만료')toast('업로드 실패: '+e.message)}}
+ toast('이미지 '+files.length+'장 삽입 — 저장을 눌러야 반영됩니다')}
+document.addEventListener('dragover',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(ta){e.preventDefault();ta.style.outline='2px dashed #E8332A'}});
+document.addEventListener('dragleave',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(ta)ta.style.outline=''});
+document.addEventListener('drop',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(!ta)return;e.preventDefault();ta.style.outline='';mpImgDropHandle(ta,e.dataTransfer.files)});
+document.addEventListener('paste',e=>{const ta=e.target.closest&&e.target.closest('textarea.mp-imgdrop');if(!ta||!e.clipboardData)return;const fs=[...e.clipboardData.files||[]].filter(f=>/^image\//.test(f.type));if(fs.length){e.preventDefault();mpImgDropHandle(ta,fs)}});
 function ptCard(t){t=t||{};return `<div class="ptab" style="border:1px solid #ddd;background:#fafaf7;padding:10px;margin-bottom:8px">
  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input class="pt_title" maxlength="30" placeholder="탭 제목 * — 예) Track List" style="flex:1;min-width:180px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${esc(t.title||'')}">
   <button class="btn sm ghost" type="button" title="위로" onclick="ptMove(this,-1)">↑</button><button class="btn sm ghost" type="button" title="아래로" onclick="ptMove(this,1)">↓</button><button class="btn sm ghost" type="button" style="color:#c0392b" onclick="ptDel(this)">탭 삭제</button></div>
- <textarea class="pt_body" rows="6" placeholder="탭 내용 * — 줄바꿈 그대로 표시됩니다" style="width:100%;margin-top:7px;font:inherit;font-size:13.5px;line-height:1.6;padding:9px 10px;border:1px solid #ccc;resize:vertical">${esc(t.body||'')}</textarea></div>`}
+ <textarea class="pt_body mp-imgdrop" rows="6" placeholder="탭 내용 * — 줄바꿈 그대로 표시 · 이미지를 드래그&드롭하거나 붙여넣으면 업로드되어 그 자리에 삽입됩니다" style="width:100%;margin-top:7px;font:inherit;font-size:13.5px;line-height:1.6;padding:9px 10px;border:1px solid #ccc;resize:vertical">${esc(t.body||'')}</textarea></div>`}
 function ptMove(btn,dir){const c=btn.closest('.ptab');if(!c)return;const p=c.parentNode;if(dir<0){if(c.previousElementSibling)p.insertBefore(c,c.previousElementSibling)}else{if(c.nextElementSibling)p.insertBefore(c.nextElementSibling,c)}}
 function ptDel(btn){const c=btn.closest('.ptab');if(!c)return;const nm=(c.querySelector('.pt_title')||{}).value||'';if((nm.trim()||(c.querySelector('.pt_body')||{}).value)&&!confirm('탭 “'+(nm.trim()||'(제목 없음)')+'”을(를) 삭제할까요?'))return;c.remove()}
 function ptAdd(){if(document.querySelectorAll('#ptTabs .ptab').length>=6)return toast('추가 탭은 최대 6개입니다');$('#ptTabs').insertAdjacentHTML('beforeend',ptCard());const l=$('#ptTabs').lastElementChild;if(l)l.querySelector('.pt_title').focus()}
@@ -8093,7 +8141,7 @@ def api_public_tabs(request: Request):
     return out
 
 _PRODUCT_TABS_SNIPPET = r'''<style id="mpProdTabsCss">
-.mpt-body{font-size:14.5px;line-height:1.9;color:#2b2b2b;word-break:keep-all;white-space:normal}.mpt-body a{color:#E8332A;text-decoration:underline}
+.mpt-body{font-size:14.5px;line-height:1.9;color:#2b2b2b;word-break:keep-all;white-space:normal}.mpt-body a{color:#E8332A;text-decoration:underline}.mpt-body p{margin:0;padding:10px 0}.mpt-body figure{margin:0}
 .tab-bar.mpt-many button{font-size:13px;padding:14px 8px}
 </style><script id="mpProdTabsJs">(function(){
  function pidOf(){try{if(location.pathname.indexOf('/p/')===0)return decodeURIComponent(location.pathname.slice(3));if(location.pathname==='/album-detail'||location.pathname==='/album-detail.html'){var u=new URLSearchParams(location.search).get('uid');return u?'k2g::'+u:''}}catch(e){}return''}
@@ -8247,7 +8295,7 @@ header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1
 .detail-imgs img{max-width:100%%;height:auto;display:block;margin:12px auto;border-radius:2px}
 /* mpBlocksCss — 상세 본문 이미지: 브라우저 기본 figure 여백(1em 40px) 제거 · 폭 100%% · 이미지 사이 간격 0 */
 .detail figure,.nd-content .body figure,.tab-panel figure,.mpt-body figure{margin:0;padding:0}
-.detail figure img,.nd-content .body figure img,.nd-content .body>img,.tab-panel figure img{width:100%%;max-width:100%%;height:auto;display:block;margin:0;border-radius:0}
+.detail figure img,.nd-content .body figure img,.nd-content .body>img,.nd-content .body img,.tab-panel figure img,.mpt-body figure img{width:auto;max-width:100%%;height:auto;display:block;margin:0 auto;border-radius:0}
 .detail figure+figure,.nd-content .body figure+figure,.nd-content .body img+img{margin-top:0}
 .detail figcaption,.nd-content .body figcaption{font-size:12.5px;color:#87867F;text-align:center;padding:8px 0 14px}
 .detail p,.tab-panel .detail p{margin:0;padding:14px 0;font-size:14.5px;line-height:1.9;word-break:keep-all}
@@ -11903,6 +11951,10 @@ def api_drop_public_detail(did: int, request: Request):
     pub_opts, legacy_names = _drop_opts_public(d)
     c.update({'schedule': sched,
               'content_html': str(d.get('content_html') or ''),
+              'tab_info_title': (str(d.get('tab_info_title') or '').strip() or '이벤트 안내'),
+              'tab_benefit_title': (str(d.get('tab_benefit_title') or '').strip() or 'KPOPTOGETHER X 맵달SEOUL 특전'),
+              'extra_tabs': [{'title': t['title'], 'html': _prod_tab_body_html(t['body'])}
+                             for t in _prod_tabs_norm({'custom': d.get('extra_tabs') or []})['custom']],
               'options': legacy_names,
               'opts': pub_opts,
               'buy_url': str(d.get('buy_url') or ''),
@@ -12002,6 +12054,9 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'chart_note': bool(body.get('chart_note')),
            'content_html': str(body.get('content_html') or '')[:200000],
            'benefit_html': str(body.get('benefit_html') or '')[:200000],
+           'tab_info_title': str(body.get('tab_info_title') or '').strip()[:30],
+           'tab_benefit_title': str(body.get('tab_benefit_title') or '').strip()[:40],
+           'extra_tabs': _prod_tabs_norm({'custom': body.get('extra_tabs') or []})['custom'],
            # 유의사항은 관리자가 입력한 원문 그대로 저장한다.
            #   맞춤법 자동보정(_ko_autofix)을 적용하지 않는다 — 표준 약관 문구가
            #   임의로 바뀌면 안 되고, 화면에도 입력 그대로 노출되어야 하기 때문이다.
@@ -12228,7 +12283,7 @@ ready(function(){
 
 BLOCKS_CSS_SNIPPET = r"""<style id="mpBlocksCss">/* mpBlocksCss — 상세 본문 이미지: 브라우저 기본 figure 여백(1em 40px) 제거 · 폭 100% · 이미지 사이 간격 0 */
 .detail figure,.nd-content .body figure,.tab-panel figure,.mpt-body figure{margin:0;padding:0}
-.detail figure img,.nd-content .body figure img,.nd-content .body>img,.tab-panel figure img{width:100%;max-width:100%;height:auto;display:block;margin:0;border-radius:0}
+.detail figure img,.nd-content .body figure img,.nd-content .body>img,.nd-content .body img,.tab-panel figure img,.mpt-body figure img{width:auto;max-width:100%;height:auto;display:block;margin:0 auto;border-radius:0}
 .detail figure+figure,.nd-content .body figure+figure,.nd-content .body img+img{margin-top:0}
 .detail figcaption,.nd-content .body figcaption{font-size:12.5px;color:#87867F;text-align:center;padding:8px 0 14px}
 .detail p,.tab-panel .detail p{margin:0;padding:14px 0;font-size:14.5px;line-height:1.9;word-break:keep-all}

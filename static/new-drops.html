@@ -4,7 +4,7 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="mp-build" content="nd-v3-2col">
 <title>NEW / DROPS — K-POP 이벤트 허브 | 맵달SEOUL</title>
-<meta name="description" content="팬사인회·영상통화·럭키드로우까지, 맵달SEOUL의 모든 이벤트를 한 자리에. 판매 중·당첨자 발표·판매 예정·판매 종료 이벤트와 당첨자 확인을 제공합니다.">
+<meta name="description" content="팬사인회·영상통화·럭키드로우까지, 맵달SEOUL의 모든 이벤트를 한 자리에. 진행 중인 이벤트·당첨자 발표·예정 이벤트·종료 이벤트와 당첨자 확인을 제공합니다.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -467,7 +467,7 @@ console.info('MAPDAL new-drops build: nd-v3-2col (mpDropOptUI)');
 var $=function(s){return document.querySelector(s)};
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 var CATFALL='linear-gradient(135deg,#3A3A3A,#141414)';
-var TABS=[['ON_SALE','🌟 판매 중'],['WINNER_ANNOUNCEMENT','✅ 당첨자 발표'],['UPCOMING','🍿 판매 예정'],['ENDED','☑️ 판매 종료']];
+var TABS=[['ON_SALE','🌟 진행 중인 이벤트'],['WINNER_ANNOUNCEMENT','✅ 당첨자 발표'],['UPCOMING','🍿 예정 이벤트'],['ENDED','☑️ 종료 이벤트']];
 var EMPTY={ON_SALE:'지금 판매 중인 이벤트가 없습니다.<br>곧 새로운 드롭이 올라옵니다 — LED 티커를 지켜봐 주세요.',
  WINNER_ANNOUNCEMENT:'진행 중인 당첨자 발표가 없습니다.',
  UPCOMING:'오픈 예정인 이벤트가 없습니다.',
@@ -690,8 +690,10 @@ function bindRelSide(){var tr=document.querySelector('.rs-track');if(!tr)return;
   t.addEventListener('mouseleave',function(){var on=tr.querySelector('.rs-th.on');
    if(nm)nm.textContent=on?on.dataset.t:def})})}
 function detailSections(c){var s=[];
- if(c.content_html)s.push({id:'sec-info',label:'이벤트 안내',eyebrow:'EVENT DETAIL',title:'이벤트 안내',body:'<div class="body">'+c.content_html+'</div>'});
- if(c.benefit_html)s.push({id:'sec-benefit',label:'KPOPTOGETHER X 맵달SEOUL 특전',eyebrow:'SPECIAL BENEFIT',title:'KPOPTOGETHER X 맵달SEOUL 특전',body:'<div class="body">'+c.benefit_html+'</div>'});
+ var tInfo=c.tab_info_title||'이벤트 안내',tBen=c.tab_benefit_title||'KPOPTOGETHER X 맵달SEOUL 특전';
+ if(c.content_html)s.push({id:'sec-info',label:tInfo,eyebrow:'EVENT DETAIL',title:tInfo,body:'<div class="body">'+c.content_html+'</div>'});
+ if(c.benefit_html)s.push({id:'sec-benefit',label:tBen,eyebrow:'SPECIAL BENEFIT',title:tBen,body:'<div class="body">'+c.benefit_html+'</div>'});
+ (c.extra_tabs||[]).forEach(function(t,i){if(t&&t.title&&t.html)s.push({id:'sec-x'+i,label:t.title,eyebrow:'MORE',title:t.title,body:'<div class="body">'+t.html+'</div>'})});
  if(c.entry_terms_html)s.push({id:'sec-entry',label:'응모 전 유의사항',eyebrow:'ENTRY NOTICE',title:'응모 전 유의사항',body:c.entry_terms_html});
  if(c.winner_terms&&c.winner_terms.length){
   c.winner_terms.forEach(function(w){

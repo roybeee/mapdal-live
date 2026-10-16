@@ -168,7 +168,7 @@ function renderList(){
     var upBtnM=document.createElement("button");upBtnM.className="btn sm";upBtnM.textContent="모바일 이미지 업로드 (자동 리사이즈)";
     var fileInM=document.createElement("input");fileInM.type="file";fileInM.accept="image/*";fileInM.style.display="none";
     upBtnM.addEventListener("click",function(){fileInM.click();});
-    fileInM.addEventListener("change",function(){if(fileInM.files[0])uploadHero(s,card,fileInM.files[0],upBtnM,"img_m",1080,1600);fileInM.value="";});
+    fileInM.addEventListener("change",function(){if(fileInM.files[0])uploadHero(s,card,fileInM.files[0],upBtnM,"img_m",1440,2200);fileInM.value="";});
     upRowM.appendChild(upBtnM);upRowM.appendChild(fileInM);f.appendChild(upRowM);
     field(f,"클릭 링크 URL","href",s);
     body.appendChild(f);
@@ -211,11 +211,11 @@ function loadImg(file){
 }
 function resizeToJpeg(file,maxW,maxH,q){
   return loadImg(file).then(function(img){
-    var wh=fitSize(img.naturalWidth,img.naturalHeight,maxW||2400,maxH||1400);
+    var wh=fitSize(img.naturalWidth,img.naturalHeight,maxW||2880,maxH||1680);
     var c=document.createElement("canvas");c.width=wh[0];c.height=wh[1];
     c.getContext("2d").drawImage(img,0,0,wh[0],wh[1]);
     return new Promise(function(res,rej){
-      c.toBlob(function(b){b?res({blob:b,w:wh[0],h:wh[1]}):rej(new Error("이미지 변환 실패"));},"image/jpeg",q||0.85);
+      c.toBlob(function(b){b?res({blob:b,w:wh[0],h:wh[1]}):rej(new Error("이미지 변환 실패"));},"image/jpeg",q||0.92);
     });
   });
 }

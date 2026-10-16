@@ -8205,6 +8205,47 @@ def api_public_options(request: Request):
     return {'rows': rows_, 'parent': {'id': pid, 'name': str(r.get('name') or pid), 'img': img},
             'live': bool(live), 'all_sold': all(o['soldout'] for o in rows_ if o['pid'] and o['price'] > 0)}
 
+_CARD_GAL_SNIPPET = r'''<style id="mpCardGalCss">
+.k2g-cover,.col-cover{position:relative}
+.mpg-arr{position:absolute;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:0;background:rgba(20,20,20,.55);color:#fff;font-size:16px;line-height:30px;text-align:center;cursor:pointer;z-index:5;opacity:0;transition:opacity .15s;padding:0;font-family:inherit}
+.mpg-arr.l{left:8px}.mpg-arr.r{right:8px}.mpg-arr:hover{background:rgba(20,20,20,.85)}
+.k2g-card:hover .mpg-arr,.col-card:hover .mpg-arr{opacity:1}
+@media(hover:none){.mpg-arr{opacity:.85;width:26px;height:26px;line-height:26px;font-size:14px}}
+.mpg-dots{display:flex;justify-content:center;gap:5px;padding:7px 0 0;line-height:0}
+.mpg-dots i{width:6px;height:6px;border-radius:50%;background:#D5D3CC;display:inline-block;transition:background .15s,transform .15s}
+.mpg-dots i.on{background:#141414;transform:scale(1.25)}
+.k2g-cover img.mpg-fade{transition:opacity .18s}
+</style><script id="mpCardGalJs">(function(){
+ /* 목록 카드 썸네일 넘겨보기 — K2G 카드: window.__K2G[9](갤러리) · 직접등록 카드: data-gal. 수동(화살표/점), 자동 슬라이드 없음 */
+ function k2gGal(){var m={};try{(window.__K2G||(typeof K2G!=='undefined'?K2G:[])).forEach(function(r){if(r&&r[9]&&r[9].length)m[r[0]]=r[9]})}catch(e){}return m}
+ var K2GIMG='https://www.kpop2gether.com/shopimages/912enter/';
+ function urlsFor(card,km){
+  if(card.dataset.gal){try{var a=JSON.parse(card.dataset.gal);if(a&&a.length>1)return a}catch(e){}return null}
+  var h=card.getAttribute('href')||'',m=h.match(/uid=([^&]+)/);if(!m)return null;var g=km[m[1]];if(!g||!g.length)return null;
+  var im=card.querySelector('.k2g-cover img');var first=im?im.getAttribute('src'):'';return (first?[first]:[]).concat(g)}
+ function enhance(card,km){if(card.dataset.mpg)return;var urls=urlsFor(card,km);if(!urls||urls.length<2)return;card.dataset.mpg='1';
+  var cover=card.querySelector('.k2g-cover,.col-cover');if(!cover)return;var img=cover.querySelector('img');var idx=0;
+  function show(i,e){if(e){e.preventDefault();e.stopPropagation()}idx=(i+urls.length)%urls.length;
+   if(img){img.classList.add('mpg-fade');img.style.opacity='0';setTimeout(function(){img.src=urls[idx];img.onload=function(){img.style.opacity='1'};setTimeout(function(){img.style.opacity='1'},250)},120)}
+   else{cover.style.backgroundImage="url('"+urls[idx].replace(/'/g,'%27')+"')"}
+   dots.querySelectorAll('i').forEach(function(d,j){d.classList.toggle('on',j===idx)})}
+  var l=document.createElement('button');l.type='button';l.className='mpg-arr l';l.innerHTML='&#8249;';l.setAttribute('aria-label','이전 이미지');
+  var r=document.createElement('button');r.type='button';r.className='mpg-arr r';r.innerHTML='&#8250;';r.setAttribute('aria-label','다음 이미지');
+  l.addEventListener('click',function(e){show(idx-1,e)});r.addEventListener('click',function(e){show(idx+1,e)});
+  cover.appendChild(l);cover.appendChild(r);
+  var dots=document.createElement('div');dots.className='mpg-dots';dots.innerHTML=urls.map(function(_,j){return '<i class="'+(j?'':'on')+'"></i>'}).join('');
+  dots.addEventListener('click',function(e){var i=[].indexOf.call(dots.children,e.target);if(i>=0)show(i,e);else{e.preventDefault();e.stopPropagation()}});
+  cover.insertAdjacentElement('afterend',dots);
+  /* 터치 스와이프 */
+  var sx=null;cover.addEventListener('touchstart',function(e){sx=e.touches[0].clientX},{passive:true});
+  cover.addEventListener('touchend',function(e){if(sx==null)return;var dx=e.changedTouches[0].clientX-sx;sx=null;if(Math.abs(dx)>40){show(idx+(dx<0?1:-1));e.preventDefault()}});
+  /* 카드 자체가 <a> 라 화살표 영역 클릭이 이동으로 이어지지 않게 */
+  cover.addEventListener('click',function(e){if(e.target.closest('.mpg-arr'))e.preventDefault()});}
+ function run(){var km=k2gGal();document.querySelectorAll('a.k2g-card,a.col-card').forEach(function(c){enhance(c,km)})}
+ function boot(){run();try{new MutationObserver(function(){run()}).observe(document.body,{childList:true,subtree:true})}catch(e){}}
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();</script>'''
+
 _PRODUCT_OPTS_SNIPPET = r'''<style id="mpProdOptsCss">
 .mpo-wrap{margin:14px 0 6px}.mpo-h{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#87867F;margin:0 0 10px}
 .mpo-cards{display:flex;flex-direction:column;gap:10px}
@@ -12502,7 +12543,7 @@ def _mp_shop_cards():
             sel += ', %s AS price' % _state['pprice']
         if 'list_price' in _state['pcols']:
             sel += ', list_price'
-        for c in ('img', 'category', 'badge', 'badge_color', 'created_at'):
+        for c in ('img', 'category', 'badge', 'badge_color', 'created_at', 'gallery'):
             if c in _state['pcols']:
                 sel += ', ' + c
         sel += _prod_sched_sel()
@@ -12562,11 +12603,13 @@ def _mp_shop_cards():
         if soldout:
             states.append('<span class="card-state add sold">SOLD OUT</span>')
         badges_html = '<div class="card-badges">%s</div>' % ''.join(states)
-        cards.append('<a class="col-card" data-cat="%s" href="/p/%s">%s'
+        _gal = [u.strip() for u in re.split(r'[\r\n]+', str(r.get('gallery') or '')) if u.strip().startswith('http')][:12]
+        _gal_attr = (' data-gal="%s"' % h(json.dumps(([img] if img else []) + _gal, ensure_ascii=False))) if _gal else ''
+        cards.append('<a class="col-card" data-cat="%s" href="/p/%s"%s>%s'
                      '<div class="col-body"><span class="card-artist">%s</span><h3>%s</h3>'
                      '<div class="price-row">%s</div>%s'
                      '</div></a>'
-                     % (h(cat), h(r['id']), cover, h(artist_of(name)), h(name), pr_html, badges_html))
+                     % (h(cat), h(r['id']), _gal_attr, cover, h(artist_of(name)), h(name), pr_html, badges_html))
     return '<!-- mpShopDyn -->' + ''.join(cards) + '<!-- /mpShopDyn -->'
 
 _own_rm_cache = {'t': 0.0, 'set': None}
@@ -12751,9 +12794,10 @@ def _k2g_catalog_json():
     ensure_ready()
     if not _state['pcols'] or not _state['pname'] or not _state['pprice']:
         return None
-    rs = rows("SELECT id, %s AS name, %s AS price, list_price, img, soldout, created_at, badge, badge_color%s FROM products "
+    _gal_sel = ', gallery' if 'gallery' in _state['pcols'] else ''
+    rs = rows("SELECT id, %s AS name, %s AS price, list_price, img, soldout, created_at, badge, badge_color%s%s FROM products "
               "WHERE id LIKE ? ORDER BY COALESCE(sort_order, 999999999), id"
-              % (_state['pname'], _state['pprice'], _prod_sched_sel()), ('k2g::%',))
+              % (_state['pname'], _state['pprice'], _prod_sched_sel(), _gal_sel), ('k2g::%',))
     if not rs:
         return '[]' if _k2g_removed_set() else None   # 전부 삭제한 상태면 빈 카탈로그, 미백필이면 정적 폴백
     _now = kst_now()
@@ -12761,10 +12805,12 @@ def _k2g_catalog_json():
     out = []
     for r in rs:
         sale, was = num(r.get('price')), num(r.get('list_price'))
+        gal = [u.strip() for u in re.split(r'[\r\n]+', str(r.get('gallery') or '')) if u.strip().startswith('http')][:12]
         out.append([r['id'][5:], str(r.get('img') or ''), str(r.get('name') or ''),
                     was if was > sale else 0, sale, 1 if num(r.get('soldout')) else 0,
                     1 if is_new_product(r.get('created_at')) else 0,
-                    str(r.get('badge') or '').strip(), badge_color(r.get('badge_color'))])
+                    str(r.get('badge') or '').strip(), badge_color(r.get('badge_color')),
+                    gal])                                     # [9] 추가 썸네일 — 목록 카드 넘겨보기(mpCardGal)
     body = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
     body = body.replace('</', '<\\/').replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
     _k2g_cat_cache.update(t=time.time(), body=body)
@@ -15087,6 +15133,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
     if 'mpProdOptsJs' not in html and (path == '/album-detail' or path.startswith('/p/')): add += _PRODUCT_OPTS_SNIPPET
     if 'mpProdTabsJs' not in html and (path == '/album-detail' or path.startswith('/p/')): add += _PRODUCT_TABS_SNIPPET
+    if 'mpCardGalJs' not in html and ('k2g-card' in html or 'col-card' in html or 'shopGrid' in html): add += _CARD_GAL_SNIPPET
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
     if 'mpDropInput' not in html: add += DROPINPUT_SNIPPET

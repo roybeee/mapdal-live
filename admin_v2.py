@@ -5950,14 +5950,18 @@ async function drWinXlsx(inp){var f=inp.files&&inp.files[0];inp.value='';if(!f)r
   toast('엑셀 '+lines.length+'명 반영 — [저장]을 눌러야 사이트에 게시됩니다')
  }catch(e){toast('엑셀 처리 실패: '+(e.message||e))}}
 /* ── 세트 구성(낱개 묶음) 편집 — 드롭 옵션·상품 옵션 공용 ── */
-function bundleRow(name,qty){return `<div class="bundle_row" style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="hint" style="display:inline">└</span><input class="bd_name" readonly value="${esc(name||'')}" style="flex:1;min-width:140px;background:#faf9f5"><span class="hint" style="display:inline">×</span><input class="bd_qty" type="number" min="1" max="99" value="${qty||1}" style="width:64px"><button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
-function bundleAdd(btn,cardSel,nameSel){const card=btn.closest(cardSel);const me=(card.querySelector(nameSel)||{}).value||'';
- const names=[...document.querySelectorAll(cardSel)].filter(c=>c!==card).map(c=>(c.querySelector(nameSel)||{}).value||'').map(s=>s.trim()).filter(s=>s&&s!==me.trim());
+function bundleRefresh(rows){const card=rows.closest('.dropt,.poopt');const isD=card.classList.contains('dropt');const names=bundleNames(card,isD?'.dropt':'.poopt',isD?'.do_name':'.po_name');
+ rows.querySelectorAll('select.bd_name').forEach(sel=>{const cur=sel.value;const all=(cur&&names.indexOf(cur)<0?[cur]:[]).concat(names);
+  sel.innerHTML='<option value="">— 낱개 옵션 선택 —</option>'+all.map(n=>`<option value="${esc(n)}" ${n===cur?'selected':''}>${esc(n)}</option>`).join('')})}
+function bundleNames(card,cardSel,nameSel){const me=((card.querySelector(nameSel)||{}).value||'').trim();
+ return [...document.querySelectorAll(cardSel)].filter(c=>c!==card&&!c.querySelector('.bundle_row')).map(c=>((c.querySelector(nameSel)||{}).value||'').trim()).filter(s=>s&&s!==me)}
+function bundleRow(name,qty,names){names=names||[];if(name&&names.indexOf(name)<0)names=[name].concat(names);
+ return `<div class="bundle_row" style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="hint" style="display:inline">└ 낱개</span><select class="bd_name" style="flex:1;min-width:160px;font:inherit;padding:6px 8px;border:1px solid #ccc;background:#fff"><option value="">— 낱개 옵션 선택 —</option>${names.map(n=>`<option value="${esc(n)}" ${n===name?'selected':''}>${esc(n)}</option>`).join('')}</select><span class="hint" style="display:inline">×</span><input class="bd_qty" type="number" min="1" max="99" value="${qty||1}" style="width:64px;font:inherit;padding:6px 8px;border:1px solid #ccc"><span class="hint" style="display:inline">개</span><button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
+function bundleAdd(btn,cardSel,nameSel){const card=btn.closest(cardSel);const names=bundleNames(card,cardSel,nameSel);
  if(!names.length)return toast('먼저 낱개 옵션(For. A VER 등)을 다른 옵션 카드로 등록하세요');
- const pick=prompt('구성 낱개 옵션 번호를 입력하세요:\n'+names.map((s,i)=>(i+1)+') '+s).join('\n'),'1');const i=parseInt(pick,10)-1;if(!(i>=0&&i<names.length))return;
- const rows=card.querySelector('.bundle_rows');if([...rows.querySelectorAll('.bd_name')].some(x=>x.value===names[i]))return toast('이미 구성에 있습니다');
- rows.insertAdjacentHTML('beforeend',bundleRow(names[i],1))}
-function bundleCollect(card){return [...card.querySelectorAll('.bundle_row')].map(r=>({name:r.querySelector('.bd_name').value.trim(),qty:Math.max(1,parseInt(r.querySelector('.bd_qty').value,10)||1)})).filter(b=>b.name)}
+ const used=[...card.querySelectorAll('.bd_name')].map(x=>x.value);const first=names.find(n=>used.indexOf(n)<0)||'';
+ card.querySelector('.bundle_rows').insertAdjacentHTML('beforeend',bundleRow(first,1,names))}
+function bundleCollect(card){const seen={};return [...card.querySelectorAll('.bundle_row')].map(r=>({name:r.querySelector('.bd_name').value.trim(),qty:Math.max(1,parseInt(r.querySelector('.bd_qty').value,10)||1)})).filter(b=>b.name&&!seen[b.name]&&(seen[b.name]=1))}
 /* ── 추가 탭(제목+내용) + 내용 칸 이미지 드래그&드롭/붙여넣기 업로드 ── */
 function drXTabCard(t){t=t||{};return `<div class="drxtab" style="border:1px solid #ddd;background:#fafaf7;padding:9px;margin-bottom:8px">
  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input class="dx_title" maxlength="30" placeholder="탭 제목 * — 예) 굿즈 안내" style="flex:1;min-width:160px" value="${esc(t.title||'')}">
@@ -5995,7 +5999,7 @@ function drOptCard(o){o=(typeof o==='string')?{name:o}:(o||{});
  <div class="do_bundle" style="margin-top:6px;padding:7px 8px;border:1px dashed #d9d7d0;background:#fff">
   <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12px">세트 구성</b><span class="hint" style="display:inline">— 낱개 옵션을 묶어 파는 세트면 구성 낱개를 넣으세요. 세트가 팔리면 낱개 재고에서 자동 차감되고 세트 자체 재고는 두지 않습니다.</span>
    <button class="btn sm ghost" type="button" onclick="bundleAdd(this,'.dropt','.do_name')">+ 구성 낱개</button></div>
-  <div class="bundle_rows" style="margin-top:4px">${(o.bundle||[]).map(b=>bundleRow(b.name,b.qty)).join('')}</div></div>
+  <div class="bundle_rows" style="margin-top:4px" onfocusin="bundleRefresh(this)">${(o.bundle||[]).map(b=>bundleRow(b.name,b.qty)).join('')}</div></div>
  <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
   <span class="hint" style="display:inline">응모자 입력</span>
   <select class="do_input" data-v="${esc(o.input||'')}" style="width:130px" onchange="drOptInputSync(this)">
@@ -7899,14 +7903,18 @@ function expLabel(v){const f=s=>s?s.replace('T',' '):'';if(!v.show_from&&!v.show
 function expUI(){const on=expMode()==='range';$('#expBox').style.display=on?'':'none';$('#expStat').textContent=on?expLabel(expVals()):'';}
 function expLoad(sf,su,ex){const on=!!(sf||su);document.querySelector('input[name=fexp][value='+(on?'range':'now')+']').checked=true;$('#fsf').value=sf||'';$('#fsu').value=su||'';expUI();}
 /* ── 세트 구성(낱개 묶음) 편집 ── */
-function bundleRow(name,qty){return `<div class="bundle_row" style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="hint" style="display:inline">└</span><input class="bd_name" readonly value="${esc(name||'')}" style="flex:1;min-width:140px;font:inherit;padding:6px 8px;border:1px solid #ddd;background:#faf9f5"><span class="hint" style="display:inline">×</span><input class="bd_qty" type="number" min="1" max="99" value="${qty||1}" style="width:64px;font:inherit;padding:6px 8px;border:1px solid #ddd"><button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
-function bundleAdd(btn,cardSel,nameSel){const card=btn.closest(cardSel);const me=(card.querySelector(nameSel)||{}).value||'';
- const names=[...document.querySelectorAll(cardSel)].filter(c=>c!==card).map(c=>(c.querySelector(nameSel)||{}).value||'').map(s=>s.trim()).filter(s=>s&&s!==me.trim());
+function bundleRefresh(rows){const card=rows.closest('.dropt,.poopt');const isD=card.classList.contains('dropt');const names=bundleNames(card,isD?'.dropt':'.poopt',isD?'.do_name':'.po_name');
+ rows.querySelectorAll('select.bd_name').forEach(sel=>{const cur=sel.value;const all=(cur&&names.indexOf(cur)<0?[cur]:[]).concat(names);
+  sel.innerHTML='<option value="">— 낱개 옵션 선택 —</option>'+all.map(n=>`<option value="${esc(n)}" ${n===cur?'selected':''}>${esc(n)}</option>`).join('')})}
+function bundleNames(card,cardSel,nameSel){const me=((card.querySelector(nameSel)||{}).value||'').trim();
+ return [...document.querySelectorAll(cardSel)].filter(c=>c!==card&&!c.querySelector('.bundle_row')).map(c=>((c.querySelector(nameSel)||{}).value||'').trim()).filter(s=>s&&s!==me)}
+function bundleRow(name,qty,names){names=names||[];if(name&&names.indexOf(name)<0)names=[name].concat(names);
+ return `<div class="bundle_row" style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="hint" style="display:inline">└ 낱개</span><select class="bd_name" style="flex:1;min-width:160px;font:inherit;padding:6px 8px;border:1px solid #ccc;background:#fff"><option value="">— 낱개 옵션 선택 —</option>${names.map(n=>`<option value="${esc(n)}" ${n===name?'selected':''}>${esc(n)}</option>`).join('')}</select><span class="hint" style="display:inline">×</span><input class="bd_qty" type="number" min="1" max="99" value="${qty||1}" style="width:64px;font:inherit;padding:6px 8px;border:1px solid #ccc"><span class="hint" style="display:inline">개</span><button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
+function bundleAdd(btn,cardSel,nameSel){const card=btn.closest(cardSel);const names=bundleNames(card,cardSel,nameSel);
  if(!names.length)return toast('먼저 낱개 옵션(For. A VER 등)을 다른 옵션 카드로 등록하세요');
- const pick=prompt('구성 낱개 옵션 번호를 입력하세요:\n'+names.map((s,i)=>(i+1)+') '+s).join('\n'),'1');const i=parseInt(pick,10)-1;if(!(i>=0&&i<names.length))return;
- const rows=card.querySelector('.bundle_rows');if([...rows.querySelectorAll('.bd_name')].some(x=>x.value===names[i]))return toast('이미 구성에 있습니다');
- rows.insertAdjacentHTML('beforeend',bundleRow(names[i],1))}
-function bundleCollect(card){return [...card.querySelectorAll('.bundle_row')].map(r=>({name:r.querySelector('.bd_name').value.trim(),qty:Math.max(1,parseInt(r.querySelector('.bd_qty').value,10)||1)})).filter(b=>b.name)}
+ const used=[...card.querySelectorAll('.bd_name')].map(x=>x.value);const first=names.find(n=>used.indexOf(n)<0)||'';
+ card.querySelector('.bundle_rows').insertAdjacentHTML('beforeend',bundleRow(first,1,names))}
+function bundleCollect(card){const seen={};return [...card.querySelectorAll('.bundle_row')].map(r=>({name:r.querySelector('.bd_name').value.trim(),qty:Math.max(1,parseInt(r.querySelector('.bd_qty').value,10)||1)})).filter(b=>b.name&&!seen[b.name]&&(seen[b.name]=1))}
 /* ── 설명 탭 편집기 ── */
 function mpInsertAtCursor(ta,text){const s=ta.selectionStart??ta.value.length,e=ta.selectionEnd??s,v=ta.value;const pre=v.slice(0,s),post=v.slice(e);
  const ins=(pre&&!pre.endsWith('\n')?'\n':'')+text+(post&&!post.startsWith('\n')?'\n':'');ta.value=pre+ins+post;const p=(pre+ins).length;ta.setSelectionRange(p,p)}
@@ -7942,7 +7950,7 @@ function poCard(o){o=o||{};return `<div class="poopt" style="border:1px solid #d
  <div class="po_bundle" style="margin-top:6px;padding:7px 8px;border:1px dashed #d9d7d0;background:#fff">
   <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12px">세트 구성</b><span class="hint" style="display:inline">— 낱개 옵션을 묶어 파는 세트면 구성 낱개를 넣으세요. 세트가 팔리면 낱개 재고에서 자동 차감(세트 자체 재고 없음).</span>
    <button class="btn sm ghost" type="button" onclick="bundleAdd(this,'.poopt','.po_name')">+ 구성 낱개</button></div>
-  <div class="bundle_rows" style="margin-top:4px">${(o.bundle||[]).map(b=>bundleRow(b.name,b.qty)).join('')}</div></div>
+  <div class="bundle_rows" style="margin-top:4px" onfocusin="bundleRefresh(this)">${(o.bundle||[]).map(b=>bundleRow(b.name,b.qty)).join('')}</div></div>
  <div class="po_items" style="margin-top:7px">${(o.items||[]).map(poItem).join('')}</div>
  <button class="btn sm ghost" type="button" onclick="this.previousElementSibling.insertAdjacentHTML('beforeend',poItem())">+ 구성품</button></div>`}
 function poMove(btn,dir){const c=btn.closest('.poopt');if(!c)return;const p=c.parentNode;if(dir<0){if(c.previousElementSibling)p.insertBefore(c,c.previousElementSibling)}else{if(c.nextElementSibling)p.insertBefore(c.nextElementSibling,c)}}

@@ -1115,6 +1115,168 @@ def _prod_preview_url(r):
     if not tok or not (r or {}).get('id'): return ''
     return '%s/p/%s?pv=%s' % (SITE_ORIGIN, urllib.parse.quote(str(r['id']), safe=''), tok)
 
+# ── 상품 판매 옵션 (2026-10-16) — NEW/DROPS 옵션 v2 와 동일 구조 ──────────────
+#   배경: KPOP(음반) 앨범·직접등록 상품도 버전별(For. A VER / SET 등) 옵션을 수량 구매하도록.
+#   products.options — JSON [{name, price, stock(None=무제한), product_id, managed, items:[{k,t}]}]
+#   가격 있는 옵션은 저장 시 mpo:: 자식 상품을 자동 생성·동기화한다(이름 '부모 — 옵션', 이미지·
+#   분류·노출기간 상속). mpo:: 는 SHOP 그리드·사이트맵·K2G 카탈로그(mp::/k2g:: 만 조회)에서
+#   자동 제외되고, 장바구니·결제 재고 원자 차감·주문 내역은 일반 상품과 동일하게 동작한다.
+#   상품마스터에서는 부모 그룹의 SKU 로 붙는다(_prod_opt_attach_group).
+#   공개면: /api/products/options → _PRODUCT_OPTS_SNIPPET 이 /p/ · /album-detail 구매 박스를
+#   옵션 카드(수량 −/＋ · SOLD OUT · 구성품)로 교체한다 — new-drops 와 같은 UX.
+PROD_OPT_PREFIX = 'mpo::'
+
+def _prod_opts_norm(raw):
+    """옵션 입력 정규화 (최대 20옵션 · 12구성품). 드롭 옵션과 같은 모양, 응모 입력 필드는 없음."""
+    if isinstance(raw, str):
+        raw = jload(raw, [])
+    out = []
+    for o in (raw or [])[:20]:
+        if not isinstance(o, dict): continue
+        name = re.sub(r'\s+', ' ', str(o.get('name') or '')).strip()[:80]
+        if not name: continue
+        stock = o.get('stock')
+        stock = None if stock in (None, '') else max(0, num(stock))
+        items = []
+        for it in (o.get('items') or [])[:12]:
+            if not isinstance(it, dict): continue
+            t = re.sub(r'\s+', ' ', str(it.get('t') or '')).strip()[:120]
+            if not t: continue
+            k = str(it.get('k') or 'etc').lower()
+            items.append({'k': (k if k in _DROP_OPT_KIND_SET else 'etc'), 't': t})
+        out.append({'name': name, 'price': max(0, num(o.get('price'))), 'stock': stock,
+                    'product_id': str(o.get('product_id') or '').strip()[:80],
+                    'managed': 1 if num(o.get('managed')) else 0, 'items': items})
+    return out
+
+def _prod_opts_load(pid):
+    if 'options' not in (_state.get('pcols') or ()): return []
+    r = one('SELECT options FROM products WHERE id=?', (pid,))
+    return _prod_opts_norm((r or {}).get('options')) if r else []
+
+def _prod_opt_attach_group(parent_pid, child_pid, opt_name):
+    """자식 옵션상품을 상품마스터에서 부모 그룹의 SKU 로 등록/갱신한다.
+    (_catalog_migrate_missing 을 거치면 1인 그룹이 생기고 그 번호가 재사용돼 SKU 가 충돌하므로 직접 생성)"""
+    try:
+        pv = one('SELECT group_id, sku FROM product_variants WHERE legacy_product_id=?', (parent_pid,))
+        if not pv:
+            try: catalog_product_from_legacy(parent_pid)
+            except Exception: pass
+            pv = one('SELECT group_id, sku FROM product_variants WHERE legacy_product_id=?', (parent_pid,))
+        if not pv: return
+        gid = pv['group_id']; stamp = now_iso()
+        nm, pr = _state['pname'] or 'id', _state['pprice'] or 'price'
+        r = one('SELECT id, %s AS name, %s AS price, stock, soldout, category, img, created_at FROM products WHERE id=?' % (nm, pr), (child_pid,))
+        if not r: return
+        cv = one('SELECT id, group_id FROM product_variants WHERE legacy_product_id=?', (child_pid,))
+        if cv:
+            run('UPDATE product_variants SET group_id=?, option_name=?, sale_status=?, updated_at=? WHERE id=?',
+                (gid, str(opt_name or '')[:300], 'SOLD_OUT' if num(r.get('soldout')) else 'ACTIVE', stamp, cv['id']))
+            if cv['group_id'] != gid and not one('SELECT 1 FROM product_variants WHERE group_id=? LIMIT 1', (cv['group_id'],)):
+                run('DELETE FROM product_groups WHERE id=?', (cv['group_id'],))
+            run('UPDATE inventory_balances SET on_hand=?, updated_at=? WHERE variant_id=? AND is_tracked=1',
+                (max(0, num(r.get('stock'))), stamp, cv['id']))
+            return
+        g = one('SELECT group_no, department FROM product_groups WHERE id=?', (gid,)) or {}
+        base = re.sub(r'-\d{2}$', '', str(pv.get('sku') or ''))
+        if not base:
+            base = '%s-%06d' % (g.get('department') or 'LIFESTYLE', num(g.get('group_no')))
+        taken = {str(x['sku']) for x in rows('SELECT sku FROM product_variants WHERE sku LIKE ?', (base + '-%',))}
+        k = 2
+        while '%s-%02d' % (base, k) in taken: k += 1
+        sku = '%s-%02d' % (base, k)
+        vid = _stable_id('var_', child_pid)
+        parsed = _catalog_parse_product(r)
+        runmany([
+            ('INSERT INTO product_variants(id,legacy_product_id,group_id,sku,option_name,source,sale_status,stock_mode,metadata,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+             (vid, child_pid, gid, sku, str(opt_name or '')[:300], 'DIRECT', 'SOLD_OUT' if num(r.get('soldout')) else 'ACTIVE',
+              'TRACKED', json.dumps(parsed['metadata'], ensure_ascii=False), r.get('created_at') or stamp, stamp)),
+            ('INSERT INTO product_identifiers(id,variant_id,kind,value) VALUES(?,?,?,?)',
+             (_stable_id('idn_', 'LEGACY_ID|' + child_pid), vid, 'LEGACY_ID', child_pid)),
+            ('INSERT INTO inventory_balances(variant_id,location_id,is_tracked,on_hand,reserved,incoming,reorder_point,external_status,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+             (vid, 'SEOUL', 1, max(0, num(r.get('stock'))), 0, 0, 5, '', stamp))])
+    except Exception:
+        pass
+
+def _prod_opts_sync(pid, opts, prev_opts, actor, touch_stock=True):
+    """가격 있는 옵션 ↔ mpo:: 자식 상품 동기화(생성 · 이름/가격/재고/이미지/분류/노출기간 갱신).
+    편집기에서 제거되거나 가격이 지워진 관리 상품은 판매중지(soldout=1) — 담긴 장바구니·직접 링크로도 구매 불가.
+    반환: product_id/managed 가 채워진 옵션 목록."""
+    pc, nm, pr = _state['pcols'], _state['pname'], _state['pprice']
+    if not pc or not nm: return opts
+    cols = 'id, %s AS name' % nm + ''.join(', ' + c for c in ('img', 'category', 'show_from', 'show_until') if c in pc)
+    parent = one('SELECT %s FROM products WHERE id=?' % cols, (pid,))
+    if not parent: return opts
+    pname_base = re.sub(r'\s+', ' ', str(parent.get('name') or pid)).strip()
+    keep = set()
+    for o in opts:
+        cpid = o.get('product_id') or ''
+        if o['price'] <= 0:                                   # 표시 전용(가격 없음) — 판매 안 함
+            if o.get('managed') and cpid:
+                run('UPDATE products SET soldout=1 WHERE id=?', (cpid,)); o['product_id'] = ''
+            o['managed'] = 0
+            continue
+        cname = ('%s — %s' % (pname_base, o['name']))[:300]
+        sold = 1 if (o['stock'] is not None and o['stock'] == 0) else 0
+        inherit = [(c, parent.get(c)) for c in ('img', 'category', 'show_from', 'show_until') if c in pc]
+        if o.get('managed') and cpid and one('SELECT id FROM products WHERE id=?', (cpid,)):
+            sets, args = ['%s=?' % nm], [cname]
+            if touch_stock:                                   # 전파(이름·이미지·노출기간)만 할 때는 주문으로 줄어든 실재고를 덮지 않는다
+                sets += ['stock=?', 'soldout=?']; args += [o['stock'], sold]
+            if pr: sets.append('%s=?' % pr); args.append(o['price'])
+            for c, v in inherit: sets.append('%s=?' % c); args.append(v)
+            run('UPDATE products SET %s WHERE id=?' % ','.join(sets), tuple(args + [cpid]))
+        elif cpid and one('SELECT id FROM products WHERE id=?', (cpid,)):
+            o['managed'] = 0                                  # 기존 상품 수동 연결 — 상품은 불변
+        else:
+            cpid = PROD_OPT_PREFIX + uid()
+            icols, ivals = ['id', nm, 'stock', 'soldout'], [cpid, cname, o['stock'], sold]
+            if pr: icols.append(pr); ivals.append(o['price'])
+            for c, v in inherit: icols.append(c); ivals.append(v)
+            for c, v in (('descr', ''), ('created_at', now_iso()), ('related_ids', '[]')):
+                if c in pc: icols.append(c); ivals.append(v)
+            run('INSERT INTO products(%s) VALUES(%s)' % (','.join(icols), ','.join(['?'] * len(ivals))), tuple(ivals))
+            audit(actor, '상품옵션상품', cpid, cname[:80])
+            o['managed'] = 1
+        o['product_id'] = cpid; keep.add(cpid)
+        if o['managed']: _prod_opt_attach_group(pid, cpid, o['name'])
+    for po in _prod_opts_norm(prev_opts):
+        if po.get('managed') and po.get('product_id') and po['product_id'] not in keep:
+            run('UPDATE products SET soldout=1 WHERE id=?', (po['product_id'],))
+            try: catalog_product_from_legacy(po['product_id'])
+            except Exception: pass
+            audit(actor, '상품옵션중지', po['product_id'], po.get('name') or '')
+    return opts
+
+def _prod_opts_public(pid, now=None):
+    """공개 상세용 옵션 — 연동 상품의 실시간 가격·품절·잔여(10개 이하)를 덧붙인다. 노출기간 밖 자식은 품절 처리."""
+    pr = _state.get('pprice') or 'price'
+    out = []
+    for o in _prod_opts_load(pid):
+        e = {'name': o['name'], 'items': o['items'], 'price': o['price'], 'pid': '', 'soldout': 0, 'left': None}
+        if o['price'] > 0 and o.get('product_id'):
+            try:
+                r = one('SELECT id, %s AS price, stock, soldout%s FROM products WHERE id=?' % (pr, _prod_sched_sel()), (o['product_id'],))
+            except Exception:
+                r = None
+            if r:
+                e['pid'] = o['product_id']; e['price'] = num(r.get('price')) or o['price']
+                stk = r.get('stock')
+                e['soldout'] = 1 if (num(r.get('soldout')) or (stk is not None and num(stk) <= 0)
+                                     or not product_visible(r, now)) else 0
+                if stk is not None and 0 < num(stk) <= 10: e['left'] = num(stk)
+        out.append(e)
+    return out
+
+def _prod_opts_admin(pid):
+    """관리자 편집용 — 저장된 옵션에 연동 상품의 현재 재고를 반영(재고 탭에서 조정된 값 동기화)."""
+    opts = _prod_opts_load(pid)
+    for o in opts:
+        if o.get('managed') and o.get('product_id'):
+            r = one('SELECT stock, soldout FROM products WHERE id=?', (o['product_id'],))
+            if r: o['stock'] = None if r.get('stock') is None else num(r.get('stock')); o['live_soldout'] = num(r.get('soldout'))
+    return opts
+
 _BADGE_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 def badge_color(value):
     value = str(value or '').strip()
@@ -1466,7 +1628,7 @@ def ensure_ready():
         except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids',
-                'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token'):
+                'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token', 'options'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -6254,7 +6416,7 @@ def _stable_id(prefix, value, size=16):
 
 def _catalog_source(pid):
     pid = str(pid or '')
-    return 'K2G' if pid.startswith('k2g::') else ('DIRECT' if pid.startswith('mp::') else 'OWN')
+    return 'K2G' if pid.startswith('k2g::') else ('DIRECT' if pid.startswith(('mp::', 'mpo::')) else 'OWN')
 
 def _catalog_department(category, pid='', name=''):
     cat, low = norm_cat(category), (str(pid) + ' ' + str(name)).lower()
@@ -6842,6 +7004,9 @@ def api_product_create(request: Request, body: dict = Body(...)):
             raise
     try: catalog_product_from_legacy(pid)
     except Exception: pass
+    if 'options' in _state['pcols'] and body.get('options') is not None:
+        _opts = _prod_opts_sync(pid, _prod_opts_norm(body.get('options')), [], a)
+        run('UPDATE products SET options=? WHERE id=?', (json.dumps(_opts, ensure_ascii=False), pid))
     audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s%s' % (
         name, format(price, ','), (' · 할인 %d%% → 판매 ₩%s' % (dc, format(disc_price(price, dc), ','))) if dc else '',
         stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류'),
@@ -6868,6 +7033,11 @@ def api_product_delete(request: Request, body: dict = Body(...)):
         raise HTTPException(404, '상품을 찾을 수 없습니다')
     if 'related_ids' in _state['pcols']:
         _related_unlink_deleted(pid, r.get('related_ids'))
+    for _o in _prod_opts_load(pid):                     # 관리 자식 옵션상품 동반 삭제
+        if _o.get('managed') and _o.get('product_id'):
+            try: _catalog_delete_legacy(_o['product_id'])
+            except Exception: pass
+            run('DELETE FROM products WHERE id=?', (_o['product_id'],))
     try: _catalog_delete_legacy(pid)
     except Exception: pass
     run('DELETE FROM products WHERE id=?', (pid,))
@@ -6880,7 +7050,7 @@ def api_product_delete(request: Request, body: dict = Body(...)):
         except Exception:
             pass  # 이미 기록됨(PK 충돌) — 무시
         _k2g_rm_cache['set'] = None  # 삭제목록 캐시 즉시 무효화
-    elif not pid.startswith('mp::'):
+    elif not pid.startswith(('mp::', 'mpo::', 'mpd::')):
         # 정적 백필(own) 상품: 톰스톤 기록 → 시드 재실행·SHOP 정적 카드 노출 모두 차단
         try:
             run('CREATE TABLE IF NOT EXISTS own_removed(id TEXT PRIMARY KEY, name TEXT, created TEXT, by_admin TEXT)')
@@ -7021,6 +7191,8 @@ def api_product_detail_get(request: Request):
         'show_from': str(r.get('show_from') or ''), 'show_until': str(r.get('show_until') or ''),
         'exposure': dict(zip(('state', 'label'), product_sched_state(r))),
         'preview_url': _prod_preview_url(r),
+        'options': _prod_opts_admin(pid) if 'options' in _state['pcols'] else [],
+        'option_kinds': [{'value': k, 'label': l} for k, l in DROP_OPT_KINDS],
     }
 
 @admin_router.post('/admin/api/products/preview-token')
@@ -7102,9 +7274,18 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
             try: _sitemap_cache['xml'] = None
             except Exception: pass
     related_changed = 'related_ids' in body and 'related_ids' in _state['pcols']
-    if not sets and not priced and not related_changed: raise HTTPException(400, '변경할 값 없음')
+    opts_changed = 'options' in body and 'options' in _state['pcols']
+    if not sets and not priced and not related_changed and not opts_changed: raise HTTPException(400, '변경할 값 없음')
     if sets:
         run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
+    if 'options' in _state['pcols']:
+        _prev = _prod_opts_load(pid)
+        if opts_changed:
+            _opts = _prod_opts_sync(pid, _prod_opts_norm(body.get('options')), _prev, a)
+            run('UPDATE products SET options=? WHERE id=?', (json.dumps(_opts, ensure_ascii=False), pid))
+            log.append('옵션 %d개' % len([o for o in _opts if o['price'] > 0]))
+        elif _prev and sets:
+            _prod_opts_sync(pid, _prev, _prev, a, touch_stock=False)   # 이름·이미지·노출기간 변경을 자식 옵션상품에 전파(재고는 유지)
     if related_changed:
         _related_set(pid, body.get('related_ids')); log.append('related_ids')
     try: _k2g_cache_bust()
@@ -7272,6 +7453,11 @@ h2{font-size:19px;margin-bottom:18px}
  <div style="display:flex;gap:8px;margin-top:12px"><button class="btn sm" type="button" onclick="addImgBlk()">＋ 이미지 추가</button><button class="btn sm" type="button" onclick="addTextBlk()">＋ 글 추가</button></div>
  <div class="hint">이미지와 글을 원하는 순서로 쌓아 게시판 글처럼 구성하세요. ↑↓로 순서 변경, 이미지는 여러 장 한꺼번에 선택할 수 있습니다.</div>
 </div>
+<div class="card"><h3>판매 옵션 <span style="font-weight:400;color:#aaa">— NEW/DROPS 와 같은 옵션 카드</span></h3>
+ <div id="poOpts"></div>
+ <button class="btn sm" type="button" onclick="poOptAdd()">+ 옵션 추가</button>
+ <div class="hint">옵션을 하나라도 두면 상품 페이지(/p/ · 앨범 상세)의 수량·구매 버튼이 <b>옵션 카드(버전별 수량 −/＋ · SOLD OUT · 구성품)</b>로 바뀌고, 고객은 옵션 단위로 장바구니에 담습니다. 가격 있는 옵션은 저장 시 자식 상품(<span style="font-family:'IBM Plex Mono',monospace">mpo::</span>)이 자동 생성되어 재고가 개별 차감되며 [상품·재고]에서 이 상품의 SKU 로 보입니다. 재고를 비우면 무제한. 옵션을 삭제하면 해당 자식 상품은 판매중지됩니다. 이미지·노출 기간은 이 상품을 따릅니다.</div>
+</div>
 <div class="card"><h3>관련 상품</h3>
  <div class="rel-search"><input id="relQ" type="text" placeholder="상품명 또는 상품 ID 검색" onkeydown="if(event.key==='Enter'){event.preventDefault();relSearch()}" oninput="relTyping()"><button class="btn sm" type="button" onclick="relSearch()">검색</button></div>
  <div id="relResults" class="rel-results"></div>
@@ -7408,7 +7594,7 @@ async function init(){
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
   const v=$('#viewBtn');v.href=d.url;v.style.display='';
   $('#stat').textContent=(d.soldout?'상태: 품절':'상태: 판매중')+(d.exposure&&d.exposure.state!=='always'?' · '+d.exposure.label:'');
-  expLoad(d.show_from,d.show_until,d.exposure);pvShow(d.preview_url);
+  expLoad(d.show_from,d.show_until,d.exposure);pvShow(d.preview_url);poLoad(d.options);
   if(new URLSearchParams(location.search).get('created')==='1'){toast('등록 완료! 상세 내용을 이어서 편집할 수 있습니다.');history.replaceState(null,'','/admin/products/edit?id='+encodeURIComponent(PAGE.id));}
  }catch(e){if(e.message!=='세션 만료'){alert('상품을 불러올 수 없습니다: '+e.message);location.href='/admin/dashboard';}}
 }
@@ -7422,6 +7608,27 @@ function expLabel(v){const f=s=>s?s.replace('T',' '):'';if(!v.show_from&&!v.show
  return '노출 중'+(v.show_until?' · '+f(v.show_until)+' 까지':'')}
 function expUI(){const on=expMode()==='range';$('#expBox').style.display=on?'':'none';$('#expStat').textContent=on?expLabel(expVals()):'';}
 function expLoad(sf,su,ex){const on=!!(sf||su);document.querySelector('input[name=fexp][value='+(on?'range':'now')+']').checked=true;$('#fsf').value=sf||'';$('#fsu').value=su||'';expUI();}
+/* ── 판매 옵션 편집기 (NEW/DROPS 옵션 v2 와 동일 구조) ── */
+const PO_KINDS=[['album','앨범'],['card','포토카드'],['ticket','응모권'],['gift','특전'],['etc','기타']];
+function poItem(it){it=it||{};return `<div style="display:flex;gap:6px;margin-bottom:5px"><select class="poi_k" style="width:96px;font:inherit;padding:6px">${PO_KINDS.map(k=>`<option value="${k[0]}" ${it.k===k[0]?'selected':''}>${k[1]}</option>`).join('')}</select><input class="poi_t" style="flex:1;font:inherit;padding:6px 8px;border:1px solid #ccc" placeholder="구성품 — 예) 앨범 1매 · 포토카드 8종 중 1종 랜덤" value="${esc(it.t||'')}"><button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
+function poCard(o){o=o||{};return `<div class="poopt" style="border:1px solid #ddd;background:#fafaf7;padding:9px 9px 8px;margin-bottom:8px">
+ <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+  <input class="po_name" placeholder="옵션명 * — 예) For. A VER" style="flex:2;min-width:170px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${esc(o.name||'')}">
+  <input class="po_price" type="number" min="0" placeholder="가격(원)" style="width:110px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${o.price||''}">
+  <input class="po_stock" type="number" min="0" placeholder="재고 (비움=무제한)" style="width:150px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${o.stock==null?'':o.stock}">
+  <button class="btn sm ghost po_up" type="button" title="위로" onclick="poMove(this,-1)">↑</button><button class="btn sm ghost po_dn" type="button" title="아래로" onclick="poMove(this,1)">↓</button>
+  <button class="btn sm ghost" type="button" style="color:#c0392b" onclick="poDel(this)">옵션 삭제</button></div>
+ ${o.product_id?`<div class="hint" style="margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:11px">연동 상품 <a href="/p/${encodeURIComponent(o.product_id)}" target="_blank">${esc(o.product_id)}</a>${o.managed?' · 자동 관리(이름·가격·재고 동기화)':' · 수동 연결'}${o.live_soldout?' · <b style="color:#c0392b">판매중지/품절</b>':''}</div>`:''}
+ <input type="hidden" class="po_pid" value="${esc(o.product_id||'')}"><input type="hidden" class="po_mng" value="${o.managed?1:0}">
+ <div class="po_items" style="margin-top:7px">${(o.items||[]).map(poItem).join('')}</div>
+ <button class="btn sm ghost" type="button" onclick="this.previousElementSibling.insertAdjacentHTML('beforeend',poItem())">+ 구성품</button></div>`}
+function poMove(btn,dir){const c=btn.closest('.poopt');if(!c)return;const p=c.parentNode;if(dir<0){if(c.previousElementSibling)p.insertBefore(c,c.previousElementSibling)}else{if(c.nextElementSibling)p.insertBefore(c.nextElementSibling,c)}}
+function poDel(btn){const c=btn.closest('.poopt');if(!c)return;const nm=(c.querySelector('.po_name')||{}).value||'';if(nm.trim()&&!confirm('옵션 “'+nm.trim()+'”을(를) 삭제할까요? 연동된 자식 상품은 판매중지됩니다.'))return;c.remove()}
+function poOptAdd(){$('#poOpts').insertAdjacentHTML('beforeend',poCard({items:[]}));const last=$('#poOpts').lastElementChild;if(last)last.querySelector('.po_name').focus()}
+function poLoad(opts){$('#poOpts').innerHTML=(opts||[]).map(poCard).join('')}
+function poCollect(){return [...document.querySelectorAll('#poOpts .poopt')].map(c=>({name:c.querySelector('.po_name').value.trim(),price:parseInt(c.querySelector('.po_price').value,10)||0,
+ stock:c.querySelector('.po_stock').value===''?null:Math.max(0,parseInt(c.querySelector('.po_stock').value,10)||0),product_id:c.querySelector('.po_pid').value,managed:parseInt(c.querySelector('.po_mng').value,10)||0,
+ items:[...c.querySelectorAll('.po_items > div')].map(r=>({k:r.querySelector('.poi_k').value,t:r.querySelector('.poi_t').value.trim()})).filter(x=>x.t)})).filter(o=>o.name)}
 /* ── 미리보기 링크 (NEW/DROPS 와 동일) ── */
 function pvShow(url){if(PAGE.mode!=='edit')return;$('#pvRow').style.display='';$('#pvUrl').value=url||'';if(!url)pvIssue(false)}
 async function pvIssue(rotate){try{const d=await api('/admin/api/products/preview-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:PAGE.id,rotate:!!rotate})});$('#pvUrl').value=d.url;if(rotate)toast('미리보기 링크를 재발급했습니다 — 이전 링크는 더 이상 열리지 않습니다')}catch(e){if(e.message!=='세션 만료')toast(e.message)}}
@@ -7440,13 +7647,14 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),...ex})});
+     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),...ex})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),...ex})});
+    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),...ex})});
   toast('저장되었습니다');expUI();
+  try{const d2=await api('/admin/api/products/detail?id='+encodeURIComponent(PAGE.id));poLoad(d2.options)}catch(e){}
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
 }
@@ -7644,6 +7852,87 @@ def _related_public_item(item):
     out['url'] = ('/album-detail?uid=' + urllib.parse.quote(pid[5:], safe='')
                   if pid.startswith('k2g::') else '/p/' + urllib.parse.quote(pid, safe=''))
     return out
+
+@admin_router.get('/api/products/options')
+def api_public_options(request: Request):
+    """상품 상세(/p/ · /album-detail) 옵션 카드용 공개 데이터 — 가격 있는 옵션이 하나도 없으면 rows=[]."""
+    try: ensure_ready()
+    except Exception: pass
+    pid = (request.query_params.get('product_id') or '').strip()
+    if not pid or len(pid) > 180 or 'options' not in _state['pcols']:
+        return {'rows': []}
+    nm = _state['pname'] or 'id'
+    r = one('SELECT id, %s AS name, img%s FROM products WHERE id=?' % (nm, _prod_sched_sel()), (pid,))
+    if not r: return {'rows': []}
+    rows_ = _prod_opts_public(pid)
+    if not any(o['pid'] and o['price'] > 0 for o in rows_): return {'rows': []}
+    img = str(r.get('img') or '').strip()
+    if img and pid.startswith('k2g::') and not img.startswith(('http://', 'https://', '/')):
+        img = 'https://www.kpop2gether.com/shopimages/912enter/' + img
+    live = product_visible(r)
+    return {'rows': rows_, 'parent': {'id': pid, 'name': str(r.get('name') or pid), 'img': img},
+            'live': bool(live), 'all_sold': all(o['soldout'] for o in rows_ if o['pid'] and o['price'] > 0)}
+
+_PRODUCT_OPTS_SNIPPET = r'''<style id="mpProdOptsCss">
+.mpo-wrap{margin:14px 0 6px}.mpo-h{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;color:#87867F;margin:0 0 10px}
+.mpo-cards{display:flex;flex-direction:column;gap:10px}
+.mpo-oc{background:#fff;border:1px solid #E2E0D9;border-radius:14px;padding:14px 16px;transition:border-color .15s,box-shadow .15s}
+.mpo-oc.sel{border-color:#141414;box-shadow:0 6px 18px rgba(20,20,20,.07)}.mpo-oc.sold{opacity:.55}
+.mpo-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.mpo-name{font-size:14.5px;font-weight:800;letter-spacing:-.01em;line-height:1.4}
+.mpo-price{font-size:15px;font-weight:800;margin-top:3px}
+.mpo-left{display:inline-block;margin-left:8px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#E8332A;letter-spacing:.04em}
+.mpo-sold{display:inline-block;margin-left:8px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#83827B;letter-spacing:.1em}
+.mpo-qty{display:flex;align-items:center;gap:2px;flex:0 0 auto}
+.mpo-qty button{width:36px;height:36px;border-radius:50%;border:1px solid #E2E0D9;background:#fff;font-size:18px;line-height:1;cursor:pointer;color:#141414;font-family:inherit}
+.mpo-qty button:hover{border-color:#141414}.mpo-qty button:disabled{opacity:.35;cursor:default}
+.mpo-qty .q{min-width:34px;text-align:center;font-weight:800;font-size:15px}
+.mpo-items{margin-top:11px;border-top:1px dashed #E2E0D9;padding-top:10px;display:flex;flex-direction:column;gap:6px}
+.mpo-it{display:flex;gap:9px;font-size:12.5px;color:#3A3A38;line-height:1.5;align-items:flex-start}
+.mpo-it svg{flex:0 0 16px;width:16px;height:16px;margin-top:1.5px;color:#87867F}
+.mpo-sum{margin-top:12px;background:#141414;color:#fff;border-radius:14px;padding:13px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mpo-sum .s1{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;color:#B9B8B1}.mpo-sum .s2{font-size:17px;font-weight:800;color:#FFB000}
+.mpo-sum .sp{flex:1}.mpo-sum button{border:0;border-radius:10px;font-weight:800;font-size:13.5px;padding:11px 16px;cursor:pointer;font-family:inherit}
+.mpo-sum .b-cart{background:#fff;color:#141414}.mpo-sum .b-buy{background:#E8332A;color:#fff}.mpo-sum button:disabled{opacity:.4;cursor:default}
+.mpo-off{margin-top:12px;background:#E9E7E0;color:#6B6A64;border-radius:12px;padding:13px;text-align:center;font-weight:700;font-size:13.5px}
+</style><script id="mpProdOptsJs">(function(){
+ function pidOf(){try{if(location.pathname.indexOf('/p/')===0)return decodeURIComponent(location.pathname.slice(3));if(location.pathname==='/album-detail'||location.pathname==='/album-detail.html'){var u=new URLSearchParams(location.search).get('uid');return u?'k2g::'+u:''}}catch(e){}return''}
+ function eh(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+ function fmtw(n){return '₩'+Number(n||0).toLocaleString('ko-KR')}
+ var ICON={album:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></svg>',card:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 12h6M9 15.5h6"/></svg>',ticket:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/></svg>',gift:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="1.5"/><path d="M12 9v11M4 13.5h16"/></svg>',etc:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="2.4"/></svg>'};
+ var pid=pidOf();if(!pid)return;
+ fetch('/api/products/options?product_id='+encodeURIComponent(pid)).then(function(r){return r.json()}).then(function(d){
+  if(!d||!d.rows||!d.rows.length)return;var buy=document.querySelector('.buy');if(!buy)return;
+  ['.qty-row','.total-row','.buy-btns','.stock-line','.price-block'].forEach(function(s){var el=buy.querySelector(s);if(el)el.style.display='none'});
+  buy.querySelectorAll('.badges .bdg').forEach(function(b){if(b.textContent.trim()==='품절')b.style.display='none'});
+  var previewBar=!!document.getElementById('mpExpBanner');
+  var live=!!d.live&&!previewBar;
+  var OQ={};var box=document.createElement('div');box.className='mpo-wrap';box.id='mpoWrap';
+  var anchor=buy.querySelector('.like-row')||buy.querySelector('.ben-acc');if(anchor)buy.insertBefore(box,anchor);else buy.appendChild(box);
+  function card(o,i){var q=(o.pid&&OQ[o.pid])||0;var sell=o.pid&&o.price>0;
+   var items=(o.items||[]).map(function(it){return '<div class="mpo-it">'+(ICON[it.k]||ICON.etc)+'<span>'+eh(it.t)+'</span></div>'}).join('');
+   var flag=o.soldout?'<span class="mpo-sold">SOLD OUT</span>':(o.left?'<span class="mpo-left">'+o.left+'개 남음</span>':'');
+   var ctrl=sell?'<div class="mpo-qty"><button type="button" data-oi="'+i+'" data-d="-1"'+((!live||o.soldout||q<=0)?' disabled':'')+'>−</button><span class="q">'+q+'</span><button type="button" data-oi="'+i+'" data-d="1"'+((!live||o.soldout)?' disabled':'')+'>＋</button></div>':'';
+   return '<div class="mpo-oc'+(q>0?' sel':'')+(o.soldout?' sold':'')+'"><div class="mpo-top"><div><div class="mpo-name">'+eh(o.name)+'</div>'+(o.price>0?'<div class="mpo-price">'+fmtw(o.price)+flag+'</div>':'')+'</div>'+ctrl+'</div>'+(items?'<div class="mpo-items">'+items+'</div>':'')+'</div>'}
+  function sum(){var tq=0,tp=0;d.rows.forEach(function(o){var q=(o.pid&&OQ[o.pid])||0;tq+=q;tp+=q*o.price});
+   if(!live)return '<div class="mpo-off">'+(previewBar?'미리보기 — 노출 기간 안에서만 구매할 수 있습니다':'현재 구매할 수 없는 상품입니다')+'</div>';
+   if(d.all_sold)return '<div class="mpo-off">모든 옵션이 품절되었습니다</div>';
+   return '<div class="mpo-sum"><div><div class="s1">총 '+tq+'개 선택</div><div class="s2">'+fmtw(tp)+'</div></div><span class="sp"></span><button type="button" class="b-cart" id="mpoCart"'+(tq?'':' disabled')+'>장바구니 담기</button><button type="button" class="b-buy" id="mpoBuy"'+(tq?'':' disabled')+'>바로 구매하기</button></div>'}
+  function render(){box.innerHTML='<h4 class="mpo-h">옵션 선택</h4><div class="mpo-cards">'+d.rows.map(card).join('')+'</div>'+sum();
+   var a=document.getElementById('mpoCart'),b=document.getElementById('mpoBuy');
+   if(a)a.onclick=function(){if(addCart())location.href='/cart'};if(b)b.onclick=function(){if(addCart())location.href='/checkout'}}
+  function addCart(){var CK='mapdal_cart',items;try{items=JSON.parse(localStorage.getItem(CK)||'[]')}catch(e){items=[]}
+   var added=0;d.rows.forEach(function(o){var q=(o.pid&&OQ[o.pid])||0;if(!q)return;added+=q;var ex=items.find(function(i){return i.id===o.pid});
+    if(ex)ex.q=Math.min(99,ex.q+q);else items.push({id:o.pid,n:d.parent.name+' — '+o.name,p:o.price,q:q,img:d.parent.img||'',u:location.pathname+location.search})});
+   if(!added)return false;try{localStorage.setItem(CK,JSON.stringify(items))}catch(e){}
+   var cnt=items.reduce(function(a,i){return a+i.q},0);var el=document.getElementById('cartBadge');if(el)el.textContent='CART · '+cnt;var el2=document.querySelector('.util .cart');if(el2)el2.textContent='CART · '+cnt;
+   try{if(window.gtag)gtag('event','add_to_cart',{currency:'KRW',value:d.rows.reduce(function(a,o){return a+((o.pid&&OQ[o.pid])||0)*o.price},0)})}catch(e){}
+   return true}
+  box.addEventListener('click',function(e){var b=e.target.closest('button[data-oi]');if(!b||b.disabled)return;var o=d.rows[parseInt(b.dataset.oi,10)];if(!o||!o.pid)return;
+   var q=(OQ[o.pid]||0)+parseInt(b.dataset.d,10);OQ[o.pid]=Math.max(0,Math.min(o.left||99,q));render()});
+  render();
+ }).catch(function(){});
+})();</script>'''
 
 @admin_router.get('/api/products/related')
 def api_public_related(request: Request):
@@ -7935,7 +8224,7 @@ def pdp(pid: str, request: Request):
                                 status_code=404)
         if _pv_tok and (request.query_params.get('pv') or '').strip():
             _pv_set = _pv_tok                      # ?pv= 로 열었으면 쿠키 발급 — 새로고침·이동에도 유지
-        _exp_banner = ('<div style="position:sticky;top:0;z-index:9999;background:#1d4ed8;color:#fff;font:700 13px/1.4 sans-serif;'
+        _exp_banner = ('<div id="mpExpBanner" style="position:sticky;top:0;z-index:9999;background:#1d4ed8;color:#fff;font:700 13px/1.4 sans-serif;'
                        'padding:10px 16px;text-align:center">%s — %s · 일반 고객에게는 보이지 않으며 결제는 노출 기간 안에서만 가능합니다</div>'
                        % ('관리자 미리보기' if _is_admin else '미리보기 링크', h(_exp_label)))
     soldout = num(r.get('soldout')) or num(r.get('stock')) <= 0
@@ -8081,7 +8370,7 @@ def pdp(pid: str, request: Request):
         'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
         'shiprows': shiprows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
-        'relatedsnippet': _RELATED_WIDGET_SNIPPET}), '/p/' + pid).replace('</head><body>', '</head><body>' + _exp_banner, 1), request)
+        'relatedsnippet': _RELATED_WIDGET_SNIPPET + _PRODUCT_OPTS_SNIPPET}), '/p/' + pid).replace('</head><body>', '</head><body>' + _exp_banner, 1), request)
     if _pv_set:
         _resp.set_cookie(_prod_pv_cookie(pid), _pv_set, max_age=_PROD_PV_COOKIE_AGE, path='/', httponly=True, samesite='lax', secure=True)
     return _resp
@@ -14366,6 +14655,7 @@ def _inject_auth(html, path='', uid=None):
         else:
             add += CARD_CSS_SNIPPET
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
+    if 'mpProdOptsJs' not in html and (path == '/album-detail' or path.startswith('/p/')): add += _PRODUCT_OPTS_SNIPPET
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
     if 'mpDropInput' not in html: add += DROPINPUT_SNIPPET

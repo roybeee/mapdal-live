@@ -176,9 +176,14 @@ def quote(items, country, coupon_code='', email='', customer_id='', lock_c=None)
                 raise HTTPException(400, 'Price unavailable: %s' % str(row['name'])[:40])
             if row['stock'] is not None and row['stock'] < q:
                 raise HTTPException(409, 'Only %d left: %s' % (row['stock'], str(row['name'])[:40]))
+            bparts = _av().bundle_parts_of(row)
+            if bparts:
+                bs, bl = _av().bundle_availability(bparts)
+                if bs or (bl is not None and bl < q):
+                    raise HTTPException(409, 'Only %d left: %s' % (bl or 0, str(row['name'])[:40]))
             sub += int(row['price']) * q
             n += q
-            lines.append({'id': row['id'], 'n': row['name'], 'p': int(row['price']), 'q': q, 'stock': row['stock']})
+            lines.append({'id': row['id'], 'n': row['name'], 'p': int(row['price']), 'q': q, 'stock': row['stock'], 'bundle': bool(bparts)})
     if lock_c is not None:
         run(lock_c)
     else:
@@ -317,9 +322,11 @@ def _intl_order_tx(a, items, country, buyer, customer_id, member_id, phone_norm,
                 c.exec('UPDATE products SET stock=stock-? WHERE id=?', (l['q'], l['id']))
                 if l['stock'] - l['q'] <= 0:
                     c.exec('UPDATE products SET soldout=1 WHERE id=?', (l['id'],))
+            if l.get('bundle'):                       # 세트: 낱개 구성 재고 잠금·차감 + parts 스냅샷
+                l['parts'] = _av().bundle_take(c, _lookup(c, l['id'], lock=True), l['q'], a.LOCK)
         oid = 'MD-%s-%s' % (a.kst_naive().strftime('%Y%m%d'), secrets.token_hex(3).upper())
         buyer['ship_fee'], buyer['duties'], buyer['ddp'] = q['ship'], q['duties'], q['ddp']
-        lines = [{'id': l['id'], 'n': l['n'], 'p': l['p'], 'q': l['q']} for l in q['lines']]
+        lines = [dict({'id': l['id'], 'n': l['n'], 'p': l['p'], 'q': l['q']}, **({'parts': l['parts']} if l.get('parts') else {})) for l in q['lines']]
         c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) '
                'VALUES(?,?,?,?,?,?,?,?,?,?)',
                (oid, a.kst_iso(), 'PENDING', total, json.dumps(buyer, ensure_ascii=False),

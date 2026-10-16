@@ -582,7 +582,7 @@ if(t)document.getElementById('eventBox').innerHTML=`<div class="event-box"><span
 // 가격
 const pct=r[3]&&r[4]?Math.round((1-r[4]/r[3])*100):0;
 document.getElementById('pPct').textContent=pct?pct+'%':'';
-document.getElementById('pNow').textContent=r[4]?fmt(r[4]):'가격 문의';
+document.getElementById('pNow').textContent=r[4]?fmt(r[4]):(r[5]?'SOLD OUT':'가격 문의');
 // 수량·합계
 let q=1;const upd=()=>{document.getElementById('qv').textContent=q;document.getElementById('pTot').textContent=fmt((r[4]||0)*q);};
 document.getElementById('qp').onclick=()=>{q=Math.min(99,q+1);upd();};

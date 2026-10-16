@@ -416,7 +416,7 @@ function cardHTML(r){
     <span class="k2g-cover"><img loading="lazy" referrerpolicy="no-referrer" src="${K2G_IMG}${r[1]}" alt=""></span>
     <span class="k2g-body"><span class="card-artist">${k2gEsc(k2gArtist(r[2]))}</span><h4>${k2gEsc(k2gTitle(r[2]))}</h4>
     <span class="k2g-price">
-    <span class="now">${pct?`<span class="pct">${pct}%</span>`:''}<span class="amt">${r[4]?'₩'+fmt(r[4]):'가격 문의'}</span></span></span>
+    <span class="now">${pct?`<span class="pct">${pct}%</span>`:''}<span class="amt">${r[4]?'₩'+fmt(r[4]):(r[5]?'SOLD OUT':'가격 문의')}</span></span></span>
     <span class="card-badges">${states}</span></span></a>`;}
 function albumEligible(){return F==='all'||F==='album';}
 function renderBatch(n){

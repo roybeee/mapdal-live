@@ -762,8 +762,20 @@ async def create_order(req: Request, response: Response):
                     changed_stock_ids.append(db_id)
                     if row['stock'] - q == 0:
                         c.exec('UPDATE products SET soldout=1 WHERE id=?', (db_id,))
+                # 세트(묶음) 옵션: 낱개 구성 재고를 같은 트랜잭션에서 검증·차감하고 parts 스냅샷을 남긴다
+                parts = []
+                try:
+                    import admin_v2 as _avb; parts = _avb.bundle_take(c, row, q, LOCK)
+                except HTTPException:
+                    raise
+                except Exception:
+                    parts = []
+                if parts:
+                    changed_stock_ids.extend(p['id'] for p in parts)
                 sub += row['price'] * q
-                resolved.append({'id': db_id, 'n': row['name'], 'p': row['price'], 'q': q})
+                line_rec = {'id': db_id, 'n': row['name'], 'p': row['price'], 'q': q}
+                if parts: line_rec['parts'] = parts
+                resolved.append(line_rec)
             # ── 배송비 ──
             #   드롭(mpd::) 상품 포함 주문: 금액 무관 3,000원 정액(무료배송 기준 미적용).
             #   일반 주문: 30,000원 이상 무료, 미만 3,000원. 픽업은 항상 무료.

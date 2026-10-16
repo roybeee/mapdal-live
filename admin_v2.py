@@ -1277,6 +1277,49 @@ def _prod_opts_admin(pid):
             if r: o['stock'] = None if r.get('stock') is None else num(r.get('stock')); o['live_soldout'] = num(r.get('soldout'))
     return opts
 
+# ── 상품 설명 탭 구성 (2026-10-16) ─────────────────────────────────────────────
+#   products.tabs — JSON {"hide": ["info","qa"] 중 일부, "custom": [{"title","body"}]}
+#   기본 탭(상품설명·구매정보·배송/교환)은 유지하되 구매정보·배송/교환은 숨길 수 있고,
+#   추가 탭은 제목+본문(줄글, 줄바꿈 유지)으로 상세 탭 바에 이어 붙는다.
+#   공개면은 /api/products/tabs → _PRODUCT_TABS_SNIPPET 이 /p/ · /album-detail 탭 바를 재구성한다.
+_PROD_TAB_HIDEABLE = ('info', 'qa')
+
+def _prod_tabs_norm(raw):
+    if isinstance(raw, str): raw = jload(raw, {})
+    raw = raw if isinstance(raw, dict) else {}
+    hide = [h for h in _PROD_TAB_HIDEABLE if h in [str(x) for x in (raw.get('hide') or [])]]
+    custom = []
+    for t in (raw.get('custom') or [])[:6]:
+        if not isinstance(t, dict): continue
+        title = re.sub(r'\s+', ' ', str(t.get('title') or '')).strip()[:30]
+        body = str(t.get('body') or '').replace('\r\n', '\n').strip()[:8000]
+        if title and body: custom.append({'title': title, 'body': body})
+    return {'hide': hide, 'custom': custom}
+
+def _prod_tabs_load(pid):
+    if 'tabs' not in (_state.get('pcols') or ()): return {'hide': [], 'custom': []}
+    r = one('SELECT tabs FROM products WHERE id=?', (pid,))
+    return _prod_tabs_norm((r or {}).get('tabs'))
+
+def _prod_tab_body_html(body):
+    """줄글 → 안전한 HTML (이스케이프 · 줄바꿈 유지 · URL 자동 링크)."""
+    e = (str(body or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
+    e = re.sub(r'(https?://[^\s<]+)', r'<a href="\1" target="_blank" rel="noopener">\1</a>', e)
+    return '<div class="mpt-body">%s</div>' % e.replace('\n', '<br>')
+
+def hex_or_empty(value):
+    """썸네일 배경 등 선택적 색상 — #RRGGBB 만 허용, 아니면 ''(기본 그라데이션)."""
+    v = str(value or '').strip()
+    return v.upper() if re.fullmatch(r'#[0-9a-fA-F]{6}', v) else ''
+
+def hero_bg_css(color):
+    """단색 → 상세 상단 썸네일 배경(은은한 방사형 그라데이션 유지)."""
+    c = hex_or_empty(color)
+    if not c: return ''
+    r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+    lt = '#%02X%02X%02X' % tuple(min(255, int(x + (255 - x) * 0.35)) for x in (r, g, b))
+    return 'background:radial-gradient(130%% 95%% at 50%% 15%%,%s 0%%,%s 100%%)' % (lt, c)
+
 _BADGE_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 def badge_color(value):
     value = str(value or '').strip()
@@ -1628,7 +1671,7 @@ def ensure_ready():
         except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids',
-                'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token', 'options'):
+                'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token', 'options', 'tabs', 'hero_bg'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -5473,17 +5516,21 @@ async function saveTicker(){try{
 
 /* ── NEW/DROPS 이벤트 허브 관리 ─────────────────────────────── */
 /* 대시보드 공용 이미지 업로드 헬퍼 — 상품 편집 폼과 동일 구현 (배너 탭 업로드도 이 함수를 사용) */
-function shrinkImage(file,maxDim=1600,quality=0.85){
+function shrinkImage(file,maxW=1600,quality=0.9,maxH=12000){
+ /* 폭 기준 축소 — 종전엔 긴 변 기준 1600px 이라 세로로 긴 상세 이미지(예 1000×6000)가 267px 폭으로 뭉개졌다.
+    이제 폭 1600px·높이 12000px 상한만 두고 확대는 하지 않는다. PNG 투명도는 JPEG 변환 시 사라지므로 PNG 는 PNG 유지. */
  return new Promise((resolve)=>{
-  if(!/^image\//.test(file.type)||file.type==='image/gif'){resolve(file);return;}
+  if(!/^image\//.test(file.type)||file.type==='image/gif'||file.type==='image/svg+xml'){resolve(file);return;}
   const img=new Image();const url=URL.createObjectURL(file);
   img.onload=()=>{URL.revokeObjectURL(url);
    let{width:w,height:h}=img;
-   if(w<=maxDim&&h<=maxDim&&file.size<600*1024){resolve(file);return;}
-   const s=Math.min(1,maxDim/Math.max(w,h));const cw=Math.round(w*s),ch=Math.round(h*s);
+   if(w<=maxW&&h<=maxH&&file.size<1500*1024){resolve(file);return;}
+   const s=Math.min(1,maxW/w,maxH/h);const cw=Math.round(w*s),ch=Math.round(h*s);
+   if(s>=1&&file.type==='image/png'){resolve(file);return;}
    const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
    cv.getContext('2d').drawImage(img,0,0,cw,ch);
-   cv.toBlob(b=>resolve(b&&b.size<file.size?new File([b],file.name.replace(/\.\w+$/,'')+'.jpg',{type:'image/jpeg'}):file),'image/jpeg',quality);
+   const png=file.type==='image/png';
+   cv.toBlob(b=>resolve(b&&(b.size<file.size||s<1)?new File([b],file.name.replace(/\.\w+$/,'')+(png?'.png':'.jpg'),{type:png?'image/png':'image/jpeg'}):file),png?'image/png':'image/jpeg',quality);
   };
   img.onerror=()=>{URL.revokeObjectURL(url);resolve(file);};
   img.src=url;
@@ -6967,6 +7014,8 @@ def api_product_create(request: Request, body: dict = Body(...)):
         cols.append('badge'); vals.append((body.get('badge') or '').strip()[:30])
     if 'badge_color' in _state['pcols']:
         cols.append('badge_color'); vals.append(badge_color(body.get('badge_color')))
+    if 'hero_bg' in _state['pcols']:
+        cols.append('hero_bg'); vals.append(hex_or_empty(body.get('hero_bg')))
     if 'created_at' in _state['pcols']:
         cols.append('created_at'); vals.append(now_iso())
     if 'related_ids' in _state['pcols']:
@@ -7007,6 +7056,8 @@ def api_product_create(request: Request, body: dict = Body(...)):
     if 'options' in _state['pcols'] and body.get('options') is not None:
         _opts = _prod_opts_sync(pid, _prod_opts_norm(body.get('options')), [], a)
         run('UPDATE products SET options=? WHERE id=?', (json.dumps(_opts, ensure_ascii=False), pid))
+    if 'tabs' in _state['pcols'] and body.get('tabs') is not None:
+        run('UPDATE products SET tabs=? WHERE id=?', (json.dumps(_prod_tabs_norm(body.get('tabs')), ensure_ascii=False), pid))
     audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s%s' % (
         name, format(price, ','), (' · 할인 %d%% → 판매 ₩%s' % (dc, format(disc_price(price, dc), ','))) if dc else '',
         stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류'),
@@ -7156,7 +7207,7 @@ def api_product_detail_get(request: Request):
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
     for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids', 'list_price',
-              'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token'):
+              'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token', 'hero_bg'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -7193,6 +7244,9 @@ def api_product_detail_get(request: Request):
         'preview_url': _prod_preview_url(r),
         'options': _prod_opts_admin(pid) if 'options' in _state['pcols'] else [],
         'option_kinds': [{'value': k, 'label': l} for k, l in DROP_OPT_KINDS],
+        'tabs': _prod_tabs_load(pid),
+        'hero_bg': hex_or_empty(r.get('hero_bg')),
+        'gallery_list': [u for u in re.split(r'[\r\n]+', str(r.get('gallery') or '')) if u.strip()],
     }
 
 @admin_router.post('/admin/api/products/preview-token')
@@ -7229,6 +7283,7 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         'category': ('category', 40, norm_cat),
         'badge': ('badge', 30, None),
         'badge_color': ('badge_color', 7, badge_color),
+        'hero_bg': ('hero_bg', 7, hex_or_empty),
         'gallery': ('gallery', None, _clean_gallery),
         'info_rows': ('info_rows', 3000, None),
         'ship_rows': ('ship_rows', 3000, None),
@@ -7275,6 +7330,10 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
             except Exception: pass
     related_changed = 'related_ids' in body and 'related_ids' in _state['pcols']
     opts_changed = 'options' in body and 'options' in _state['pcols']
+    if 'tabs' in body and 'tabs' in _state['pcols']:
+        _tabs = _prod_tabs_norm(body.get('tabs'))
+        sets.append('tabs=?'); args.append(json.dumps(_tabs, ensure_ascii=False))
+        log.append('설명탭 %d개%s' % (len(_tabs['custom']), (' · 숨김 ' + ','.join(_tabs['hide'])) if _tabs['hide'] else ''))
     if not sets and not priced and not related_changed and not opts_changed: raise HTTPException(400, '변경할 값 없음')
     if sets:
         run('UPDATE products SET %s WHERE id=?' % ', '.join(sets), tuple(args + [pid]))
@@ -7338,8 +7397,11 @@ header h1{font-family:'Black Han Sans';font-size:19px;font-weight:400}header h1 
 header a.back{color:#bbb;text-decoration:none;font-size:13px}header a.back:hover{color:#fff}
 main{max-width:820px;margin:26px auto;padding:0 18px}
 h2{font-size:19px;margin-bottom:18px}
-.card{background:#fff;border:1px solid #e3e1db;padding:24px;margin-bottom:18px}
-.card h3{font-size:14px;border-left:4px solid var(--red);padding-left:9px;margin-bottom:16px}
+.card{background:#fff;border:1px solid #e3e1db;padding:22px 24px 24px;margin-bottom:22px}
+.card h3{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:19px;font-weight:700;letter-spacing:-.01em;margin:-22px -24px 20px;padding:14px 24px;background:var(--black);color:#fff;border-bottom:3px solid var(--red)}
+.card h3 .no{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--red);color:#fff;font:700 13px/1 'IBM Plex Mono',monospace;flex:0 0 auto;align-self:center}
+.card h3 small{font-size:12px;font-weight:400;color:#bbb;margin-left:auto}
+.card h3 span:not(.no){font-size:inherit;color:inherit}
 .f{margin-bottom:15px}
 .f label{display:block;font-size:12px;font-weight:700;color:#777;margin-bottom:6px}
 .f input[type=text],.f input[type=number],.f select,.f textarea{width:100%;font:inherit;font-size:14px;padding:10px 12px;border:1px solid #ccc;background:#fff}
@@ -7390,7 +7452,7 @@ h2{font-size:19px;margin-bottom:18px}
 <header><a class="back" href="/admin/dashboard">← 대시보드</a><h1>MAPDAL<span>SEOUL</span></h1><span id="ptitle" style="font-size:13px;color:#bbb"></span></header>
 <main>
 <h2 id="h2title"></h2>
-<div class="card"><h3>기본 정보</h3>
+<div class="card"><h3><span class="no">1</span>기본 정보<small>상품명 · 카테고리 · 가격 · 재고 · 배지</small></h3>
  <div class="f"><label>상품명 *</label><input type="text" id="fn" placeholder="예: 맵달 굿즈 키링"></div>
  <div class="row2">
   <div class="f"><label>카테고리 *</label><select id="fc"></select></div>
@@ -7412,20 +7474,13 @@ h2{font-size:19px;margin-bottom:18px}
   <div style="display:flex;align-items:center;gap:10px"><input type="color" id="fbc" value="#050505" style="width:54px;height:40px;padding:2px;border:1px solid #ccc;background:#fff;cursor:pointer"><span style="font-size:12px;color:#888">배지의 글자색은 흰색으로 고정됩니다.</span></div>
  </div>
  <div class="f"><label>짧은 설명</label><textarea id="fd" rows="3" placeholder="목록·상단 요약 설명 (선택)"></textarea></div>
- <div class="f"><label>구매정보 탭 <span style="font-weight:400;color:#aaa">— 항목별로 입력</span></label>
-  <div id="infoRows" class="kvlist"></div>
-  <div class="kvbar">
-   <button class="btn sm" type="button" onclick="addInfoRow()">＋ 항목 추가</button>
-   <button class="btn sm ghost" type="button" onclick="loadInfoPreset()">카테고리 기본값 불러오기</button>
-   <button class="btn sm ghost" type="button" onclick="clearInfoRows()">전체 비우기</button>
-  </div>
-  <datalist id="infoLabelOpts"></datalist>
-  <span style="font-size:12px;color:#888">항목을 하나도 입력하지 않으면 카테고리 기본값이 표시됩니다. 상품명·분류 행은 자동 표시되므로 적지 않아도 됩니다. 내용에 <b>//</b> 를 넣으면 그 자리에서 줄바꿈됩니다.</span></div>
- <div class="f"><label>배송/교환 탭</label>
-  <textarea id="fship" rows="5" placeholder="한 줄에 하나씩 · 형식: 제목|내용&#10;예)&#10;국내배송|3,000원 (30,000원 이상 무료)&#10;교환/반품|미개봉·미사용에 한해 수령 7일 이내"></textarea>
-  <span style="font-size:12px;color:#888">비워두면 기본 배송 안내가 표시됩니다. 최대 12행.</span></div>
 </div>
-<div class="card"><h3>노출 기간 <span style="font-weight:400;color:#aaa">— 고객에게 보이는 시간</span></h3>
+<div class="card"><h3><span class="no">2</span>판매 옵션<small>버전/구성별 옵션 카드 — NEW/DROPS 와 동일</small></h3>
+ <div id="poOpts"></div>
+ <button class="btn sm" type="button" onclick="poOptAdd()">+ 옵션 추가</button>
+ <div class="hint">옵션을 하나라도 두면 상품 페이지(/p/ · 앨범 상세)의 수량·구매 버튼이 <b>옵션 카드(버전별 수량 −/＋ · SOLD OUT · 구성품)</b>로 바뀌고, 고객은 옵션 단위로 장바구니에 담습니다. 가격 있는 옵션은 저장 시 자식 상품(<span style="font-family:'IBM Plex Mono',monospace">mpo::</span>)이 자동 생성되어 재고가 개별 차감되며 [상품·재고]에서 이 상품의 SKU 로 보입니다. 재고를 비우면 무제한. 옵션을 삭제하면 해당 자식 상품은 판매중지됩니다. 이미지·노출 기간은 이 상품을 따릅니다.</div>
+</div>
+<div class="card"><h3><span class="no">3</span>노출 기간<small>고객에게 보이는 시간 · 미리보기 링크</small></h3>
  <div class="f" style="margin-bottom:10px">
   <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px;color:var(--black)"><input type="radio" name="fexp" value="now" checked onchange="expUI()"> <b>즉시 노출</b> <span style="color:#888;font-weight:400">저장 즉시 SHOP·상세페이지에 공개</span></label>
   <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px;color:var(--black);margin-top:6px"><input type="radio" name="fexp" value="range" onchange="expUI()"> <b>기간 지정</b> <span style="color:#888;font-weight:400">시작·종료 시각을 정해 자동 공개/종료</span></label>
@@ -7441,24 +7496,56 @@ h2{font-size:19px;margin-bottom:18px}
   <div class="hint" style="margin-top:4px">노출 전·종료 후에도 이 링크로는 누구나 상품 페이지를 확인할 수 있습니다(결제는 노출 기간 안에서만). 파트너·아티스트 측 검수용으로 공유하고, 외부에 알려졌다면 <b>재발급</b>하세요.</div>
  </div>
 </div>
-<div class="card"><h3>대표 이미지</h3>
+<div class="card"><h3><span class="no">4</span>대표 이미지<small>목록 카드 · 상세 상단</small></h3>
  <div id="fzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
  <input id="ffile" type="file" accept="image/*" style="display:none"><input id="fi" type="hidden">
  <div id="fpv" style="margin-top:10px"></div>
- <div class="hint">업로드 시 자동으로 리사이즈·압축됩니다 (최대 1600px).</div>
+ <div class="hint">업로드 시 폭 1600px 기준으로만 축소·압축됩니다 — 세로로 긴 상세 이미지도 화질이 유지됩니다.</div>
+ <div class="f" style="margin-top:20px;padding-top:16px;border-top:1px dashed #e3e1db"><label>썸네일 뒷배경 컬러 <span style="font-weight:400;color:#aaa">— 판매 페이지 첫 상단 이미지 영역</span></label>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+   <input type="color" id="fhb" value="#FBE9DF" style="width:54px;height:40px;padding:2px;border:1px solid #ccc;background:#fff;cursor:pointer" oninput="hbSync('picker')">
+   <span style="display:inline-flex;align-items:center;border:1px solid #ccc;background:#fff;padding:0 10px;height:40px;font-family:'IBM Plex Mono',monospace;font-size:14px;color:#888">#<input id="fhbhex" maxlength="6" placeholder="기본" style="border:0;outline:0;width:76px;font:inherit;color:var(--black);padding:0 0 0 2px" oninput="hbSync('hex')"></span>
+   <button class="btn sm ghost" type="button" onclick="hbFromImage()" title="대표 이미지의 평균색을 뽑아 배경으로">이미지에서 추출</button>
+   <button class="btn sm ghost" type="button" onclick="hbSet('')">기본 배경</button>
+   <div id="hbPrev" style="flex:1;min-width:180px;height:40px;border:1px solid #e3e1db;display:flex;align-items:center;justify-content:center;font-size:11px;color:#888">미리보기</div>
+  </div>
+  <span class="hint">비우면 기본(살구빛 그라데이션). 선택한 색을 중심으로 은은한 그라데이션이 적용됩니다.</span></div>
+ <div class="f" style="margin-top:18px"><label>추가 썸네일 <span style="font-weight:400;color:#aaa">— 여러 장 등록 · 대표 이미지 아래 썸네일로 표시되고 누르면 큰 이미지가 바뀝니다 · 최대 12장</span></label>
+  <div id="gzone" class="dropzone"><div class="dz-in" data-empty="썸네일 이미지를 드래그하거나 클릭해 여러 장 업로드"></div></div>
+  <input id="gfile" type="file" accept="image/*" multiple style="display:none">
+  <div id="galList" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"></div></div>
 </div>
-<div class="card"><h3>상세 페이지 (이미지 + 글)</h3>
+<div class="card"><h3><span class="no">5</span>상세 페이지<small>이미지 + 글</small></h3>
  <div id="blkList" class="blk-list"></div>
  <input id="blkImgInput" type="file" accept="image/*" multiple style="display:none" onchange="onBlkImg(this.files)">
  <div style="display:flex;gap:8px;margin-top:12px"><button class="btn sm" type="button" onclick="addImgBlk()">＋ 이미지 추가</button><button class="btn sm" type="button" onclick="addTextBlk()">＋ 글 추가</button></div>
  <div class="hint">이미지와 글을 원하는 순서로 쌓아 게시판 글처럼 구성하세요. ↑↓로 순서 변경, 이미지는 여러 장 한꺼번에 선택할 수 있습니다.</div>
 </div>
-<div class="card"><h3>판매 옵션 <span style="font-weight:400;color:#aaa">— NEW/DROPS 와 같은 옵션 카드</span></h3>
- <div id="poOpts"></div>
- <button class="btn sm" type="button" onclick="poOptAdd()">+ 옵션 추가</button>
- <div class="hint">옵션을 하나라도 두면 상품 페이지(/p/ · 앨범 상세)의 수량·구매 버튼이 <b>옵션 카드(버전별 수량 −/＋ · SOLD OUT · 구성품)</b>로 바뀌고, 고객은 옵션 단위로 장바구니에 담습니다. 가격 있는 옵션은 저장 시 자식 상품(<span style="font-family:'IBM Plex Mono',monospace">mpo::</span>)이 자동 생성되어 재고가 개별 차감되며 [상품·재고]에서 이 상품의 SKU 로 보입니다. 재고를 비우면 무제한. 옵션을 삭제하면 해당 자식 상품은 판매중지됩니다. 이미지·노출 기간은 이 상품을 따릅니다.</div>
+<div class="card"><h3><span class="no">6</span>설명 탭 구성<small>상세 하단 탭 — 기본 탭 표시/숨김 · 추가 탭 편집</small></h3>
+ <div class="f"><label>기본 탭</label>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:13px">
+   <label style="display:flex;gap:6px;align-items:center;color:#999"><input type="checkbox" checked disabled> 상품설명 <span style="color:#bbb">(항상 표시 · 내용은 ⑤ 상세 페이지)</span></label>
+   <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="tabShowInfo" checked> 구매정보</label>
+   <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="tabShowQa" checked> 배송/교환</label>
+  </div></div>
+ <div class="f"><label>구매정보 탭 <span style="font-weight:400;color:#aaa">— 항목별로 입력</span></label>
+  <div id="infoRows" class="kvlist"></div>
+  <div class="kvbar">
+   <button class="btn sm" type="button" onclick="addInfoRow()">＋ 항목 추가</button>
+   <button class="btn sm ghost" type="button" onclick="loadInfoPreset()">카테고리 기본값 불러오기</button>
+   <button class="btn sm ghost" type="button" onclick="clearInfoRows()">전체 비우기</button>
+  </div>
+  <datalist id="infoLabelOpts"></datalist>
+  <span style="font-size:12px;color:#888">항목을 하나도 입력하지 않으면 카테고리 기본값이 표시됩니다. 상품명·분류 행은 자동 표시되므로 적지 않아도 됩니다. 내용에 <b>//</b> 를 넣으면 그 자리에서 줄바꿈됩니다.</span></div>
+ <div class="f"><label>배송/교환 탭</label>
+  <textarea id="fship" rows="5" placeholder="한 줄에 하나씩 · 형식: 제목|내용&#10;예)&#10;국내배송|3,000원 (30,000원 이상 무료)&#10;교환/반품|미개봉·미사용에 한해 수령 7일 이내"></textarea>
+  <span style="font-size:12px;color:#888">비워두면 기본 배송 안내가 표시됩니다. 최대 12행.</span></div>
+ <div class="f" style="margin-top:22px;padding-top:18px;border-top:1px dashed #e3e1db"><label>추가 탭 <span style="font-weight:400;color:#aaa">— 제목과 내용을 직접 편집 · 최대 6개 · 탭 바 오른쪽에 순서대로 붙습니다</span></label>
+  <div id="ptTabs"></div>
+  <button class="btn sm" type="button" onclick="ptAdd()">+ 탭 추가</button>
+  <span class="hint" style="display:block">줄바꿈은 그대로 표시되고 URL은 링크로 바뀝니다. 예) "Track List" · "앨범 사양" · "이벤트 안내"</span></div>
 </div>
-<div class="card"><h3>관련 상품</h3>
+<div class="card"><h3><span class="no">7</span>관련 상품<small>상세페이지 추천</small></h3>
  <div class="rel-search"><input id="relQ" type="text" placeholder="상품명 또는 상품 ID 검색" onkeydown="if(event.key==='Enter'){event.preventDefault();relSearch()}" oninput="relTyping()"><button class="btn sm" type="button" onclick="relSearch()">검색</button></div>
  <div id="relResults" class="rel-results"></div>
  <div id="relSelected" class="rel-selected"></div>
@@ -7483,17 +7570,21 @@ async function api(p,opt){const r=await fetch(p,opt);
 const PCATS=[['','— 카테고리 선택 —'],['album','앨범 / 음반'],['md','굿즈 / MD'],['kfood','K-FOOD'],['apparel','어패럴'],['living','리빙 / 홈']];
 function catOptions(sel){return PCATS.map(c=>`<option value="${c[0]}"${c[0]===(sel||'')?' selected':''}>${c[1]}</option>`).join('')}
 
-function shrinkImage(file,maxDim=1600,quality=0.85){
+function shrinkImage(file,maxW=1600,quality=0.9,maxH=12000){
+ /* 폭 기준 축소 — 종전엔 긴 변 기준 1600px 이라 세로로 긴 상세 이미지(예 1000×6000)가 267px 폭으로 뭉개졌다.
+    이제 폭 1600px·높이 12000px 상한만 두고 확대는 하지 않는다. PNG 투명도는 JPEG 변환 시 사라지므로 PNG 는 PNG 유지. */
  return new Promise((resolve)=>{
-  if(!/^image\//.test(file.type)||file.type==='image/gif'){resolve(file);return;}
+  if(!/^image\//.test(file.type)||file.type==='image/gif'||file.type==='image/svg+xml'){resolve(file);return;}
   const img=new Image();const url=URL.createObjectURL(file);
   img.onload=()=>{URL.revokeObjectURL(url);
    let{width:w,height:h}=img;
-   if(w<=maxDim&&h<=maxDim&&file.size<600*1024){resolve(file);return;}
-   const s=Math.min(1,maxDim/Math.max(w,h));const cw=Math.round(w*s),ch=Math.round(h*s);
+   if(w<=maxW&&h<=maxH&&file.size<1500*1024){resolve(file);return;}
+   const s=Math.min(1,maxW/w,maxH/h);const cw=Math.round(w*s),ch=Math.round(h*s);
+   if(s>=1&&file.type==='image/png'){resolve(file);return;}
    const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
    cv.getContext('2d').drawImage(img,0,0,cw,ch);
-   cv.toBlob(b=>resolve(b&&b.size<file.size?new File([b],file.name.replace(/\.\w+$/,'')+'.jpg',{type:'image/jpeg'}):file),'image/jpeg',quality);
+   const png=file.type==='image/png';
+   cv.toBlob(b=>resolve(b&&(b.size<file.size||s<1)?new File([b],file.name.replace(/\.\w+$/,'')+(png?'.png':'.jpg'),{type:png?'image/png':'image/jpeg'}):file),png?'image/png':'image/jpeg',quality);
   };
   img.onerror=()=>{URL.revokeObjectURL(url);resolve(file);};
   img.src=url;
@@ -7506,8 +7597,38 @@ async function uploadFile(file){
  return r.url;
 }
 function setMainImg(u){$('#fi').value=u||'';
- $('#fpv').innerHTML=u?`<img src="${esc(u)}" style="max-width:100%;max-height:220px;border:1px solid #e3e1db">
+ const pv=(u&&!/^(https?:)?\/\//.test(u)&&u.indexOf('/')!==0)?'https://www.kpop2gether.com/shopimages/912enter/'+u:u; /* K2G 앨범은 파일명만 저장됨 */
+ $('#fpv').innerHTML=u?`<img src="${esc(pv)}" style="max-width:100%;max-height:220px;border:1px solid #e3e1db">
   <div style="margin-top:6px"><button class="btn sm ghost" type="button" onclick="setMainImg('')">이미지 제거</button></div>`:'';}
+/* ── 썸네일 배경 컬러 ── */
+function hbSet(hex){hex=(hex||'').replace('#','').toUpperCase();if(!/^[0-9A-F]{6}$/.test(hex))hex='';$('#fhbhex').value=hex;$('#fhb').value='#'+(hex||'FBE9DF');hbPrev()}
+function hbSync(src){if(src==='picker'){$('#fhbhex').value=$('#fhb').value.slice(1).toUpperCase()}else{const v=$('#fhbhex').value.replace(/[^0-9a-fA-F]/g,'').slice(0,6);$('#fhbhex').value=v.toUpperCase();if(v.length===6)$('#fhb').value='#'+v}hbPrev()}
+function hbVal(){const v=$('#fhbhex').value.trim();return /^[0-9A-F]{6}$/i.test(v)?'#'+v.toUpperCase():''}
+function hbPrev(){const c=hbVal(),p=$('#hbPrev');if(!c){p.style.background='radial-gradient(130% 95% at 50% 15%,#FFF8F2 0%,#FBE9DF 42%,#F2D3C4 100%)';p.textContent='기본 배경';return}
+ const r=parseInt(c.slice(1,3),16),g=parseInt(c.slice(3,5),16),b=parseInt(c.slice(5,7),16),lt='rgb('+[r,g,b].map(x=>Math.min(255,Math.round(x+(255-x)*.35))).join(',')+')';
+ p.style.background='radial-gradient(130% 95% at 50% 15%,'+lt+' 0%,'+c+' 100%)';p.textContent=c;p.style.color=(r*299+g*587+b*114)/1000>150?'#333':'#fff'}
+function hbFromImage(){const u=$('#fi').value;if(!u)return toast('대표 이미지를 먼저 올리세요');const im=new Image();im.crossOrigin='anonymous';
+ im.onload=function(){try{const cv=document.createElement('canvas'),w=cv.width=48,h=cv.height=48,cx=cv.getContext('2d');cx.drawImage(im,0,0,w,h);const d=cx.getImageData(0,0,w,h).data;let r=0,g=0,b=0,k=0;
+  for(let i=0;i<d.length;i+=4){if(d[i+3]<40)continue;const x=(i/4)%w,y=Math.floor(i/4/w);if(x>4&&x<w-5&&y>4&&y<h-5)continue;r+=d[i];g+=d[i+1];b+=d[i+2];k++}  /* 가장자리 색 기준 */
+  if(!k)throw 0;const hex=[r,g,b].map(v=>Math.round(v/k).toString(16).padStart(2,'0')).join('');hbSet(hex);toast('이미지 가장자리 색 #'+hex.toUpperCase()+' 추출')}catch(e){toast('이미지에서 색을 읽을 수 없습니다 — 직접 지정해 주세요')}};
+ im.onerror=function(){toast('이미지에서 색을 읽을 수 없습니다 — 직접 지정해 주세요')};im.src=u+(u.indexOf('?')<0?'?':'&')+'cors=1'}
+/* ── 추가 썸네일(갤러리) ── */
+let _gal=[];
+function galRender(){$('#galList').innerHTML=_gal.map((u,i)=>`<div style="position:relative;width:96px"><img src="${esc(u)}" style="width:96px;height:96px;object-fit:cover;border:1px solid #e3e1db;display:block">
+ <div style="display:flex;gap:2px;margin-top:3px"><button class="btn sm ghost" type="button" style="padding:2px 6px" onclick="galMove(${i},-1)" ${i===0?'disabled':''}>↑</button><button class="btn sm ghost" type="button" style="padding:2px 6px" onclick="galMove(${i},1)" ${i===_gal.length-1?'disabled':''}>↓</button><button class="btn sm ghost" type="button" style="padding:2px 6px;color:#c0392b;margin-left:auto" onclick="galDel(${i})">×</button></div></div>`).join('')||'<span class="hint">아직 추가 썸네일이 없습니다.</span>'}
+function galMove(i,d){const j=i+d;if(j<0||j>=_gal.length)return;[_gal[i],_gal[j]]=[_gal[j],_gal[i]];galRender()}
+function galDel(i){_gal.splice(i,1);galRender()}
+function galLoad(list){_gal=Array.isArray(list)?list.slice(0,12):[];galRender()}
+(function mountGalZone(){
+ const zone=$('#gzone'),inp=$('#gfile'),dz=zone.querySelector('.dz-in');if(!zone)return;const EMPTY=dz.getAttribute('data-empty');dz.textContent=EMPTY;
+ async function handle(files){files=[...(files||[])].filter(f=>/^image\//.test(f.type));if(!files.length)return;if(_gal.length+files.length>12)return toast('추가 썸네일은 최대 12장입니다');
+  zone.classList.add('busy');let k=0;for(const f of files){dz.textContent='업로드 중… '+(++k)+'/'+files.length;try{_gal.push(await uploadFile(f))}catch(e){if(e.message!=='세션 만료')toast(e.message)}}
+  galRender();zone.classList.remove('busy');dz.textContent=EMPTY}
+ zone.addEventListener('click',()=>inp.click());inp.addEventListener('change',()=>{handle(inp.files);inp.value=''});
+ ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('over')}));
+ ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('over')}));
+ zone.addEventListener('drop',e=>handle(e.dataTransfer.files));
+})();
 (function mountZone(){
  const zone=$('#fzone'),inp=$('#ffile'),dz=zone.querySelector('.dz-in');
  const EMPTY=dz.getAttribute('data-empty');dz.textContent=EMPTY;
@@ -7575,7 +7696,7 @@ async function init(){
  $('#fc').innerHTML=catOptions('');
  if(PAGE.mode==='new'){
  $('#h2title').textContent='신규 상품 등록';$('#ptitle').textContent='상품 등록';
-  $('#saveBtn').textContent='등록';renderInfoRows();renderBlocks();renderRelated();return;
+  $('#saveBtn').textContent='등록';renderInfoRows();renderBlocks();renderRelated();hbSet('');galRender();return;
  }
  $('#h2title').textContent='상품 상세 편집';$('#ptitle').textContent='상세 편집';
  $('#fslabel').textContent='재고 *';
@@ -7594,7 +7715,7 @@ async function init(){
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
   const v=$('#viewBtn');v.href=d.url;v.style.display='';
   $('#stat').textContent=(d.soldout?'상태: 품절':'상태: 판매중')+(d.exposure&&d.exposure.state!=='always'?' · '+d.exposure.label:'');
-  expLoad(d.show_from,d.show_until,d.exposure);pvShow(d.preview_url);poLoad(d.options);
+  expLoad(d.show_from,d.show_until,d.exposure);pvShow(d.preview_url);poLoad(d.options);ptLoad(d.tabs);hbSet(d.hero_bg);galLoad(d.gallery_list);
   if(new URLSearchParams(location.search).get('created')==='1'){toast('등록 완료! 상세 내용을 이어서 편집할 수 있습니다.');history.replaceState(null,'','/admin/products/edit?id='+encodeURIComponent(PAGE.id));}
  }catch(e){if(e.message!=='세션 만료'){alert('상품을 불러올 수 없습니다: '+e.message);location.href='/admin/dashboard';}}
 }
@@ -7608,6 +7729,17 @@ function expLabel(v){const f=s=>s?s.replace('T',' '):'';if(!v.show_from&&!v.show
  return '노출 중'+(v.show_until?' · '+f(v.show_until)+' 까지':'')}
 function expUI(){const on=expMode()==='range';$('#expBox').style.display=on?'':'none';$('#expStat').textContent=on?expLabel(expVals()):'';}
 function expLoad(sf,su,ex){const on=!!(sf||su);document.querySelector('input[name=fexp][value='+(on?'range':'now')+']').checked=true;$('#fsf').value=sf||'';$('#fsu').value=su||'';expUI();}
+/* ── 설명 탭 편집기 ── */
+function ptCard(t){t=t||{};return `<div class="ptab" style="border:1px solid #ddd;background:#fafaf7;padding:10px;margin-bottom:8px">
+ <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input class="pt_title" maxlength="30" placeholder="탭 제목 * — 예) Track List" style="flex:1;min-width:180px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${esc(t.title||'')}">
+  <button class="btn sm ghost" type="button" title="위로" onclick="ptMove(this,-1)">↑</button><button class="btn sm ghost" type="button" title="아래로" onclick="ptMove(this,1)">↓</button><button class="btn sm ghost" type="button" style="color:#c0392b" onclick="ptDel(this)">탭 삭제</button></div>
+ <textarea class="pt_body" rows="6" placeholder="탭 내용 * — 줄바꿈 그대로 표시됩니다" style="width:100%;margin-top:7px;font:inherit;font-size:13.5px;line-height:1.6;padding:9px 10px;border:1px solid #ccc;resize:vertical">${esc(t.body||'')}</textarea></div>`}
+function ptMove(btn,dir){const c=btn.closest('.ptab');if(!c)return;const p=c.parentNode;if(dir<0){if(c.previousElementSibling)p.insertBefore(c,c.previousElementSibling)}else{if(c.nextElementSibling)p.insertBefore(c.nextElementSibling,c)}}
+function ptDel(btn){const c=btn.closest('.ptab');if(!c)return;const nm=(c.querySelector('.pt_title')||{}).value||'';if((nm.trim()||(c.querySelector('.pt_body')||{}).value)&&!confirm('탭 “'+(nm.trim()||'(제목 없음)')+'”을(를) 삭제할까요?'))return;c.remove()}
+function ptAdd(){if(document.querySelectorAll('#ptTabs .ptab').length>=6)return toast('추가 탭은 최대 6개입니다');$('#ptTabs').insertAdjacentHTML('beforeend',ptCard());const l=$('#ptTabs').lastElementChild;if(l)l.querySelector('.pt_title').focus()}
+function ptLoad(t){t=t||{};const hide=t.hide||[];$('#tabShowInfo').checked=hide.indexOf('info')<0;$('#tabShowQa').checked=hide.indexOf('qa')<0;$('#ptTabs').innerHTML=(t.custom||[]).map(ptCard).join('')}
+function ptCollect(){const hide=[];if(!$('#tabShowInfo').checked)hide.push('info');if(!$('#tabShowQa').checked)hide.push('qa');
+ return {hide,custom:[...document.querySelectorAll('#ptTabs .ptab')].map(c=>({title:c.querySelector('.pt_title').value.trim(),body:c.querySelector('.pt_body').value.trim()})).filter(x=>x.title&&x.body)}}
 /* ── 판매 옵션 편집기 (NEW/DROPS 옵션 v2 와 동일 구조) ── */
 const PO_KINDS=[['album','앨범'],['card','포토카드'],['ticket','응모권'],['gift','특전'],['etc','기타']];
 function poItem(it){it=it||{};return `<div style="display:flex;gap:6px;margin-bottom:5px"><select class="poi_k" style="width:96px;font:inherit;padding:6px">${PO_KINDS.map(k=>`<option value="${k[0]}" ${it.k===k[0]?'selected':''}>${k[1]}</option>`).join('')}</select><input class="poi_t" style="flex:1;font:inherit;padding:6px 8px;border:1px solid #ccc" placeholder="구성품 — 예) 앨범 1매 · 포토카드 8종 중 1종 랜덤" value="${esc(it.t||'')}"><button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
@@ -7642,17 +7774,18 @@ async function save(){
  if(pr.dc>0&&pr.base<=0)return toast('할인율을 적용하려면 먼저 정가를 입력하세요');
  const ex=expVals();
  if(ex.show_from&&ex.show_until&&ex.show_from>=ex.show_until)return toast('노출 종료 시각은 시작 시각보다 뒤여야 합니다');
+ for(const c of document.querySelectorAll('#ptTabs .ptab')){const t=c.querySelector('.pt_title').value.trim(),b=c.querySelector('.pt_body').value.trim();if((t&&!b)||(!t&&b)){c.querySelector(t?'.pt_body':'.pt_title').focus();return toast('추가 탭은 제목과 내용을 모두 입력하세요')}}
  const btn=$('#saveBtn');btn.disabled=true;
  try{
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),...ex})});
+     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock:Number($('#fs').value||0),
-    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),...ex})});
+    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
   toast('저장되었습니다');expUI();
   try{const d2=await api('/admin/api/products/detail?id='+encodeURIComponent(PAGE.id));poLoad(d2.options)}catch(e){}
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
@@ -7934,6 +8067,62 @@ _PRODUCT_OPTS_SNIPPET = r'''<style id="mpProdOptsCss">
  }).catch(function(){});
 })();</script>'''
 
+@admin_router.get('/api/products/tabs')
+def api_public_tabs(request: Request):
+    """상세 탭 구성 — 숨길 기본 탭 + 추가 탭(HTML 본문). 설정이 없으면 hide=[] · custom=[]."""
+    try: ensure_ready()
+    except Exception: pass
+    pid = (request.query_params.get('product_id') or '').strip()
+    if not pid or len(pid) > 180: return {'hide': [], 'custom': []}
+    t = _prod_tabs_load(pid)
+    out = {'hide': t['hide'], 'custom': [{'title': x['title'], 'html': _prod_tab_body_html(x['body'])} for x in t['custom']],
+           'hero_bg': '', 'hero_css': '', 'gallery': []}
+    try:
+        pc = _state.get('pcols') or ()
+        cols = ['id'] + [c for c in ('hero_bg', 'gallery', 'img') if c in pc]
+        r = one('SELECT %s FROM products WHERE id=?' % ','.join(cols), (pid,))
+        if r:
+            out['hero_bg'] = hex_or_empty(r.get('hero_bg')); out['hero_css'] = hero_bg_css(r.get('hero_bg'))
+            gal = [u.strip() for u in re.split(r'[\r\n]+', str(r.get('gallery') or '')) if u.strip().startswith('http')]
+            img = str(r.get('img') or '').strip()
+            if img and pid.startswith('k2g::') and not img.startswith(('http://', 'https://', '/')):
+                img = 'https://www.kpop2gether.com/shopimages/912enter/' + img
+            out['gallery'] = ([img] + gal) if (gal and img) else gal
+    except Exception:
+        pass
+    return out
+
+_PRODUCT_TABS_SNIPPET = r'''<style id="mpProdTabsCss">
+.mpt-body{font-size:14.5px;line-height:1.9;color:#2b2b2b;word-break:keep-all;white-space:normal}.mpt-body a{color:#E8332A;text-decoration:underline}
+.tab-bar.mpt-many button{font-size:13px;padding:14px 8px}
+</style><script id="mpProdTabsJs">(function(){
+ function pidOf(){try{if(location.pathname.indexOf('/p/')===0)return decodeURIComponent(location.pathname.slice(3));if(location.pathname==='/album-detail'||location.pathname==='/album-detail.html'){var u=new URLSearchParams(location.search).get('uid');return u?'k2g::'+u:''}}catch(e){}return''}
+ function eh(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+ var pid=pidOf();if(!pid)return;
+ fetch('/api/products/tabs?product_id='+encodeURIComponent(pid)).then(function(r){return r.json()}).then(function(d){
+  if(!d)return;
+  /* 상단 썸네일 배경 컬러 + 추가 썸네일 — /album-detail(정적) 에 적용. /p/ 는 서버 렌더 */
+  try{var gm=document.getElementById('galMain');
+   if(gm&&d.hero_css){gm.setAttribute('style',(gm.getAttribute('style')||'')+';'+d.hero_css);gm.removeAttribute('data-theme')}
+   if(gm&&d.gallery&&d.gallery.length>1&&!document.querySelector('.gal-thumbs')){
+    var mi=gm.querySelector('img');var th=document.createElement('div');th.className='gal-thumbs';
+    th.innerHTML=d.gallery.map(function(u,i){return '<button type="button" class="'+(i?'':'on')+'" data-src="'+eh(u)+'"><img src="'+eh(u)+'" alt="" loading="lazy"></button>'}).join('');
+    gm.insertAdjacentElement('afterend',th);
+    th.addEventListener('click',function(e){var b=e.target.closest('button[data-src]');if(!b||!mi)return;mi.onerror=null;mi.src=b.dataset.src;th.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)})})}
+  }catch(e){}
+  if((!d.hide||!d.hide.length)&&(!d.custom||!d.custom.length))return;
+  var bar=document.querySelector('.tab-bar');if(!bar)return;var wrap=bar.parentElement;
+  (d.hide||[]).forEach(function(k){var b=bar.querySelector('button[data-tab="'+k+'"]'),p=document.getElementById('tab-'+k);if(b)b.remove();if(p)p.remove()});
+  (d.custom||[]).forEach(function(t,i){var k='x'+i;var b=document.createElement('button');b.setAttribute('data-tab',k);b.textContent=t.title;bar.appendChild(b);
+   var p=document.createElement('div');p.className='tab-panel';p.id='tab-'+k;p.innerHTML=t.html;wrap.appendChild(p)});
+  var n=bar.querySelectorAll('button').length;bar.style.gridTemplateColumns='repeat('+n+',1fr)';if(n>4)bar.classList.add('mpt-many');
+  if(!bar.querySelector('button.on')){var f=bar.querySelector('button');if(f){f.classList.add('on');var fp=document.getElementById('tab-'+f.dataset.tab);if(fp)fp.classList.add('on')}}
+  bar.addEventListener('click',function(e){var b=e.target.closest('button[data-tab]');if(!b)return;
+   bar.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});
+   wrap.querySelectorAll('.tab-panel').forEach(function(p){p.classList.toggle('on',p.id==='tab-'+b.dataset.tab)})});
+ }).catch(function(){});
+})();</script>'''
+
 @admin_router.get('/api/products/related')
 def api_public_related(request: Request):
     """상품 상세페이지 관련상품 위젯용 공개 데이터."""
@@ -8056,6 +8245,14 @@ header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1
 .tab-panel{display:none;padding:40px 0 8px}.tab-panel.on{display:block}
 .tab-panel .descbody{font-size:14.5px;line-height:1.85;color:#333;white-space:pre-wrap}
 .detail-imgs img{max-width:100%%;height:auto;display:block;margin:12px auto;border-radius:2px}
+/* mpBlocksCss — 상세 본문 이미지: 브라우저 기본 figure 여백(1em 40px) 제거 · 폭 100%% · 이미지 사이 간격 0 */
+.detail figure,.nd-content .body figure,.tab-panel figure,.mpt-body figure{margin:0;padding:0}
+.detail figure img,.nd-content .body figure img,.nd-content .body>img,.tab-panel figure img{width:100%%;max-width:100%%;height:auto;display:block;margin:0;border-radius:0}
+.detail figure+figure,.nd-content .body figure+figure,.nd-content .body img+img{margin-top:0}
+.detail figcaption,.nd-content .body figcaption{font-size:12.5px;color:#87867F;text-align:center;padding:8px 0 14px}
+.detail p,.tab-panel .detail p{margin:0;padding:14px 0;font-size:14.5px;line-height:1.9;word-break:keep-all}
+.detail figure+p,.nd-content .body figure+p{padding-top:18px}
+.detail-imgs img{margin:0 auto}
 .info-table{width:100%%;border-collapse:collapse;font-size:13.5px}
 .info-table th{text-align:left;width:168px;padding:12px 10px;background:#faf9f5;border:1px solid var(--line);font-weight:600;vertical-align:top;word-break:keep-all;line-height:1.5}
 .info-table td{padding:12px 12px;border:1px solid var(--line);color:#444;line-height:1.6;vertical-align:top}
@@ -8081,7 +8278,7 @@ max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
 <div class="crumb"><a href="/home">HOME</a> &gt; <a href="%(caturl)s">%(catlabel)s</a> &gt; <span style="color:var(--ink)">%(name)s</span></div>
 <div class="pdp">
   <div>
-    <div class="gal-main" id="galMain"><span class="bg-word">MAPDAL SEOUL</span><span class="gal-flavor">%(flavor)s</span>%(imgtag)s</div>
+    <div class="gal-main" id="galMain" style="%(herostyle)s"><span class="bg-word">MAPDAL SEOUL</span><span class="gal-flavor">%(flavor)s</span>%(imgtag)s</div>
     %(galhtml)s
     <div class="pdp-tabs">
       <div class="tab-bar">
@@ -8204,7 +8401,7 @@ def pdp(pid: str, request: Request):
     # (버그 수정) info_rows·ship_rows 가 SELECT 목록에서 빠져 있어 관리자가 저장한
     # 상품별 구매정보·배송/교환 커스텀 행이 상세페이지에 전혀 반영되지 않았다.
     for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'list_price',
-              'info_rows', 'ship_rows', 'badge', 'badge_color', 'discount_pct', 'show_from', 'show_until', 'preview_token'):
+              'info_rows', 'ship_rows', 'badge', 'badge_color', 'discount_pct', 'show_from', 'show_until', 'preview_token', 'hero_bg'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r:
@@ -8238,8 +8435,10 @@ def pdp(pid: str, request: Request):
     gal = [u.strip() for u in re.split(r'[\r\n]+', r.get('gallery') or '') if u.strip().startswith('http')]
     galhtml = ''
     if gal:
-        thumbs = ''.join('<img src="%s" alt="" onclick="swapMain(this.src)">' % h(u) for u in ([img] + gal if img else gal))
-        galhtml = '<div class="gal">%s</div>' % thumbs
+        thumbs = ''.join('<button type="button" class="%s" data-src="%s" onclick="swapMain(this.dataset.src)"><img src="%s" alt="" loading="lazy"></button>'
+                         % ('on' if i == 0 else '', h(u), h(u)) for i, u in enumerate([img] + gal if img else gal))
+        galhtml = '<div class="gal-thumbs">%s</div>' % thumbs
+    _hero_style = hero_bg_css(r.get('hero_bg'))
     # 상세 페이지 본문 — 게시판 블록(이미지+글)을 렌더 (레거시 HTML도 자동 처리)
     detailhtml = ''
     body_html = render_blocks(r.get('detail_html'))
@@ -8367,10 +8566,10 @@ def pdp(pid: str, request: Request):
         'caturl': h(_cu or '/shop'), 'catlabel': h(_cl or 'SHOP'),
         'flavor': flavor, 'badges': badges_html, 'brand': h(brand_line),
         'benefits': benefits_html, 'viewers': viewers,
-        'galhtml': galhtml, 'detailhtml': detailhtml, 'inforows': inforows,
+        'galhtml': galhtml, 'herostyle': _hero_style, 'detailhtml': detailhtml, 'inforows': inforows,
         'shiprows': shiprows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
-        'relatedsnippet': _RELATED_WIDGET_SNIPPET + _PRODUCT_OPTS_SNIPPET}), '/p/' + pid).replace('</head><body>', '</head><body>' + _exp_banner, 1), request)
+        'relatedsnippet': _RELATED_WIDGET_SNIPPET + _PRODUCT_OPTS_SNIPPET + _PRODUCT_TABS_SNIPPET}), '/p/' + pid).replace('</head><body>', '</head><body>' + _exp_banner, 1), request)
     if _pv_set:
         _resp.set_cookie(_prod_pv_cookie(pid), _pv_set, max_age=_PROD_PV_COOKIE_AGE, path='/', httponly=True, samesite='lax', secure=True)
     return _resp
@@ -12027,6 +12226,15 @@ ready(function(){
  }).catch(function(){});
 });})();</script>"""
 
+BLOCKS_CSS_SNIPPET = r"""<style id="mpBlocksCss">/* mpBlocksCss — 상세 본문 이미지: 브라우저 기본 figure 여백(1em 40px) 제거 · 폭 100% · 이미지 사이 간격 0 */
+.detail figure,.nd-content .body figure,.tab-panel figure,.mpt-body figure{margin:0;padding:0}
+.detail figure img,.nd-content .body figure img,.nd-content .body>img,.tab-panel figure img{width:100%;max-width:100%;height:auto;display:block;margin:0;border-radius:0}
+.detail figure+figure,.nd-content .body figure+figure,.nd-content .body img+img{margin-top:0}
+.detail figcaption,.nd-content .body figcaption{font-size:12.5px;color:#87867F;text-align:center;padding:8px 0 14px}
+.detail p,.tab-panel .detail p{margin:0;padding:14px 0;font-size:14.5px;line-height:1.9;word-break:keep-all}
+.detail figure+p,.nd-content .body figure+p{padding-top:18px}
+.detail-imgs img{margin:0 auto}</style>"""
+
 CARD_CSS_SNIPPET = r"""<style id="mpCardCss">/* mpCardCss v20260715.6 */
 /* KPOP·SHOP 카드 정보영역 공통 규격: 아티스트/브랜드 → 상품명 → 가격 → 상태 */
 #shopGrid .col-card .col-body,
@@ -14648,6 +14856,10 @@ def _inject_auth(html, path='', uid=None):
         else:
             add += MOBNAV_SNIPPET
     if 'mpTickerJs' not in html: add += TICKER_SNIPPET
+    if 'mpBlocksCss' not in html:
+        _h = html.lower().find('</head>')
+        if _h >= 0: html = html[:_h] + BLOCKS_CSS_SNIPPET + html[_h:]
+        else: add += BLOCKS_CSS_SNIPPET
     if 'mpCardCss' not in html:
         _h = html.lower().find('</head>')
         if _h >= 0 and CARD_CSS_SNIPPET.lstrip().startswith('<style'):
@@ -14656,6 +14868,7 @@ def _inject_auth(html, path='', uid=None):
             add += CARD_CSS_SNIPPET
     if 'mpRelatedJs' not in html: add += _RELATED_WIDGET_SNIPPET
     if 'mpProdOptsJs' not in html and (path == '/album-detail' or path.startswith('/p/')): add += _PRODUCT_OPTS_SNIPPET
+    if 'mpProdTabsJs' not in html and (path == '/album-detail' or path.startswith('/p/')): add += _PRODUCT_TABS_SNIPPET
     if 'mpArtistChip' not in html: add += ARTIST_CHIP_SNIPPET
     if 'mpDropSel' not in html: add += DROPSEL_SNIPPET
     if 'mpDropInput' not in html: add += DROPINPUT_SNIPPET

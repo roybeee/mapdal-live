@@ -1091,6 +1091,30 @@ def product_exposure_gate(items):
                                       if st == 'scheduled' else '판매 기간이 종료된 상품입니다 (%s)')
                                 % str(r.get('name') or r['id'])[:40])
 
+# ── 상품 미리보기 링크 (2026-10-16) — NEW/DROPS 의 ?pv= 와 동일 방식 ──────────────
+#   products.preview_token — 등록 시 자동 발급 · 관리자에서 재발급(이전 링크 즉시 무효).
+#   /p/<id>?pv=<token> 이 유효하면 노출기간 밖(예정·종료)에도 상세가 열리고, 쿠키
+#   mp_ppv_<id해시> (12시간)로 새로고침·관련상품 이동에도 유지된다. 결제는 그대로 차단.
+_PROD_PV_COOKIE_AGE = 43200
+
+def _prod_pv_cookie(pid):
+    return 'mp_ppv_' + hashlib.sha256(str(pid or '').encode('utf-8')).hexdigest()[:16]
+
+def _prod_preview_token_of(r, request):
+    """요청에 담긴 유효한 미리보기 토큰(?pv= 또는 쿠키) — 없으면 ''."""
+    tok = str((r or {}).get('preview_token') or '')
+    if not tok or request is None: return ''
+    q = (request.query_params.get('pv') or '').strip()
+    if q and hmac.compare_digest(q, tok): return tok
+    ck = (request.cookies.get(_prod_pv_cookie(r.get('id'))) or '').strip()
+    if ck and hmac.compare_digest(ck, tok): return tok
+    return ''
+
+def _prod_preview_url(r):
+    tok = str((r or {}).get('preview_token') or '')
+    if not tok or not (r or {}).get('id'): return ''
+    return '%s/p/%s?pv=%s' % (SITE_ORIGIN, urllib.parse.quote(str(r['id']), safe=''), tok)
+
 _BADGE_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 def badge_color(value):
     value = str(value or '').strip()
@@ -1442,7 +1466,7 @@ def ensure_ready():
         except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids',
-                'info_rows', 'ship_rows', 'show_from', 'show_until'):
+                'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
@@ -4838,11 +4862,13 @@ function summaryDrill(kind){
  setTimeout(()=>{const v=$('#pv-'+PMODE);if(v)v.scrollIntoView({behavior:'smooth',block:'start'})},80)
 }
 function reviewChips(g){return (g.review_reasons||[]).map(x=>`<span class="meta-chip warn">${esc(x)}</span>`).join('')}
+async function productPvLink(id){try{const d=await api('/admin/api/products/preview-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+ const u=d.url;try{await navigator.clipboard.writeText(u);toast('미리보기 링크를 복사했습니다')}catch(e){prompt('미리보기 링크 (복사하세요)',u)}}catch(e){toast(e.message)}}
 function expChip(x){if(!x||x.state==='always')return '';const c=x.state==='scheduled'?'background:#1d4ed8;color:#fff':x.state==='ended'?'background:#6b7280;color:#fff':'background:#15803d;color:#fff';return `<span class="meta-chip" style="${c}" title="고객 노출 기간(KST)">⏱ ${esc(x.label)}</span>`}
 function variantRows(g){return (g.variants||[]).map(v=>{const inv=v.tracked
  ?`<span class="inv-status ${(v.available||0)<=0?'out':(v.available||0)<=v.reorder_point?'low':'ok'}">가용 ${v.available} / 실재고 ${v.on_hand}</span>`
  :`<span class="inv-status ${v.external_status==='OUT'?'out':'ok'}">외부연동 · ${v.external_status==='OUT'?'판매불가':v.external_status==='AVAILABLE'?'판매가능':'확인필요'}</span>`;
- return `<tr><td class="mono">${esc(v.sku)}</td><td class="variant-name">${esc(v.name)} ${expChip(v.exposure)}<div class="group-sub">기존 ID · ${esc(v.legacy_id)}</div></td><td class="right mono">${won(v.list_price||v.price)}</td><td>${inv}</td><td style="white-space:nowrap">${can(2)?`<button class="btn sm" onclick="editDetail('${esc(v.legacy_id)}')">상품편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" target="_blank" href="/p/${encodeURIComponent(v.legacy_id)}">보기</a>${can(2)?` <button class="btn sm ghost" style="color:#c0392b" onclick="deleteCatalogProduct('${esc(v.legacy_id)}')">삭제</button>`:''}</td></tr>`}).join('')}
+ return `<tr><td class="mono">${esc(v.sku)}</td><td class="variant-name">${esc(v.name)} ${expChip(v.exposure)}<div class="group-sub">기존 ID · ${esc(v.legacy_id)}</div></td><td class="right mono">${won(v.list_price||v.price)}</td><td>${inv}</td><td style="white-space:nowrap">${can(2)?`<button class="btn sm" onclick="editDetail('${esc(v.legacy_id)}')">상품편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" target="_blank" href="/p/${encodeURIComponent(v.legacy_id)}">보기</a>${v.exposure&&v.exposure.state!=='always'&&v.exposure.state!=='live'&&can(2)?` <button class="btn sm ghost" onclick="productPvLink('${esc(v.legacy_id)}')">🔗 미리보기 링크</button>`:''}${can(2)?` <button class="btn sm ghost" style="color:#c0392b" onclick="deleteCatalogProduct('${esc(v.legacy_id)}')">삭제</button>`:''}</td></tr>`}).join('')}
 function groupCard(g,reviewOnly){const bad=g.review_state!=='READY'||g.confidence<80;const stock=g.external_count
  ?`외부연동 ${g.external_count}${g.available?' · 가용 '+g.available:''}`:`가용 ${g.available}`;
  return `<div class="group-card ${bad?'needs-review':''}" data-gid="${esc(g.id)}">
@@ -6805,6 +6831,8 @@ def api_product_create(request: Request, body: dict = Body(...)):
             raise HTTPException(400, '노출 종료 시각은 시작 시각보다 뒤여야 합니다')
         for c in _PROD_SCHED_COLS:
             cols.append(c); vals.append(sched[c])
+    if 'preview_token' in _state['pcols']:
+        cols.append('preview_token'); vals.append(secrets.token_urlsafe(18))
     run('INSERT INTO products(%s) VALUES(%s)' % (','.join(cols), ','.join(['?'] * len(vals))), tuple(vals))
     if 'related_ids' in _state['pcols'] and body.get('related_ids') is not None:
         try:
@@ -6958,7 +6986,7 @@ def api_product_detail_get(request: Request):
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
     for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids', 'list_price',
-              'info_rows', 'ship_rows', 'show_from', 'show_until'):
+              'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
@@ -6992,7 +7020,24 @@ def api_product_detail_get(request: Request):
         'url': '/p/' + r['id'],
         'show_from': str(r.get('show_from') or ''), 'show_until': str(r.get('show_until') or ''),
         'exposure': dict(zip(('state', 'label'), product_sched_state(r))),
+        'preview_url': _prod_preview_url(r),
     }
+
+@admin_router.post('/admin/api/products/preview-token')
+def api_product_preview_token(request: Request, body: dict = Body(...)):
+    """상품 미리보기 링크 발급/재발급 — 기존 상품(토큰 없음) 발급 · 링크 유출 시 재발급(이전 링크 즉시 무효)."""
+    a = get_actor(request); need(a, 2, '상품 미리보기 링크')
+    pid = str(body.get('id') or '').strip(); rotate = bool(body.get('rotate'))
+    if not pid: raise HTTPException(400, 'id required')
+    if 'preview_token' not in _state['pcols']: raise HTTPException(400, '미리보기 기능이 준비되지 않았습니다')
+    r = one('SELECT id, preview_token FROM products WHERE id=?', (pid,))
+    if not r: raise HTTPException(404, '상품을 찾을 수 없습니다')
+    if r.get('preview_token') and not rotate:
+        return {'ok': True, 'id': pid, 'url': _prod_preview_url(r), 'rotated': False}
+    tok = secrets.token_urlsafe(18)
+    run('UPDATE products SET preview_token=? WHERE id=?', (tok, pid))
+    audit(a, '상품미리보기링크', pid, '재발급' if rotate else '발급')
+    return {'ok': True, 'id': pid, 'url': _prod_preview_url({'id': pid, 'preview_token': tok}), 'rotated': rotate}
 
 @admin_router.post('/admin/api/products/detail/update')
 def api_product_detail_update(request: Request, body: dict = Body(...)):
@@ -7210,6 +7255,10 @@ h2{font-size:19px;margin-bottom:18px}
  </div>
  <div class="hint">한국시간(KST) 기준 · 시각 도달 시 자동으로 공개되고 종료 시각이 지나면 SHOP·검색·관련상품에서 사라집니다. 공개 전·종료 후에는 관리자만 상품 페이지를 열어 확인할 수 있고, 결제는 노출 기간 안에서만 가능합니다. 재고·품절과는 별개로 동작합니다.</div>
  <div id="expStat" class="hint" style="margin-top:6px;font-weight:700;color:var(--black)"></div>
+ <div id="pvRow" style="display:none;margin-top:12px;padding-top:12px;border-top:1px dashed #e3e1db">
+  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12.5px;white-space:nowrap">🔗 미리보기 링크</b><input readonly id="pvUrl" style="flex:1;min-width:240px;font:11.5px 'IBM Plex Mono',monospace;padding:8px 10px;border:1px solid #ccc;background:#faf9f6" onclick="this.select()"><button class="btn sm ghost" type="button" onclick="pvCopy()">복사</button><button class="btn sm ghost" type="button" onclick="pvIssue(true)" title="이전 링크는 즉시 열리지 않게 됩니다">재발급</button></div>
+  <div class="hint" style="margin-top:4px">노출 전·종료 후에도 이 링크로는 누구나 상품 페이지를 확인할 수 있습니다(결제는 노출 기간 안에서만). 파트너·아티스트 측 검수용으로 공유하고, 외부에 알려졌다면 <b>재발급</b>하세요.</div>
+ </div>
 </div>
 <div class="card"><h3>대표 이미지</h3>
  <div id="fzone" class="dropzone"><div class="dz-in" data-empty="이미지를 드래그하거나 클릭해 업로드"></div></div>
@@ -7359,7 +7408,7 @@ async function init(){
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
   const v=$('#viewBtn');v.href=d.url;v.style.display='';
   $('#stat').textContent=(d.soldout?'상태: 품절':'상태: 판매중')+(d.exposure&&d.exposure.state!=='always'?' · '+d.exposure.label:'');
-  expLoad(d.show_from,d.show_until,d.exposure);
+  expLoad(d.show_from,d.show_until,d.exposure);pvShow(d.preview_url);
   if(new URLSearchParams(location.search).get('created')==='1'){toast('등록 완료! 상세 내용을 이어서 편집할 수 있습니다.');history.replaceState(null,'','/admin/products/edit?id='+encodeURIComponent(PAGE.id));}
  }catch(e){if(e.message!=='세션 만료'){alert('상품을 불러올 수 없습니다: '+e.message);location.href='/admin/dashboard';}}
 }
@@ -7373,6 +7422,10 @@ function expLabel(v){const f=s=>s?s.replace('T',' '):'';if(!v.show_from&&!v.show
  return '노출 중'+(v.show_until?' · '+f(v.show_until)+' 까지':'')}
 function expUI(){const on=expMode()==='range';$('#expBox').style.display=on?'':'none';$('#expStat').textContent=on?expLabel(expVals()):'';}
 function expLoad(sf,su,ex){const on=!!(sf||su);document.querySelector('input[name=fexp][value='+(on?'range':'now')+']').checked=true;$('#fsf').value=sf||'';$('#fsu').value=su||'';expUI();}
+/* ── 미리보기 링크 (NEW/DROPS 와 동일) ── */
+function pvShow(url){if(PAGE.mode!=='edit')return;$('#pvRow').style.display='';$('#pvUrl').value=url||'';if(!url)pvIssue(false)}
+async function pvIssue(rotate){try{const d=await api('/admin/api/products/preview-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:PAGE.id,rotate:!!rotate})});$('#pvUrl').value=d.url;if(rotate)toast('미리보기 링크를 재발급했습니다 — 이전 링크는 더 이상 열리지 않습니다')}catch(e){if(e.message!=='세션 만료')toast(e.message)}}
+function pvCopy(){const u=$('#pvUrl').value;if(!u)return;(navigator.clipboard?navigator.clipboard.writeText(u):Promise.reject()).then(()=>toast('미리보기 링크를 복사했습니다')).catch(()=>{$('#pvUrl').select();document.execCommand('copy');toast('미리보기 링크를 복사했습니다')})}
 document.addEventListener('change',e=>{if(e.target&&(e.target.id==='fsf'||e.target.id==='fsu'))expUI()});
 async function save(){
  const name=$('#fn').value.trim(),cat=$('#fc').value;
@@ -7862,7 +7915,7 @@ def pdp(pid: str, request: Request):
     # (버그 수정) info_rows·ship_rows 가 SELECT 목록에서 빠져 있어 관리자가 저장한
     # 상품별 구매정보·배송/교환 커스텀 행이 상세페이지에 전혀 반영되지 않았다.
     for c in ('img', 'descr', 'category', 'detail_html', 'gallery', 'list_price',
-              'info_rows', 'ship_rows', 'badge', 'badge_color', 'discount_pct', 'show_from', 'show_until'):
+              'info_rows', 'ship_rows', 'badge', 'badge_color', 'discount_pct', 'show_from', 'show_until', 'preview_token'):
         if c in _state['pcols']: sel += ', ' + c
     r = one('SELECT %s FROM products WHERE id=?' % sel, (pid,))
     if not r:
@@ -7870,17 +7923,21 @@ def pdp(pid: str, request: Request):
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
     # 노출기간 밖 — 관리자 세션만 열람(상단 미리보기 띠), 일반 방문자는 안내 404 (검색엔진 색인 방지)
     _exp_state, _exp_label = product_sched_state(r)
-    _exp_banner = ''
+    _exp_banner, _pv_set = '', None
     if _exp_state in ('scheduled', 'ended'):
-        if not _actor_soft(request):
+        _pv_tok = _prod_preview_token_of(r, request)
+        _is_admin = _actor_soft(request) is not None
+        if not _is_admin and not _pv_tok:
             _msg = ('아직 공개되지 않은 상품입니다' if _exp_state == 'scheduled' else '판매가 종료된 상품입니다')
             return HTMLResponse('<meta charset=utf-8><meta name="robots" content="noindex"><body style="font-family:sans-serif;padding:60px;text-align:center">'
                                 '<h2>%s</h2><p style="color:#777">%s</p><a href="/shop">SHOP으로</a>'
                                 % (_msg, '노출 시작 시각에 자동으로 공개됩니다.' if _exp_state == 'scheduled' else '다른 상품을 둘러보세요.'),
                                 status_code=404)
+        if _pv_tok and (request.query_params.get('pv') or '').strip():
+            _pv_set = _pv_tok                      # ?pv= 로 열었으면 쿠키 발급 — 새로고침·이동에도 유지
         _exp_banner = ('<div style="position:sticky;top:0;z-index:9999;background:#1d4ed8;color:#fff;font:700 13px/1.4 sans-serif;'
-                       'padding:10px 16px;text-align:center">관리자 미리보기 — %s · 일반 고객에게는 보이지 않으며 결제가 차단됩니다</div>'
-                       % h(_exp_label))
+                       'padding:10px 16px;text-align:center">%s — %s · 일반 고객에게는 보이지 않으며 결제는 노출 기간 안에서만 가능합니다</div>'
+                       % ('관리자 미리보기' if _is_admin else '미리보기 링크', h(_exp_label)))
     soldout = num(r.get('soldout')) or num(r.get('stock')) <= 0
     img = (r.get('img') or '').strip()
     # 카테고리 칩 → 해당 목록으로 이동 (앨범은 KPOP(음반) 전용관 직행)
@@ -8007,7 +8064,7 @@ def pdp(pid: str, request: Request):
         _seed = 0
     viewers = 60 + (_seed % 80)
     _img_og = img if img.startswith('http') else (('https://mapdal.kr' + img) if img.startswith('/') else OG_IMAGE_URL)
-    return _pdp_resp(_track_apply(_brand_apply(_PDP_HTML % {
+    _resp = _pdp_resp(_track_apply(_brand_apply(_PDP_HTML % {
         'name': h(r.get('name')), 'namejs': json.dumps(str(r.get('name') or '')),
         'pricehtml': pricehtml, 'price_fmt': format(sale, ','), 'pricejs': sale,
         'bcls': 'no' if soldout else 'ok',
@@ -8025,6 +8082,9 @@ def pdp(pid: str, request: Request):
         'shiprows': shiprows,
         'pidjs': json.dumps(pid), 'soldjs': 'true' if soldout else 'false',
         'relatedsnippet': _RELATED_WIDGET_SNIPPET}), '/p/' + pid).replace('</head><body>', '</head><body>' + _exp_banner, 1), request)
+    if _pv_set:
+        _resp.set_cookie(_prod_pv_cookie(pid), _pv_set, max_age=_PROD_PV_COOKIE_AGE, path='/', httponly=True, samesite='lax', secure=True)
+    return _resp
 
 # ═══════════════════ ⑥ 소셜 회원가입 (Google / Apple) ════════════════════
 SIGNUP_BONUS = 2000

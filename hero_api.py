@@ -104,6 +104,17 @@ class Slide(BaseModel):
     event: str = Field("", max_length=160)        # 행사 이름
     live_visual: bool = False                      # 블랙 라이브 스테이지 모션
     active: bool = True
+    show_from: str = Field("", max_length=16)      # 예약 노출 시작 'YYYY-MM-DDTHH:MM' KST — 비우면 즉시
+    show_until: str = Field("", max_length=16)     # 노출 종료 — 비우면 무기한
+
+    @field_validator("show_from", "show_until")
+    @classmethod
+    def _sched_fmt(cls, v: str) -> str:
+        import re as _re
+        v = (v or "").strip().replace(" ", "T")[:16]
+        if v and not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", v):
+            raise ValueError("노출 시각은 YYYY-MM-DDTHH:MM 형식(KST)만 허용")
+        return v
 
     @field_validator("tag_color")
     @classmethod
@@ -257,9 +268,33 @@ def require_admin(x_admin_token: str = Header(default="")):
 # ----------------------------------------------------------------------
 # 라우트
 # ----------------------------------------------------------------------
+def _kst_now_str() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M")
+
+
+def slide_live(s: dict, now: str = "") -> bool:
+    """예약 노출 판정 — 저장값(KST 벽시계)과 현재 KST 문자열 비교. 빈값=제한 없음."""
+    now = now or _kst_now_str()
+    f, t = str(s.get("show_from") or "")[:16], str(s.get("show_until") or "")[:16]
+    if f and now < f:
+        return False
+    if t and now >= t:
+        return False
+    return True
+
+
+def public_view(data: dict) -> dict:
+    """공개용: 노출기간 밖(예약 전·종료 후) 슬라이드는 제외한다 — 요청 시각 기준 매번 계산(스케줄러 없음)."""
+    now = _kst_now_str()
+    out = dict(data)
+    out["slides"] = [s for s in (data.get("slides") or []) if isinstance(s, dict) and slide_live(s, now)]
+    return out
+
+
 @router.get("/api/hero")
 def get_hero():
-    return cached_load()
+    return public_view(cached_load())
 
 
 @router.put("/api/hero")

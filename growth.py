@@ -2435,7 +2435,7 @@ def copy_apply(html, path=''):
         if path == '/home' and 'render(MZH_DEFAULT);' in html and '__MZH=' not in html:
             try:
                 import hero_api
-                hd = hero_api.load_data()
+                hd = hero_api.public_view(hero_api.load_data())   # 예약 노출 필터(KST 현재 기준) — /api/hero 와 동일
                 if hd and hd.get('slides'):
                     js = json.dumps(hd, ensure_ascii=False).replace('</', '<\\/')
                     html = html.replace('render(MZH_DEFAULT);',

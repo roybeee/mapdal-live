@@ -171,6 +171,8 @@ function renderList(){
     fileInM.addEventListener("change",function(){if(fileInM.files[0])uploadHero(s,card,fileInM.files[0],upBtnM,"img_m",1440,2200);fileInM.value="";});
     upRowM.appendChild(upBtnM);upRowM.appendChild(fileInM);f.appendChild(upRowM);
     field(f,"클릭 링크 URL","href",s);
+    field(f,"노출 시작 (KST · YYYY-MM-DDTHH:MM · 비우면 즉시)","show_from",s);
+    field(f,"노출 종료 (비우면 무기한)","show_until",s);
     body.appendChild(f);
 
     var dt=document.createElement("details");

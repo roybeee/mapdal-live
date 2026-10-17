@@ -5586,6 +5586,7 @@ function renderBanner(){
     <span class="tag">${s.video?'영상 배너':(s.img?'이미지 배너':(s.img_m?'이미지 배너 · 모바일 전용':'텍스트 히어로'))}</span>
     ${(!s.video&&!s.img&&s.img_m)?'<span class="tag" style="background:#FFB000;color:#141414">PC 이미지 권장</span>':''}
     ${s.video?'<span class="tag" style="background:#141414;color:#FFB000">재생 종료 시 다음 슬라이드</span>':''}
+    ${(s.show_from||s.show_until)?'<span class="tag" style="background:#1d4ed8;color:#fff">⏱ 예약 노출</span>':''}
     <span style="margin-left:auto;display:flex;gap:4px;align-items:center">
      <button class="btn sm ghost" onclick="bnMove(${i},-1)" ${i===0?'disabled':''}>↑</button>
      <button class="btn sm ghost" onclick="bnMove(${i},1)" ${i===BN.slides.length-1?'disabled':''}>↓</button>
@@ -5628,6 +5629,9 @@ function renderBanner(){
      <label class="bnf">앨범명<input value="${esc(s.album||'')}" oninput="bnSet(${i},'album',this.value)" placeholder="예: JANG HANEUM The 2nd EP [DAYDREAM]"></label>
      <label class="bnf">행사 이름<input value="${esc(s.event||'')}" oninput="bnSet(${i},'event',this.value)" placeholder="예: SPECIAL VIDEO CALL EVENT"></label>
      <label class="bnf" style="grid-column:1/-1">클릭 링크 URL<input value="${esc(s.href||'')}" oninput="bnSet(${i},'href',this.value)" placeholder="/kpop 또는 https://…"></label>
+     <label class="bnf">노출 시작 <span class="hint" style="display:inline">(KST · 비우면 즉시)</span><input type="datetime-local" step="60" value="${esc(s.show_from||'')}" oninput="bnSet(${i},'show_from',this.value.slice(0,16))"></label>
+     <label class="bnf">노출 종료 <span class="hint" style="display:inline">(비우면 무기한)</span><input type="datetime-local" step="60" value="${esc(s.show_until||'')}" oninput="bnSet(${i},'show_until',this.value.slice(0,16))"></label>
+     <div class="hint" style="grid-column:1/-1;margin-top:-2px" id="bnsched${i}">${bnSchedLabel(s)}</div>
     </div></div>`;
   box.appendChild(card);
  });
@@ -5637,7 +5641,14 @@ function renderBanner(){
   ${can(2)?'<button class="btn red" style="margin-left:auto" onclick="saveBanner()">저장 (홈 즉시 반영)</button>':''}`;
  box.appendChild(bar);
 }
+function bnSchedLabel(s){const f=s.show_from||'',t=s.show_until||'';if(!f&&!t)return '상시 노출 (노출 체크 기준)';
+ const now=new Date(),pad=n=>String(n).padStart(2,'0'),cur=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(now.getDate())+'T'+pad(now.getHours())+':'+pad(now.getMinutes());
+ if(f&&t&&f>=t)return '<b style="color:#c0392b">종료 시각이 시작 시각보다 빠릅니다</b>';
+ if(f&&cur<f)return '<b style="color:#1d4ed8">예약 노출</b> — '+f.replace('T',' ')+' 에 자동 게시'+(t?' · '+t.replace('T',' ')+' 종료':'');
+ if(t&&cur>=t)return '<b style="color:#6b7280">노출 종료</b> — '+t.replace('T',' ')+' 이후 홈에서 내려감';
+ return '<b style="color:#15803d">노출 중</b>'+(t?' — '+t.replace('T',' ')+' 까지':'')}
 function bnSet(i,k,v){BN.slides[i][k]=v;
+ if(k==='show_from'||k==='show_until'){const el=$('#bnsched'+i);if(el)el.innerHTML=bnSchedLabel(BN.slides[i])}
  if(k==='tag_label'){const c=$('#bnchip'+i);c.textContent=v;c.style.display=v?'inline-block':'none';}
  if(k==='tag_color'){$('#bnchip'+i).style.background=bnCss(v);
   document.querySelectorAll('#bnsw'+i+' button').forEach(b=>b.style.borderColor=(b.dataset.c===v)?'#141414':'#e3e1db');}}
@@ -5657,6 +5668,7 @@ async function bnUploadVideo(i,inp){const f=inp.files[0];if(!f)return;inp.value=
 function bnMove(i,d){const s=BN.slides,j=i+d;if(j<0||j>=s.length)return;const t=s[i];s[i]=s[j];s[j]=t;renderBanner();}
 function bnAdd(){if(BN.slides.length>=5)return;BN.slides.push({img:'',img_m:'',video:'',href:'',tag_label:'',tag_color:'',album:'',event:'',active:true});renderBanner();}
 async function saveBanner(){try{BN.interval_ms=Math.max(5000,parseInt($('#bniv').value)||6000);
+ for(const s of BN.slides){if(s.show_from&&s.show_until&&s.show_from>=s.show_until)return toast('노출 종료 시각은 시작 시각보다 뒤여야 합니다')}
  const d=await api('/admin/api/banner',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(BN)});
  toast('저장 완료 — 홈페이지에 '+d.slides+'개 슬라이드 반영');}catch(e){toast(e.message)}}
 

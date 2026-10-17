@@ -1147,7 +1147,9 @@ def _prod_opts_norm(raw):
         out.append({'name': name, 'price': max(0, num(o.get('price'))), 'stock': stock,
                     'product_id': str(o.get('product_id') or '').strip()[:80],
                     'managed': 1 if num(o.get('managed')) else 0, 'items': items,
-                    'bundle': _bundle_norm(o.get('bundle'))})
+                    'bundle': _bundle_norm(o.get('bundle')),
+                    'bundle_mode': ('any' if str(o.get('bundle_mode') or '').lower() == 'any' else 'all'),
+                    'hidden': 1 if num(o.get('hidden')) else 0})   # 비공개 낱개(재고 전용) — 고객에게 안 보이고 단독 판매 없음
     return out
 
 def _prod_opts_load(pid):
@@ -1212,12 +1214,13 @@ def _prod_opts_sync(pid, opts, prev_opts, actor, touch_stock=True):
     keep = set()
     for o in opts:
         cpid = o.get('product_id') or ''
-        if o['price'] <= 0:                                   # 표시 전용(가격 없음) — 판매 안 함
+        if o.get('hidden'): o['price'] = 0                    # 비공개 낱개: 가격 0 → 결제에서 '가격 확인 필요'로 단독 구매 차단
+        if o['price'] <= 0 and not o.get('hidden'):           # 표시 전용(가격 없음) — 판매 안 함
             if o.get('managed') and cpid:
                 run('UPDATE products SET soldout=1 WHERE id=?', (cpid,)); o['product_id'] = ''
             o['managed'] = 0
             continue
-        cname = ('%s — %s' % (pname_base, o['name']))[:300]
+        cname = ('%s — %s%s' % (pname_base, '(재고) ' if o.get('hidden') else '', o['name']))[:300]
         if o.get('bundle'): o['stock'] = None                 # 세트는 자체 재고 없음
         sold = 1 if (o['stock'] is not None and o['stock'] == 0) else 0
         inherit = [(c, parent.get(c)) for c in ('img', 'category', 'show_from', 'show_until') if c in pc]
@@ -1258,6 +1261,7 @@ def _prod_opts_public(pid, now=None):
     pr = _state.get('pprice') or 'price'
     out = []
     for o in _prod_opts_load(pid):
+        if o.get('hidden'): continue                         # 비공개 낱개(재고 전용)
         e = {'name': o['name'], 'items': o['items'], 'price': o['price'], 'pid': '', 'soldout': 0, 'left': None}
         if o['price'] > 0 and o.get('product_id'):
             try:
@@ -1274,7 +1278,7 @@ def _prod_opts_public(pid, now=None):
                     bs, bl = bundle_availability(bundle_parts_of(one('SELECT bundle FROM products WHERE id=?', (o['product_id'],)) or {}))
                     e['soldout'] = 1 if (bs or e['soldout']) else 0
                     e['left'] = bl if (bl is not None and 0 < bl <= 10) else None
-                    e['bundle'] = [{'name': b['name'], 'qty': b['qty']} for b in o['bundle']]
+                    e['bundle'] = [{'name': b['name'], 'qty': b['qty']} for b in o['bundle']]; e['bundle_mode'] = o.get('bundle_mode') or 'all'
         out.append(e)
     return out
 
@@ -1352,8 +1356,11 @@ def bundle_parts_of(row):
     out = []
     for p in (jload(raw, []) or []):
         if isinstance(p, dict) and p.get('pid') and num(p.get('qty')) > 0:
-            out.append({'pid': str(p['pid']), 'qty': num(p['qty'])})
+            out.append({'pid': str(p['pid']), 'qty': num(p['qty']), 'mode': ('any' if p.get('mode') == 'any' else 'all')})
     return out
+
+def bundle_mode_of(parts):
+    return 'any' if (parts and parts[0].get('mode') == 'any') else 'all'
 
 def bundle_take(c, row, q, lock_sql=''):
     """주문 트랜잭션 안에서 세트 구성 낱개 재고를 검증·차감한다. 세트가 아니면 [].
@@ -1362,6 +1369,33 @@ def bundle_take(c, row, q, lock_sql=''):
     if not parts: return []
     nm = _state.get('pname') or 'name'
     out = []
+    if bundle_mode_of(parts) == 'any':
+        # 랜덤(구성 중 어느 1종): 구성 낱개 재고를 모두 잠근 뒤 재고가 많은 쪽부터 1개씩 차감 — 총량은 정확히 맞고,
+        # 어떤 버전을 보낼지는 주문 라인 parts 에 기록된 대로 포장하면 재고가 맞는다.
+        need = parts[0]['qty'] * int(q)
+        comps = []
+        for p in parts:
+            comp = c.one('SELECT id, %s AS name, stock, soldout FROM products WHERE id=?%s' % (nm, lock_sql), (p['pid'],))
+            if not comp: raise HTTPException(400, '구성 상품을 찾을 수 없습니다: %s' % p['pid'])
+            if comp['soldout']: continue
+            comps.append({'id': comp['id'], 'n': str(comp['name'] or comp['id']), 'stock': comp['stock'], 'take': 0})
+        avail = sum(x['stock'] for x in comps if x['stock'] is not None)
+        unlimited = any(x['stock'] is None for x in comps)
+        if not comps or (not unlimited and avail < need):
+            try: _rn = str(row[nm] or '')
+            except Exception: _rn = ''
+            raise HTTPException(409, '재고 부족: %s (구성 전체 남은 수량 %d)' % (_rn[:30], avail if comps else 0))
+        for _ in range(need):
+            best = max(comps, key=lambda x: (x['stock'] is None, x['stock'] if x['stock'] is not None else 0, -x['take']))
+            best['take'] += 1
+            if best['stock'] is not None: best['stock'] -= 1
+        for x in comps:
+            if not x['take']: continue
+            if x['stock'] is not None:
+                c.exec('UPDATE products SET stock=stock-? WHERE id=?', (x['take'], x['id']))
+                if x['stock'] == 0: c.exec('UPDATE products SET soldout=1 WHERE id=?', (x['id'],))
+            out.append({'id': x['id'], 'n': x['n'], 'q': x['take']})
+        return out
     for p in parts:
         need_q = p['qty'] * int(q)
         comp = c.one('SELECT id, %s AS name, stock, soldout FROM products WHERE id=?%s' % (nm, lock_sql), (p['pid'],))
@@ -1381,6 +1415,18 @@ def bundle_take(c, row, q, lock_sql=''):
 def bundle_availability(parts):
     """[{'pid','qty'}] → (soldout, left) — left 는 추적 재고가 있는 낱개 기준 최소 세트 수(없으면 None)."""
     if not parts: return 0, None
+    if bundle_mode_of(parts) == 'any':
+        total, unlimited, any_ok = 0, False, False
+        for p in parts:
+            r = one('SELECT stock, soldout FROM products WHERE id=?', (p['pid'],))
+            if not r or num(r.get('soldout')): continue
+            any_ok = True
+            if r.get('stock') is None: unlimited = True
+            else: total += num(r['stock'])
+        if not any_ok: return 1, 0
+        if unlimited: return 0, None
+        k = total // max(1, parts[0]['qty'])
+        return (1 if k <= 0 else 0), k
     left, sold = None, 0
     for p in parts:
         r = one('SELECT stock, soldout FROM products WHERE id=?', (p['pid'],))
@@ -1395,12 +1441,13 @@ def bundle_availability(parts):
 def _bundle_resolve(opts):
     """옵션 목록의 bundle(name 참조) → 세트 자식 products.bundle(pid 참조) 기록 · 비세트 자식은 비움."""
     if 'bundle' not in (_state.get('pcols') or ()): return
-    by_name = {o['name']: o.get('product_id') for o in opts if o.get('price', 0) > 0 and o.get('product_id') and not o.get('bundle')}
+    by_name = {o['name']: o.get('product_id') for o in opts if (o.get('price', 0) > 0 or o.get('hidden')) and o.get('product_id') and not o.get('bundle')}
     for o in opts:
         cpid = o.get('product_id')
         if not cpid or not o.get('managed'): continue
         if o.get('bundle'):
             parts = [{'pid': by_name[b['name']], 'qty': b['qty']} for b in o['bundle'] if b['name'] in by_name and b['name'] != o['name']]
+            if parts and o.get('bundle_mode') == 'any': parts[0]['mode'] = 'any'   # 랜덤: 구성 중 어느 1종 — 첫 원소에 모드 표기
             run('UPDATE products SET bundle=?, stock=NULL, soldout=0 WHERE id=?', (json.dumps(parts, ensure_ascii=False), cpid))
             try:                                           # 상품마스터: 세트 SKU 는 재고 미추적(낱개에서 차감) 으로 표시
                 v = one('SELECT id FROM product_variants WHERE legacy_product_id=?', (cpid,))
@@ -2145,7 +2192,10 @@ def api_order_detail(oid: str, request: Request):
     _pd = jload(r.get('pay_detail'), {}) or {}
     _ptid = (r.get(_state['paykey']) if _state['paykey'] else '') or ''
     items = [{'id': it.get('id', ''), 'name': it.get('n') or it.get('name') or it.get('id', ''),
-              'qty': num(it.get('q') or 1), 'price': num(it.get('p') or it.get('price') or 0)}
+              'qty': num(it.get('q') or 1), 'price': num(it.get('p') or it.get('price') or 0),
+              # 세트/랜덤 라인의 낱개 분해(포장 기준) — '(재고) STAR ver.×1 · (재고) RACE ver.×3'
+              'parts': ' · '.join('%s×%d' % (re.sub(r'\s+', ' ', str(x.get('n') or x.get('id'))).strip().split(' — ')[-1], num(x.get('q') or 1))
+                                  for x in (it.get('parts') or []) if isinstance(x, dict))}
              for it in jload(r.get('items'), [])]
     return {'order_id': r['order_id'], 'created': r.get('created'), 'status': r.get('status'),
             'fulfill': r.get('fulfill') or 'NEW', 'amount': num(r.get('amount')),
@@ -5083,7 +5133,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
    <table style="margin-top:8px"><tr><th style="width:150px">시각</th><th style="width:130px">단계</th><th>내용</th></tr>
    ${o.pay_log.map(e=>`<tr><td class="mono">${esc(e.t)}</td><td><b>${esc(e.label)}</b></td><td>${esc(e.m||'')}</td></tr>`).join('')}</table></details>`:''}
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
- ${o.items.map(i=>`<tr><td>${esc(i.name)}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
+ ${o.items.map(i=>`<tr><td>${esc(i.name)}${i.parts?`<div class="hint" style="margin-top:2px">└ 낱개 차감: ${esc(i.parts)}</div>`:''}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
  ${can(1)?`<div class="kv"><b>처리상태</b><span><select id="mff">${Object.entries(FF).map(([k,v])=>`<option value="${k}" ${o.fulfill===k?'selected':''}>${v}</option>`).join('')}</select></span>
  <b>택배사</b><span><select id="mco" style="width:100%"><option value="">— 선택 —</option>${Object.entries(CO).map(([k,v])=>`<option value="${k}" ${o.courier===k?'selected':''}>${v}</option>`).join('')}</select></span>
  <b>송장번호</b><span><input id="mtr" value="${esc(o.tracking)}" style="width:100%"></span>
@@ -5996,9 +6046,13 @@ function drOptCard(o){o=(typeof o==='string')?{name:o}:(o||{});
   <button class="btn sm ghost" type="button" style="color:var(--bad)" onclick="drOptDel(this)">옵션 삭제</button></div>
  ${o.product_id?`<div class="hint mono" style="margin-top:4px">연동 상품 <a href="/p/${encodeURIComponent(o.product_id)}" target="_blank">${esc(o.product_id)}</a>${o.managed?' · 자동 관리(이름·가격·재고 동기화)':' · 수동 연결 — 상품 정보는 [상품·재고]에서'}</div>`:''}
  <input type="hidden" class="do_pid" value="${esc(o.product_id||'')}"><input type="hidden" class="do_mng" value="${o.managed?1:0}">
+ <label style="display:inline-flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;cursor:pointer"><input type="checkbox" class="do_hidden" ${o.hidden?'checked':''}> <b>비공개 낱개(재고 전용)</b><span class="hint" style="display:inline">— 고객에게 보이지 않고 단독 판매도 안 되는 재고 풀. 랜덤/세트 옵션의 구성으로만 쓰입니다(예: STAR ver. · RACE ver.)</span></label>
  <div class="do_bundle" style="margin-top:6px;padding:7px 8px;border:1px dashed #d9d7d0;background:#fff">
-  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12px">세트 구성</b><span class="hint" style="display:inline">— 낱개 옵션을 묶어 파는 세트면 구성 낱개를 넣으세요. 세트가 팔리면 낱개 재고에서 자동 차감되고 세트 자체 재고는 두지 않습니다.</span>
+  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12px">구성(재고 차감)</b>
+   <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px;cursor:pointer"><input type="radio" name="bm_${esc(String(o.product_id||o.name||Math.random()))}" class="do_bmode" value="all" ${o.bundle_mode!=='any'?'checked':''}> 세트 — 구성 전부 차감</label>
+   <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px;cursor:pointer"><input type="radio" name="bm_${esc(String(o.product_id||o.name||Math.random()))}" class="do_bmode" value="any" ${o.bundle_mode==='any'?'checked':''}> 랜덤 — 구성 중 1종만 차감</label>
    <button class="btn sm ghost" type="button" onclick="bundleAdd(this,'.dropt','.do_name')">+ 구성 낱개</button></div>
+  <div class="hint" style="margin-top:3px">세트(6종 세트): 구성 낱개 각각 × 수량 차감 · 랜덤(6종 중 1종): 구성 낱개 재고 합에서 1개 — 재고가 많은 버전부터 차감되고 주문에 어떤 버전인지 기록됩니다.</div>
   <div class="bundle_rows" style="margin-top:4px" onfocusin="bundleRefresh(this)">${(o.bundle||[]).map(b=>bundleRow(b.name,b.qty)).join('')}</div></div>
  <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
   <span class="hint" style="display:inline">응모자 입력</span>
@@ -6068,7 +6122,7 @@ function drOptsCollect(){
   input:(c.querySelector('.do_input')||{}).value||'',
   placeholder:((c.querySelector('.do_ph')||{}).value||'').trim(),
   items:[...c.querySelectorAll('.do_items > div')].map(r=>({k:r.querySelector('.doi_k').value,t:r.querySelector('.doi_t').value.trim()})).filter(x=>x.t),
-  bundle:bundleCollect(c)
+  bundle:bundleCollect(c),bundle_mode:((c.querySelector('.do_bmode:checked')||{}).value||'all'),hidden:(c.querySelector('.do_hidden')||{}).checked?1:0
  })).filter(o=>o.name)}
 function dropEdit(id){const _v0=id?DR.find(x=>x.id===id):null,_vv=_v0||{};
 const _lx=(_vv.winner_fansign_extra===undefined&&_vv.winner_videocall_extra===undefined)?(_vv.winner_extra||''):'';
@@ -7947,9 +8001,13 @@ function poCard(o){o=o||{};return `<div class="poopt" style="border:1px solid #d
   <button class="btn sm ghost" type="button" style="color:#c0392b" onclick="poDel(this)">옵션 삭제</button></div>
  ${o.product_id?`<div class="hint" style="margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:11px">연동 상품 <a href="/p/${encodeURIComponent(o.product_id)}" target="_blank">${esc(o.product_id)}</a>${o.managed?' · 자동 관리(이름·가격·재고 동기화)':' · 수동 연결'}${o.live_soldout?' · <b style="color:#c0392b">판매중지/품절</b>':''}</div>`:''}
  <input type="hidden" class="po_pid" value="${esc(o.product_id||'')}"><input type="hidden" class="po_mng" value="${o.managed?1:0}">
+ <label style="display:inline-flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;cursor:pointer"><input type="checkbox" class="po_hidden" ${o.hidden?'checked':''}> <b>비공개 낱개(재고 전용)</b><span class="hint" style="display:inline">— 고객에게 보이지 않고 단독 판매도 안 되는 재고 풀. 랜덤/세트 옵션의 구성으로만 쓰입니다(예: STAR ver. · RACE ver.)</span></label>
  <div class="po_bundle" style="margin-top:6px;padding:7px 8px;border:1px dashed #d9d7d0;background:#fff">
-  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12px">세트 구성</b><span class="hint" style="display:inline">— 낱개 옵션을 묶어 파는 세트면 구성 낱개를 넣으세요. 세트가 팔리면 낱개 재고에서 자동 차감(세트 자체 재고 없음).</span>
+  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12px">구성(재고 차감)</b>
+   <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px;cursor:pointer"><input type="radio" name="bm_${esc(String(o.product_id||o.name||Math.random()))}" class="po_bmode" value="all" ${o.bundle_mode!=='any'?'checked':''}> 세트 — 구성 전부 차감</label>
+   <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px;cursor:pointer"><input type="radio" name="bm_${esc(String(o.product_id||o.name||Math.random()))}" class="po_bmode" value="any" ${o.bundle_mode==='any'?'checked':''}> 랜덤 — 구성 중 1종만 차감</label>
    <button class="btn sm ghost" type="button" onclick="bundleAdd(this,'.poopt','.po_name')">+ 구성 낱개</button></div>
+  <div class="hint" style="margin-top:3px">세트(6종 세트): 구성 낱개 각각 × 수량 차감 · 랜덤(6종 중 1종): 구성 낱개 재고 합에서 1개 — 재고가 많은 버전부터 차감되고 주문에 어떤 버전인지 기록됩니다.</div>
   <div class="bundle_rows" style="margin-top:4px" onfocusin="bundleRefresh(this)">${(o.bundle||[]).map(b=>bundleRow(b.name,b.qty)).join('')}</div></div>
  <div class="po_items" style="margin-top:7px">${(o.items||[]).map(poItem).join('')}</div>
  <button class="btn sm ghost" type="button" onclick="this.previousElementSibling.insertAdjacentHTML('beforeend',poItem())">+ 구성품</button></div>`}
@@ -7959,7 +8017,7 @@ function poOptAdd(){$('#poOpts').insertAdjacentHTML('beforeend',poCard({items:[]
 function poLoad(opts){$('#poOpts').innerHTML=(opts||[]).map(poCard).join('')}
 function poCollect(){return [...document.querySelectorAll('#poOpts .poopt')].map(c=>({name:c.querySelector('.po_name').value.trim(),price:parseInt(c.querySelector('.po_price').value,10)||0,
  stock:c.querySelector('.po_stock').value===''?null:Math.max(0,parseInt(c.querySelector('.po_stock').value,10)||0),product_id:c.querySelector('.po_pid').value,managed:parseInt(c.querySelector('.po_mng').value,10)||0,
- items:[...c.querySelectorAll('.po_items > div')].map(r=>({k:r.querySelector('.poi_k').value,t:r.querySelector('.poi_t').value.trim()})).filter(x=>x.t),bundle:bundleCollect(c)})).filter(o=>o.name)}
+ items:[...c.querySelectorAll('.po_items > div')].map(r=>({k:r.querySelector('.poi_k').value,t:r.querySelector('.poi_t').value.trim()})).filter(x=>x.t),bundle:bundleCollect(c),bundle_mode:((c.querySelector('.po_bmode:checked')||{}).value||'all'),hidden:(c.querySelector('.po_hidden')||{}).checked?1:0})).filter(o=>o.name)}
 /* ── 미리보기 링크 (NEW/DROPS 와 동일) ── */
 function pvShow(url){if(PAGE.mode!=='edit')return;$('#pvRow').style.display='';$('#pvUrl').value=url||'';if(!url)pvIssue(false)}
 async function pvIssue(rotate){try{const d=await api('/admin/api/products/preview-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:PAGE.id,rotate:!!rotate})});$('#pvUrl').value=d.url;if(rotate)toast('미리보기 링크를 재발급했습니다 — 이전 링크는 더 이상 열리지 않습니다')}catch(e){if(e.message!=='세션 만료')toast(e.message)}}
@@ -8286,7 +8344,7 @@ _PRODUCT_OPTS_SNIPPET = r'''<style id="mpProdOptsCss">
    var items=(o.items||[]).map(function(it){return '<div class="mpo-it">'+(ICON[it.k]||ICON.etc)+'<span>'+eh(it.t)+'</span></div>'}).join('');
    var flag=o.soldout?'<span class="mpo-sold">SOLD OUT</span>':(o.left?'<span class="mpo-left">'+o.left+'개 남음</span>':'');
    var ctrl=sell?'<div class="mpo-qty"><button type="button" data-oi="'+i+'" data-d="-1"'+((!live||o.soldout||q<=0)?' disabled':'')+'>−</button><span class="q">'+q+'</span><button type="button" data-oi="'+i+'" data-d="1"'+((!live||o.soldout)?' disabled':'')+'>＋</button></div>':'';
-   var bd=(o.bundle&&o.bundle.length)?'<div class="mpo-it"><span style="color:#87867F">세트 구성 · '+o.bundle.map(function(b){return eh(b.name)+' ×'+b.qty}).join(' · ')+'</span></div>':'';
+   var bd=(o.bundle&&o.bundle.length)?'<div class="mpo-it"><span style="color:#87867F">'+(o.bundle_mode==='any'?'구성 중 랜덤 1종 · ':'세트 구성 · ')+o.bundle.map(function(b){return eh(b.name)+(o.bundle_mode==='any'?'':' ×'+b.qty)}).join(' · ')+'</span></div>':'';
    return '<div class="mpo-oc'+(q>0?' sel':'')+(o.soldout?' sold':'')+'"><div class="mpo-top"><div><div class="mpo-name">'+eh(o.name)+'</div>'+(o.price>0?'<div class="mpo-price">'+fmtw(o.price)+flag+'</div>':'')+'</div>'+ctrl+'</div>'+((items||bd)?'<div class="mpo-items">'+items+bd+'</div>':'')+'</div>'}
   function sum(){var tq=0,tp=0;d.rows.forEach(function(o){var q=(o.pid&&OQ[o.pid])||0;tq+=q;tp+=q*o.price});
    if(!live)return '<div class="mpo-off">'+(previewBar?'미리보기 — 노출 기간 안에서만 구매할 수 있습니다':'현재 구매할 수 없는 상품입니다')+'</div>';
@@ -11560,7 +11618,9 @@ def _drop_opts_norm(raw):
                     'stock': (None if o.get('bundle') else stock),   # 세트는 자체 재고 없음 — 낱개에서 차감
                     'product_id': str(o.get('product_id') or '').strip()[:80],
                     'managed': 1 if num(o.get('managed')) else 0, 'items': items,
-                    'input': inp, 'placeholder': ph, 'bundle': _bundle_norm(o.get('bundle'))})
+                    'input': inp, 'placeholder': ph, 'bundle': _bundle_norm(o.get('bundle')),
+                    'bundle_mode': ('any' if str(o.get('bundle_mode') or '').lower() == 'any' else 'all'),
+                    'hidden': 1 if num(o.get('hidden')) else 0})
     return out
 
 def _drop_product_sync(rec, prev_opts, actor):
@@ -11575,13 +11635,14 @@ def _drop_product_sync(rec, prev_opts, actor):
     keep = set()
     for o in rec['options']:
         pid = o.get('product_id') or ''
-        if o['price'] <= 0:                                # 표시 전용 옵션
+        if o.get('hidden'): o['price'] = 0                 # 비공개 낱개(재고 전용) — 가격 0, 단독 구매 불가
+        if o['price'] <= 0 and not o.get('hidden'):        # 표시 전용 옵션
             if o.get('managed') and pid:
                 run('UPDATE products SET soldout=1 WHERE id=?', (pid,))
                 o['product_id'] = ''
             o['managed'] = 0
             continue
-        pname = ('%s — %s' % (rec['title'], o['name']))[:300]
+        pname = ('%s — %s%s' % (rec['title'], '(재고) ' if o.get('hidden') else '', o['name']))[:300]
         sold = 1 if (o['stock'] is not None and o['stock'] == 0) else 0
         if o.get('managed') and pid and one('SELECT id FROM products WHERE id=?', (pid,)):
             sets, args = ['%s=?' % nm, 'stock=?', 'soldout=?'], [pname, o['stock'], sold]
@@ -11617,6 +11678,7 @@ def _drop_opts_public(d):
     opts, legacy = [], []
     nm, pr = _state.get('pname') or 'name', _state.get('pprice') or 'price'
     for o in _drop_opts_norm(d.get('options')):
+        if o.get('hidden'): continue                         # 비공개 낱개(재고 전용)는 고객 화면에 없음
         e = {'name': o['name'], 'items': o['items'], 'price': o['price'],
              'pid': '', 'soldout': 0, 'left': None,
              'input': o.get('input') or '', 'placeholder': o.get('placeholder') or ''}
@@ -11638,7 +11700,7 @@ def _drop_opts_public(d):
                     bs, bl = bundle_availability(bundle_parts_of(one('SELECT bundle FROM products WHERE id=?', (o['product_id'],)) or {}))
                     e['soldout'] = 1 if (bs or e['soldout']) else 0
                     e['left'] = bl if (bl is not None and 0 < bl <= 10) else None
-                    e['bundle'] = [{'name': b['name'], 'qty': b['qty']} for b in o['bundle']]
+                    e['bundle'] = [{'name': b['name'], 'qty': b['qty']} for b in o['bundle']]; e['bundle_mode'] = o.get('bundle_mode') or 'all'
         opts.append(e)
         legacy.append(o['name'])
     return opts, legacy

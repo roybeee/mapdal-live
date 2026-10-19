@@ -17990,6 +17990,11 @@ def _req_lang(request):
 
 def _localize(html, request, clean_path):
     """다국어 최종 단계(i18n.localize) — 실패 시 원문 그대로."""
+    # 상품 상세의 맵달드림 안내행은 정적·동적·관리자 편집본 모두에서 제거한다.
+    html = re.sub(
+        r'<div class="ben-row">\s*<div class="bh">\s*<h6>맵달드림</h6>'
+        r'(?:(?!<div class="ben-row">).)*?</div>\s*<span class="chev">[^<]*</span>\s*</div>'
+        r'\s*<div class="bd">(?:(?!<div class="ben-row">).)*?</div>\s*</div>', '', html, flags=re.S)
     try:
         import i18n
         # canonical·hreflang 에는 페이지를 구분하는 파라미터만 싣는다(utm·fbclid 등 추적값 제외)

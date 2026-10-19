@@ -5,7 +5,7 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 - 동시 주문 안전: 트랜잭션 + 행 잠금(FOR UPDATE), 재고 원자적 차감
 - 결제 승인 멱등 처리 (중복 승인 방지)
 """
-import os, re, json, secrets, datetime, base64, hashlib, threading
+import os, re, json, secrets, datetime, base64, hashlib, threading, asyncio
 import urllib.request, urllib.error, urllib.parse
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query, Response
@@ -329,9 +329,18 @@ def _init_db():
     except Exception as e:
         print(f'[db] 초기화 실패: {e}', flush=True)
 
+def _initialize_services():
+    _init_db()
+    if not DB_READY:
+        raise RuntimeError('Database initialization failed; startup aborted')
+    import admin_v2
+    admin_v2.ensure_ready()
+    print('[startup] 데이터베이스 및 관리자 초기화 완료', flush=True)
+
 @asynccontextmanager
 async def lifespan(app):
-    threading.Thread(target=_init_db, daemon=True).start()  # 포트 바인딩을 막지 않음
+    # 첫 요청이 마이그레이션을 중복 실행하거나 이벤트 루프를 막지 않도록 선행 완료한다.
+    await asyncio.to_thread(_initialize_services)
     yield
 
 app = FastAPI(title='MAPDAL SEOUL API v2', lifespan=lifespan)
@@ -1751,8 +1760,7 @@ def admin_legacy():
 def healthz():
     """Render 배포용 liveness: 웹 프로세스가 응답하면 항상 200을 반환한다.
 
-    DB는 서버 기동 후 백그라운드에서 재연결하므로, 이 경로에서 DB 준비를
-    요구하면 Render가 정상 컨테이너를 배포 실패로 오판할 수 있다.
+    초기화는 lifespan에서 완료하며, 기동 후 DB 연결 상태는 /readyz에서 검사한다.
     """
     return {'ok': True, 'service': 'mapdal-seoul',
             'db_ready': DB_READY, 'db': 'pg' if IS_PG else 'sqlite'}

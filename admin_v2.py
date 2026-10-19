@@ -1004,8 +1004,13 @@ def _cancel_order_stock(oid, sets, args, restock, expected_status=None):
                         pid = target['id']; quantity = num(target.get('q') or 1)
                         if quantity > 0: quantities[pid] = quantities.get(pid, 0) + quantity
             for pid, quantity in sorted(quantities.items()):
+                # Wait for configuration edits before taking the status snapshot.
+                c.execute(_q('SELECT id FROM products WHERE id=?'
+                             + (' FOR UPDATE' if IS_PG else '')), (pid,)).fetchone()
                 n = c.execute(_q('UPDATE products SET stock=stock+?, '
-                                  'soldout=CASE WHEN stock+?>0 THEN 0 ELSE soldout END '
+                                  "soldout=CASE WHEN stock+?>0 AND NOT EXISTS (SELECT 1 FROM product_variants v "
+                                  "WHERE v.legacy_product_id=products.id AND v.sale_status IN ('PAUSED','HIDDEN')) "
+                                  'THEN 0 ELSE soldout END '
                                   'WHERE id=? AND stock IS NOT NULL'), (quantity, quantity, pid)).rowcount
                 if n: restored.append(pid)
         c.commit()
@@ -1260,6 +1265,10 @@ def _prod_opts_sync(pid, opts, prev_opts, actor, touch_stock=True):
     """가격 있는 옵션 ↔ mpo:: 자식 상품 동기화(생성 · 이름/가격/재고/이미지/분류/노출기간 갱신).
     편집기에서 제거되거나 가격이 지워진 관리 상품은 판매중지(soldout=1) — 담긴 장바구니·직접 링크로도 구매 불가.
     반환: product_id/managed 가 채워진 옵션 목록."""
+    # 오래 열린 편집기에서 재고 항목이 누락돼도 실물재고를 중지하지 않는다.
+    present = {o.get('product_id') for o in opts if o.get('product_id')}
+    opts = list(opts) + [o for o in _prod_opts_norm(prev_opts)
+                         if o.get('hidden') and o.get('product_id') not in present]
     pc, nm, pr = _state['pcols'], _state['pname'], _state['pprice']
     if not pc or not nm: return opts
     cols = 'id, %s AS name' % nm + ''.join(', ' + c for c in ('img', 'category', 'show_from', 'show_until') if c in pc)
@@ -1283,7 +1292,7 @@ def _prod_opts_sync(pid, opts, prev_opts, actor, touch_stock=True):
             sets, args = ['%s=?' % nm], [cname]
             # 기존 옵션의 입고 변경은 편집 API에서 원자적 증감으로 이미 반영했다.
             # 옵션 JSON의 stock은 과거 스냅샷이므로 잔여 수량을 덮어쓰지 않는다.
-            if pr: sets.append('%s=?' % pr); args.append(o['price'])
+            if pr and touch_stock: sets.append('%s=?' % pr); args.append(o['price'])
             for c, v in inherit: sets.append('%s=?' % c); args.append(v)
             run('UPDATE products SET %s WHERE id=?' % ','.join(sets), tuple(args + [cpid]))
         elif cpid and one('SELECT id FROM products WHERE id=?', (cpid,)):
@@ -1352,6 +1361,40 @@ def _prod_opts_admin(pid):
                 o['remaining_stock'] = r.get('stock')
                 o['live_soldout'] = num(r.get('soldout'))
     return opts
+
+def _product_children_inherit(pid):
+    """최신 옵션 연결을 잠근 뒤 표시 정보만 전파한다. 가격·재고·구성은 변경하지 않는다."""
+    pc = _state['pcols']
+    columns = [c for c in ('img', 'category', 'show_from', 'show_until') if c in pc]
+    if not columns or 'options' not in pc: return
+    nm = _state['pname'] or 'name'
+    with _conn() as c:
+        if not IS_PG: c.execute('BEGIN IMMEDIATE')
+        else:
+            c.execute("SET LOCAL lock_timeout = '1500ms'")
+            c.execute("SET LOCAL statement_timeout = '5000ms'")
+        suffix = ' FOR UPDATE' if IS_PG else ''
+        select = 'SELECT id, options, %s AS name,%s FROM products WHERE id=?' % (nm, ','.join(columns))
+        row = c.execute(_q(select), (pid,)).fetchone()
+        if not row: return
+        snapshot = dict(row)
+        targets = {pid} | {o['product_id'] for o in _prod_opts_norm(snapshot.get('options'))
+                           if o.get('managed') and o.get('product_id')}
+        locked = {}
+        for target in sorted(targets):
+            current = c.execute(_q(select) + suffix, (target,)).fetchone()
+            if current: locked[target] = dict(current)
+        parent = locked.get(pid)
+        if not parent or parent.get('options') != snapshot.get('options'):
+            raise HTTPException(409, '판매 옵션이 변경되었습니다. 상품정보 저장을 다시 시도하세요')
+        options = sorted((o for o in _prod_opts_norm(parent.get('options'))
+                          if o.get('managed') and o.get('product_id')), key=lambda o: o['product_id'])
+        for option in options:
+            name = ('%s — %s%s' % (parent['name'], '(재고) ' if option.get('hidden') else '', option['name']))[:300]
+            values = [parent.get(column) for column in columns] + [name, option['product_id']]
+            c.execute(_q('UPDATE products SET %s,%s=? WHERE id=?' %
+                         (','.join(column + '=?' for column in columns), nm)), tuple(values))
+        c.commit()
 
 # ── 상품 설명 탭 구성 (2026-10-16) ─────────────────────────────────────────────
 #   products.tabs — JSON {"hide": ["info","qa"] 중 일부, "custom": [{"title","body"}]}
@@ -2109,13 +2152,15 @@ def api_summary(request: Request):
     w7 = {'c': w7['paid_cnt'], 's': w7['paid_sum'], 'ac': w7['cnt'], 'as': w7['sum']}
     m30 = {'c': m30['paid_cnt'], 's': m30['paid_sum'], 'ac': m30['cnt'], 'as': m30['sum']}
     recent = rows("SELECT created, amount, items FROM orders WHERE status='PAID' AND created >= ? ORDER BY created DESC LIMIT 5000", (d30,))
+    from inventory_reporting import load_sales_aliases, report_identity
+    sale_aliases = load_sales_aliases(rows, _state['pname'] or 'id', _state['pprice'] or 'price')
     daily, top = {}, {}
     for r in recent:
         daily[(r.get('created') or '')[:10]] = daily.get((r.get('created') or '')[:10], 0) + num(r.get('amount'))
         for it in jload(r.get('items'), []):
             if not isinstance(it, dict): continue
             # 상품명 공백 정규화 — [매출 상세 분석]과 동일 그룹핑(같은 품목이 갈라지지 않게)
-            nm = re.sub(r'\s+', ' ', str(it.get('n') or it.get('name') or it.get('id') or '')).strip() or '(무명)'
+            _, nm = report_identity(it, sale_aliases)
             rec = top.setdefault(nm, {'qty': 0, 'rev': 0})
             rec['qty'] += num(it.get('q') or 1)
             rec['rev'] += num(it.get('p') or it.get('price') or 0) * num(it.get('q') or 1)
@@ -3028,13 +3073,35 @@ def _catalog_variant_rows(group_ids):
     if not group_ids: return []
     ph = ','.join(['?'] * len(group_ids))
     nm, pr = _state['pname'] or 'id', _state['pprice'] or 'price'
-    return rows('''SELECT v.id AS variant_id,v.legacy_product_id,v.group_id,v.sku,v.option_name,
+    records = rows('''SELECT v.id AS variant_id,v.legacy_product_id,v.group_id,v.sku,v.option_name,
         v.source,v.sale_status,v.stock_mode,v.metadata,v.created_at,
         p.%s AS product_name,p.%s AS price,p.list_price,p.stock,p.stock_baseline,p.options,p.bundle,p.soldout,p.img%s,
         b.is_tracked,b.on_hand,b.reserved,b.incoming,b.reorder_point,b.external_status,b.updated_at AS inventory_updated
         FROM product_variants v LEFT JOIN products p ON p.id=v.legacy_product_id
         LEFT JOIN inventory_balances b ON b.variant_id=v.id
         WHERE v.group_id IN (%s) ORDER BY v.group_id,v.sku''' % (nm, pr, _prod_sched_sel().replace(', ', ',p.'), ph), tuple(group_ids))
+    return _catalog_inventory_roles(records)
+
+def _catalog_inventory_roles(records):
+    """이미 읽은 그룹 옵션으로 역할을 구분한다. SKU마다 추가 조회하지 않는다."""
+    children = {}
+    parents = set()
+    for record in records:
+        pid = record.get('legacy_product_id')
+        for option in jload(record.get('options'), []) or []:
+            if not isinstance(option, dict) or not option.get('product_id'): continue
+            parents.add(pid)
+            children[option['product_id']] = (pid, bool(option.get('hidden')))
+    result = []
+    for record in records:
+        pid = record.get('legacy_product_id')
+        parent, physical = children.get(pid, ('', False))
+        bundle = jload(record.get('bundle'), []) or []
+        mode = bundle[0].get('mode') if isinstance(bundle, list) and bundle else ''
+        role = ('parent' if pid in parents else 'physical' if physical else
+                ('random' if mode == 'any' else 'set') if bundle else 'sale')
+        result.append(dict(record, inventory_role=role, inventory_parent_id=parent))
+    return result
 
 def _catalog_variant_json(r):
     tracked = num(r.get('is_tracked')) == 1
@@ -3044,6 +3111,8 @@ def _catalog_variant_json(r):
     counts_stock = tracked and r.get('stock') is not None and not jload(r.get('bundle'), None) and not any(
         o.get('product_id') for o in options if isinstance(o, dict))
     return {'id': r['variant_id'], 'legacy_id': r.get('legacy_product_id') or '', 'sku': r.get('sku') or '',
+            'inventory_role': r.get('inventory_role') or 'sale',
+            'inventory_parent_id': r.get('inventory_parent_id') or '',
             'name': r.get('product_name') or r.get('option_name') or r.get('sku'),
             'option': r.get('option_name') or '', 'source': r.get('source') or '',
             'sale_status': r.get('sale_status') or 'ACTIVE', 'stock_mode': r.get('stock_mode') or 'TRACKED',
@@ -3357,41 +3426,8 @@ def api_inventory(request: Request):
 @admin_router.post('/admin/api/inventory/adjust')
 def api_inventory_adjust(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 1, '재고 조정')
-    vid = str(body.get('variant_id') or '')
-    v = one('''SELECT v.*,b.is_tracked,b.on_hand,b.reserved,b.incoming,b.reorder_point,b.external_status
-        FROM product_variants v JOIN inventory_balances b ON b.variant_id=v.id WHERE v.id=?''', (vid,))
-    if not v: raise HTTPException(404, 'SKU를 찾을 수 없습니다')
-    kind = str(body.get('kind') or 'MANUAL').upper(); reason = str(body.get('reason') or '').strip()[:300]
-    if not num(v.get('is_tracked')):
-        status = str(body.get('external_status') or '').upper()
-        if status not in ('AVAILABLE', 'OUT', 'UNKNOWN'): raise HTTPException(400, '외부재고 상태를 선택하세요')
-        sale_blocked = str(v.get('sale_status') or 'ACTIVE') != 'ACTIVE'
-        runmany([
-            ('UPDATE inventory_balances SET external_status=?,updated_at=? WHERE variant_id=?', (status, now_iso(), vid)),
-            ('UPDATE products SET soldout=? WHERE id=?', (1 if status == 'OUT' or sale_blocked else 0, v['legacy_product_id'])),
-        ])
-        audit(a, '외부재고상태', v.get('sku') or vid, status + (' · ' + reason if reason else ''))
-        return {'ok': True, 'external_status': status}
-    before = num(v.get('on_hand'))
-    if kind == 'COUNT': after = num(body.get('quantity'))
-    else: after = before + num(body.get('quantity'))
-    if after < 0: raise HTTPException(400, '재고는 0보다 작을 수 없습니다')
-    incoming = max(0, num(body.get('incoming'))) if body.get('incoming') is not None else num(v.get('incoming'))
-    reorder = max(0, num(body.get('reorder_point'))) if body.get('reorder_point') is not None else num(v.get('reorder_point'))
-    available = max(0, after - num(v.get('reserved')))
-    sale_blocked = str(v.get('sale_status') or 'ACTIVE') != 'ACTIVE'
-    delta = after - before
-    stamp = now_iso()
-    runmany([
-        ('UPDATE inventory_balances SET on_hand=?,incoming=?,reorder_point=?,updated_at=? WHERE variant_id=?',
-         (after, incoming, reorder, stamp, vid)),
-        ('UPDATE products SET stock=?,soldout=? WHERE id=?',
-         (available, 1 if available <= 0 or sale_blocked else 0, v['legacy_product_id'])),
-        ('INSERT INTO inventory_movements(id,variant_id,kind,quantity,before_qty,after_qty,reason,by_admin,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
-         (uid(), vid, kind, delta, before, after, reason, a['name'], stamp)),
-    ])
-    audit(a, '재고조정', v.get('sku') or vid, '%d→%d · %s' % (before, after, kind))
-    return {'ok': True, 'on_hand': after, 'available': available, 'incoming': incoming, 'reorder_point': reorder}
+    from unified_inventory import adjust_inventory
+    return adjust_inventory(str(body.get('variant_id') or ''), body, a)
 
 @admin_router.get('/admin/api/inventory/history')
 def api_inventory_history(request: Request):
@@ -3436,12 +3472,13 @@ def api_product_update(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 1, '재고 관리')
     pid = body.get('id')
     if not pid: raise HTTPException(400, 'id required')
+    if 'stock' in body:
+        raise HTTPException(409, '재고 편집 방식이 변경되었습니다. 상품의 재고·판매 옵션 또는 재고 조정을 사용하세요')
+    from unified_inventory import inventory_owner
+    if inventory_owner(pid):
+        raise HTTPException(409, '실물재고는 대표상품의 재고·판매 옵션에서 수정하세요')
     old = one('SELECT stock, soldout FROM products WHERE id=?', (pid,)) or {}
     sets, args, log = [], [], []
-    if body.get('stock') is not None:
-        s = num(body['stock'])
-        if s < 0: raise HTTPException(400, '재고는 0 이상')
-        sets.append('stock=?'); args.append(s); log.append('재고→%d' % s)
     if body.get('soldout') is not None:
         sets.append('soldout=?'); args.append(1 if body['soldout'] else 0); log.append('품절→%s' % ('ON' if body['soldout'] else 'OFF'))
     priced = False
@@ -3746,6 +3783,8 @@ def _evt_attr(pid, nm, idx, mpdn, alias):
     return ('', nm, True) if is_drop else ('', nm, False)
 
 def _stats_detail_compute(p):
+    from inventory_reporting import load_sales_aliases, report_identity
+    sale_aliases = load_sales_aliases(rows, _state['pname'] or 'id', _state['pprice'] or 'price')
     today = kst_today()
     all_range = str(p.get('from') or '').strip().lower() == 'all'
     d_to = _stats_day(p.get('to'), today)
@@ -3799,8 +3838,7 @@ def _stats_detail_compute(p):
         o_rev = o_qty = 0                                 # 이 주문의 집계 포함 라인 합계(국가별용)
         for it in jload(r.get('items'), []):
             if not isinstance(it, dict): continue
-            pid = str(it.get('id') or '')
-            nm = re.sub(r'\s+', ' ', str(it.get('n') or it.get('name') or pid)).strip() or '(무명)'
+            pid, nm = report_identity(it, sale_aliases)
             evt, opt, is_drop = _evt_attr(pid, nm, idx, mpdn, alias)
             if qk and qk not in nm.casefold(): continue
             if only_general and is_drop: continue
@@ -5303,11 +5341,11 @@ function reviewChips(g){return (g.review_reasons||[]).map(x=>`<span class="meta-
 async function productPvLink(id){try{const d=await api('/admin/api/products/preview-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
  const u=d.url;try{await navigator.clipboard.writeText(u);toast('미리보기 링크를 복사했습니다')}catch(e){prompt('미리보기 링크 (복사하세요)',u)}}catch(e){toast(e.message)}}
 function expChip(x){if(!x||x.state==='always')return '';const c=x.state==='scheduled'?'background:#1d4ed8;color:#fff':x.state==='ended'?'background:#6b7280;color:#fff':'background:#15803d;color:#fff';return `<span class="meta-chip" style="${c}" title="고객 노출 기간(KST)">⏱ ${esc(x.label)}</span>`}
-function variantRows(g){return (g.variants||[]).map(v=>{const inv=v.tracked
+function variantRows(g){return (g.variants||[]).map(v=>{const role=v.inventory_role||'sale',parent=v.inventory_parent_id||v.legacy_id;const label={parent:'대표상품',physical:'실물재고',random:'랜덤 옵션',set:'세트 옵션',sale:'판매 옵션'}[role];const inv=v.tracked
  ?`<span class="inv-status ${(v.available||0)<=0?'out':(v.available||0)<=v.reorder_point?'low':'ok'}">가용 ${v.available} / 실재고 ${v.on_hand}</span>`
- :(v.stock_mode==='BUNDLE'?`<span class="inv-status ${v.external_status==='OUT'?'out':'ok'}" title="세트 옵션 — 구성 낱개 재고에서 자동 차감">세트 · 낱개 재고 차감${v.external_status==='OUT'?' · 품절':''}</span>`
+ :(v.stock_mode==='BUNDLE'?`<span class="inv-status ${v.external_status==='OUT'?'out':'ok'}">${label} · 실물재고 공유${v.external_status==='OUT'?' · 품절':''}</span>`
  :`<span class="inv-status ${v.external_status==='OUT'?'out':'ok'}">외부연동 · ${v.external_status==='OUT'?'판매불가':v.external_status==='AVAILABLE'?'판매가능':'확인필요'}</span>`);
- return `<tr><td class="mono">${esc(v.sku)}</td><td class="variant-name">${esc(v.name)} ${expChip(v.exposure)}<div class="group-sub">기존 ID · ${esc(v.legacy_id)}</div></td><td class="right mono">${won(v.list_price||v.price)}</td><td>${inv}</td><td style="white-space:nowrap">${can(2)?`<button class="btn sm" onclick="editDetail('${esc(v.legacy_id)}')">상품편집</button> `:''}<a class="btn sm ghost" style="text-decoration:none" target="_blank" href="/p/${encodeURIComponent(v.legacy_id)}">보기</a>${v.exposure&&v.exposure.state!=='always'&&v.exposure.state!=='live'&&can(2)?` <button class="btn sm ghost" onclick="productPvLink('${esc(v.legacy_id)}')">🔗 미리보기 링크</button>`:''}${can(2)?` <button class="btn sm ghost" style="color:#c0392b" onclick="deleteCatalogProduct('${esc(v.legacy_id)}')">삭제</button>`:''}</td></tr>`}).join('')}
+ return `<tr><td class="mono">${esc(v.sku)}</td><td class="variant-name"><span class="meta-chip">${label}</span> ${esc(v.name)} ${expChip(v.exposure)}</td><td class="right mono">${role==='physical'?'-':won(v.list_price||v.price)}</td><td>${inv}</td><td style="white-space:nowrap">${can(2)?`<button class="btn sm" onclick="editDetail('${esc(parent)}')">${role==='physical'?'재고관리':'상품편집'}</button> `:''}${role==='physical'?'':`<a class="btn sm ghost" style="text-decoration:none" target="_blank" href="/p/${encodeURIComponent(parent)}">보기</a>`}${!parent||parent===v.legacy_id?(role!=='parent'&&role!=='physical'&&can(2)?` <button class="btn sm ghost" style="color:#c0392b" onclick="deleteCatalogProduct('${esc(v.legacy_id)}')">삭제</button>`:''):''}</td></tr>`}).join('')}
 function groupCard(g,reviewOnly){const bad=g.review_state!=='READY'||g.confidence<80;const stock=(g.stock_baseline==null?'':`기본 입고 ${g.stock_baseline} · `)+(g.available==null
  ?(g.source==='DIRECT'?'무제한 / 구성 재고 사용':`외부연동 ${g.external_count}`):`남은 재고 ${g.available}`);
  return `<div class="group-card ${bad?'needs-review':''}" data-gid="${esc(g.id)}">
@@ -5376,7 +5414,7 @@ function openInventory(id){const v=window._inventory[id];if(!v)return;if(!v.trac
  <b>수량</b><span><input id="iaQty" type="number" value="1" style="width:120px"></span><b>입고예정</b><span><input id="iaIncoming" type="number" min="0" value="${v.incoming}" style="width:120px"></span>
  <b>안전재고</b><span><input id="iaReorder" type="number" min="0" value="${v.reorder_point}" style="width:120px"></span><b>사유/메모</b><span><input id="iaReason" placeholder="예: 7월 15일 입고, 파손 1개" style="width:100%"></span></div>
  <div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn ghost" onclick="closeM()">취소</button><button class="btn" onclick="saveInventoryAdjustment('${esc(id)}')">반영</button></div>`;$('#mbg').style.display='flex'}
-async function saveInventoryAdjustment(id){const kind=$('#iaKind').value;let q=Number($('#iaQty').value||0);if((kind==='DAMAGE'||kind==='SAMPLE')&&q>0)q=-q;const body={variant_id:id,kind,quantity:q,incoming:Number($('#iaIncoming').value||0),reorder_point:Number($('#iaReorder').value||0),reason:$('#iaReason').value};
+async function saveInventoryAdjustment(id){const kind=$('#iaKind').value;let q=Number($('#iaQty').value||0);if((kind==='DAMAGE'||kind==='SAMPLE')&&q>0)q=-q;const body={variant_id:id,kind,quantity:q,expected_stock:window._inventory[id].available,incoming:Number($('#iaIncoming').value||0),reorder_point:Number($('#iaReorder').value||0),reason:$('#iaReason').value};
  try{await api('/admin/api/inventory/adjust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast('재고와 이력을 반영했습니다');closeM();loadInventory(inventoryPage);loadProductSummary()}catch(e){toast(e.message)}}
 async function saveExternalInventory(id,status){try{await api('/admin/api/inventory/adjust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({variant_id:id,external_status:status,reason:'관리자 상태 변경'})});toast('외부재고 상태를 반영했습니다');closeM();loadInventory(inventoryPage)}catch(e){toast(e.message)}}
 async function inventoryHistory(id){try{const d=await api('/admin/api/inventory/history?variant_id='+encodeURIComponent(id));$('#mbox').innerHTML=`<h3>재고 변경 이력</h3><table><tr><th>일시</th><th>작업</th><th class="right">증감</th><th>변경</th><th>담당/사유</th></tr>${d.rows.map(x=>`<tr><td class="mono">${esc((x.created_at||'').replace('T',' '))}</td><td>${esc(x.kind)}</td><td class="right mono">${x.quantity>0?'+':''}${x.quantity}</td><td class="mono">${x.before_qty} → ${x.after_qty}</td><td>${esc(x.by_admin)}<div class="group-sub">${esc(x.reason)}</div></td></tr>`).join('')||'<tr><td colspan="5" class="loading">아직 변경 이력이 없습니다.</td></tr>'}</table><div style="text-align:right;margin-top:12px"><button class="btn ghost" onclick="closeM()">닫기</button></div>`;$('#mbg').style.display='flex'}catch(e){toast(e.message)}}
@@ -7095,7 +7133,8 @@ def catalog_product_from_legacy(pid):
         _catalog_migrate_missing(); v = one('SELECT * FROM product_variants WHERE legacy_product_id=?', (pid,))
     if not v: return
     parsed = _catalog_parse_product(r); stamp = now_iso()
-    run('UPDATE product_variants SET option_name=?,sale_status=?,metadata=?,updated_at=? WHERE id=?',
+    run("UPDATE product_variants SET option_name=?,sale_status=CASE WHEN sale_status IN ('PAUSED','HIDDEN') "
+        "THEN sale_status ELSE ? END,metadata=?,updated_at=? WHERE id=?",
         (parsed['option_name'][:300], 'SOLD_OUT' if num(r.get('soldout')) else 'ACTIVE',
          json.dumps(parsed['metadata'], ensure_ascii=False), stamp, v['id']))
     # 자동 그룹명은 현재 이름으로 갱신하되, 관리자가 병합/분리한 그룹명은 보존한다.
@@ -7352,9 +7391,9 @@ def api_product_create(request: Request, body: dict = Body(...)):
         run('UPDATE products SET options=? WHERE id=?', (json.dumps(_opts, ensure_ascii=False), pid))
     if 'tabs' in _state['pcols'] and body.get('tabs') is not None:
         run('UPDATE products SET tabs=? WHERE id=?', (json.dumps(_prod_tabs_norm(body.get('tabs')), ensure_ascii=False), pid))
-    audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %d / %s%s' % (
+    audit(a, '상품등록', pid, '%s / 정가 %s원%s / 재고 %s / %s%s' % (
         name, format(price, ','), (' · 할인 %d%% → 판매 ₩%s' % (dc, format(disc_price(price, dc), ','))) if dc else '',
-        stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류'),
+        '무제한' if stock is None else stock, _CAT_LABEL.get(norm_cat(body.get('category')), '미분류'),
         (' / 노출 %s~%s' % (sched.get('show_from') or '즉시', sched.get('show_until') or '무기한')).replace('T', ' ')
         if (sched.get('show_from') or sched.get('show_until')) else ''))
     try: _k2g_cache_bust(); _sitemap_cache['xml'] = None
@@ -7376,6 +7415,8 @@ def api_product_delete(request: Request, body: dict = Body(...)):
             ((_state['pname'] or 'id'), (', related_ids' if 'related_ids' in _state['pcols'] else '')), (pid,))
     if not r:
         raise HTTPException(404, '상품을 찾을 수 없습니다')
+    from unified_inventory import protect_product_delete
+    protect_product_delete(pid)
     if 'related_ids' in _state['pcols']:
         _related_unlink_deleted(pid, r.get('related_ids'))
     for _o in _prod_opts_load(pid):                     # 관리 자식 옵션상품 동반 삭제
@@ -7567,6 +7608,11 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
     if not pid: raise HTTPException(400, 'id required')
     if not one('SELECT id FROM products WHERE id=?', (pid,)):
         raise HTTPException(404, '상품을 찾을 수 없습니다')
+    from unified_inventory import inventory_owner
+    if inventory_owner(pid):
+        raise HTTPException(409, '실물재고는 대표상품의 재고·판매 옵션에서 수정하세요')
+    if 'options' in body:
+        raise HTTPException(409, '옵션 편집 방식이 변경되었습니다. 새로고침 후 재고·판매 옵션 저장을 사용하세요')
     # 오래 열린 화면의 절대 잔여 값은 판매분을 복원하므로 받지 않는다.
     if 'stock' in body:
         raise HTTPException(409, '재고 편집 방식이 변경되었습니다. 새로고침 후 기본 입고수량을 수정하세요')
@@ -7649,7 +7695,7 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
             run('UPDATE products SET options=? WHERE id=?', (json.dumps(_opts, ensure_ascii=False), pid))
             log.append('옵션 %d개' % len([o for o in _opts if o['price'] > 0]))
         elif _prev and sets:
-            _prod_opts_sync(pid, _prev, _prev, a, touch_stock=False)   # 이름·이미지·노출기간 변경을 자식 옵션상품에 전파(재고는 유지)
+            _product_children_inherit(pid)
     if related_changed:
         _related_set(pid, body.get('related_ids')); log.append('related_ids')
     try: _k2g_cache_bust()
@@ -7687,6 +7733,10 @@ def product_edit_page(request: Request):
     pid = (request.query_params.get('id') or '').strip()
     if not pid:
         return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center"><h3>상품 ID가 없습니다</h3><a href="/admin/dashboard">대시보드로</a>', status_code=400)
+    from unified_inventory import inventory_owner
+    owner = inventory_owner(pid)
+    if owner:
+        return RedirectResponse('/admin/products/edit?id=' + urllib.parse.quote(owner, safe='') + '#productInventory', status_code=303)
     return HTMLResponse(_PRODUCT_FORM_HTML.replace('__PAGE__',
         json.dumps({'mode': 'edit', 'id': pid}, ensure_ascii=False)))
 
@@ -7780,10 +7830,8 @@ h2{font-size:19px;margin-bottom:18px}
  </div>
  <div class="f"><label>짧은 설명</label><textarea id="fd" rows="3" placeholder="목록·상단 요약 설명 (선택)"></textarea></div>
 </div>
-<div class="card"><h3><span class="no">2</span>판매 옵션<small>버전/구성별 옵션 카드 — NEW/DROPS 와 동일</small></h3>
- <div id="poOpts"></div>
- <button class="btn sm" type="button" onclick="poOptAdd()">+ 옵션 추가</button>
- <div class="hint">옵션을 하나라도 두면 상품 페이지(/p/ · 앨범 상세)의 수량·구매 버튼이 <b>옵션 카드(버전별 수량 −/＋ · SOLD OUT · 구성품)</b>로 바뀌고, 고객은 옵션 단위로 장바구니에 담습니다. 가격 있는 옵션은 저장 시 자식 상품(<span style="font-family:'IBM Plex Mono',monospace">mpo::</span>)이 자동 생성되어 재고가 개별 차감되며 [상품·재고]에서 이 상품의 SKU 로 보입니다. 재고를 비우면 무제한. 옵션을 삭제하면 해당 자식 상품은 판매중지됩니다. 이미지·노출 기간은 이 상품을 따릅니다.</div>
+<div class="card" id="productInventory"><h3><span class="no">2</span>재고·판매 옵션<small>실물 입고와 구매 옵션을 한 곳에서 관리</small></h3>
+ <div id="inventoryEditor">상품을 먼저 등록하면 버전별 입고수량과 랜덤·세트 판매 옵션을 설정할 수 있습니다.</div>
 </div>
 <div class="card"><h3><span class="no">3</span>노출 기간<small>고객에게 보이는 시간 · 미리보기 링크</small></h3>
  <div class="f" style="margin-bottom:10px">
@@ -7864,6 +7912,7 @@ h2{font-size:19px;margin-bottom:18px}
  <button class="btn" id="saveBtn" onclick="save()">저장</button>
 </div></div>
 <div id="toast"></div>
+<script src="/product-inventory.js?v=1"></script>
 <script>
 const PAGE=__PAGE__;
 const $=s=>document.querySelector(s);
@@ -8021,7 +8070,9 @@ async function init(){
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
   const v=$('#viewBtn');v.href=d.url;v.style.display='';
   $('#stat').textContent=(d.soldout?'상태: 품절':'상태: 판매중')+(d.exposure&&d.exposure.state!=='always'?' · '+d.exposure.label:'');
-  expLoad(d.show_from,d.show_until,d.exposure);pvShow(d.preview_url);poLoad(d.options);ptLoad(d.tabs);hbSet(d.hero_bg);galLoad(d.gallery_list);
+  expLoad(d.show_from,d.show_until,d.exposure);pvShow(d.preview_url);ptLoad(d.tabs);hbSet(d.hero_bg);galLoad(d.gallery_list);
+  $('#fs').closest('.f').style.display='none';
+  ProductInventory.mount($('#inventoryEditor'),PAGE.id);
   if(new URLSearchParams(location.search).get('created')==='1'){toast('등록 완료! 상세 내용을 이어서 편집할 수 있습니다.');history.replaceState(null,'','/admin/products/edit?id='+encodeURIComponent(PAGE.id));}
  }catch(e){if(e.message!=='세션 만료'){alert('상품을 불러올 수 없습니다: '+e.message);location.href='/admin/dashboard';}}
 }
@@ -8068,38 +8119,6 @@ function ptAdd(){if(document.querySelectorAll('#ptTabs .ptab').length>=6)return 
 function ptLoad(t){t=t||{};const hide=t.hide||[];$('#tabShowInfo').checked=hide.indexOf('info')<0;$('#tabShowQa').checked=hide.indexOf('qa')<0;$('#ptTabs').innerHTML=(t.custom||[]).map(ptCard).join('')}
 function ptCollect(){const hide=[];if(!$('#tabShowInfo').checked)hide.push('info');if(!$('#tabShowQa').checked)hide.push('qa');
  return {hide,custom:[...document.querySelectorAll('#ptTabs .ptab')].map(c=>({title:c.querySelector('.pt_title').value.trim(),body:c.querySelector('.pt_body').value.trim()})).filter(x=>x.title&&x.body)}}
-/* ── 판매 옵션 편집기 (NEW/DROPS 옵션 v2 와 동일 구조) ── */
-const PO_KINDS=[['album','앨범'],['card','포토카드'],['ticket','응모권'],['gift','특전'],['etc','기타']];
-function poItem(it){it=it||{};return `<div style="display:flex;gap:6px;margin-bottom:5px"><select class="poi_k" style="width:96px;font:inherit;padding:6px">${PO_KINDS.map(k=>`<option value="${k[0]}" ${it.k===k[0]?'selected':''}>${k[1]}</option>`).join('')}</select><input class="poi_t" style="flex:1;font:inherit;padding:6px 8px;border:1px solid #ccc" placeholder="구성품 — 예) 앨범 1매 · 포토카드 8종 중 1종 랜덤" value="${esc(it.t||'')}"><button class="btn sm ghost" type="button" onclick="this.parentElement.remove()">×</button></div>`}
-function poCard(o){o=o||{};return `<div class="poopt" style="border:1px solid #ddd;background:#fafaf7;padding:9px 9px 8px;margin-bottom:8px">
- <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-  <input class="po_name" placeholder="옵션명 * — 예) For. A VER" style="flex:2;min-width:170px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${esc(o.name||'')}">
-  <input class="po_price" type="number" min="0" placeholder="가격(원)" style="width:110px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${o.price||''}">
-  <label style="font-size:12px">기본 입고수량 <input class="po_stock" type="number" min="0" placeholder="미설정 / 무제한" style="width:150px;font:inherit;padding:8px 10px;border:1px solid #ccc" value="${o.stock==null?'':esc(Number(o.stock))}"></label>
-  <button class="btn sm ghost po_up" type="button" title="위로" onclick="poMove(this,-1)">↑</button><button class="btn sm ghost po_dn" type="button" title="아래로" onclick="poMove(this,1)">↓</button>
-  <button class="btn sm ghost" type="button" style="color:#c0392b" onclick="poDel(this)">옵션 삭제</button></div>
- ${o.product_id?`<div class="hint" style="margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:11px">연동 상품 <a href="/p/${encodeURIComponent(o.product_id)}" target="_blank">${esc(o.product_id)}</a>${o.managed?' · 자동 관리(이름·가격·재고 동기화)':' · 수동 연결'}${o.live_soldout?' · <b style="color:#c0392b">판매중지/품절</b>':''}</div>`:''}
- <div class="hint">${o.product_id?'현재 남은 재고: '+(o.remaining_stock==null?'무제한 / 구성 재고 사용':Number(o.remaining_stock).toLocaleString())+(o.stock_baseline==null?' · 기본 입고수량 미설정':' · 주문 시 기본 입고수량은 유지됩니다'):'신규 옵션: 비워두면 무제한'}</div>
- <input type="hidden" class="po_expected" value="${o.stock_baseline==null?'':esc(Number(o.stock_baseline))}">
- <input type="hidden" class="po_pid" value="${esc(o.product_id||'')}"><input type="hidden" class="po_mng" value="${o.managed?1:0}">
- <label style="display:inline-flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;cursor:pointer"><input type="checkbox" class="po_hidden" ${o.hidden?'checked':''}> <b>비공개 낱개(재고 전용)</b><span class="hint" style="display:inline">— 고객에게 보이지 않고 단독 판매도 안 되는 재고 풀. 랜덤/세트 옵션의 구성으로만 쓰입니다(예: STAR ver. · RACE ver.)</span></label>
- <div class="po_bundle" style="margin-top:6px;padding:7px 8px;border:1px dashed #d9d7d0;background:#fff">
-  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12px">구성(재고 차감)</b>
-   <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px;cursor:pointer"><input type="radio" name="bm_${esc(String(o.product_id||o.name||Math.random()))}" class="po_bmode" value="all" ${o.bundle_mode!=='any'?'checked':''}> 세트 — 구성 전부 차감</label>
-   <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px;cursor:pointer"><input type="radio" name="bm_${esc(String(o.product_id||o.name||Math.random()))}" class="po_bmode" value="any" ${o.bundle_mode==='any'?'checked':''}> 랜덤 — 구성 중 1종만 차감</label>
-   <button class="btn sm ghost" type="button" onclick="bundleAdd(this,'.poopt','.po_name')">+ 구성 낱개</button></div>
-  <div class="hint" style="margin-top:3px">세트(6종 세트): 구성 낱개 각각 × 수량 차감 · 랜덤(6종 중 1종): 구성 낱개 재고 합에서 1개 — 재고가 많은 버전부터 차감되고 주문에 어떤 버전인지 기록됩니다.</div>
-  <div class="bundle_rows" style="margin-top:4px" onfocusin="bundleRefresh(this)">${(o.bundle||[]).map(b=>bundleRow(b.name,b.qty)).join('')}</div></div>
- <div class="po_items" style="margin-top:7px">${(o.items||[]).map(poItem).join('')}</div>
- <button class="btn sm ghost" type="button" onclick="this.previousElementSibling.insertAdjacentHTML('beforeend',poItem())">+ 구성품</button></div>`}
-function poMove(btn,dir){const c=btn.closest('.poopt');if(!c)return;const p=c.parentNode;if(dir<0){if(c.previousElementSibling)p.insertBefore(c,c.previousElementSibling)}else{if(c.nextElementSibling)p.insertBefore(c.nextElementSibling,c)}}
-function poDel(btn){const c=btn.closest('.poopt');if(!c)return;const nm=(c.querySelector('.po_name')||{}).value||'';if(nm.trim()&&!confirm('옵션 “'+nm.trim()+'”을(를) 삭제할까요? 연동된 자식 상품은 판매중지됩니다.'))return;c.remove()}
-function poOptAdd(){$('#poOpts').insertAdjacentHTML('beforeend',poCard({items:[]}));const last=$('#poOpts').lastElementChild;if(last)last.querySelector('.po_name').focus()}
-function poLoad(opts){$('#poOpts').innerHTML=(opts||[]).map(poCard).join('')}
-function poCollect(){return [...document.querySelectorAll('#poOpts .poopt')].map(c=>({name:c.querySelector('.po_name').value.trim(),price:parseInt(c.querySelector('.po_price').value,10)||0,
- stock_baseline:c.querySelector('.po_stock').value===''?null:Number(c.querySelector('.po_stock').value),expected_stock_baseline:c.querySelector('.po_expected').value===''?null:Number(c.querySelector('.po_expected').value),
- stock:c.querySelector('.po_stock').value===''?null:Math.max(0,parseInt(c.querySelector('.po_stock').value,10)||0),product_id:c.querySelector('.po_pid').value,managed:parseInt(c.querySelector('.po_mng').value,10)||0,
- items:[...c.querySelectorAll('.po_items > div')].map(r=>({k:r.querySelector('.poi_k').value,t:r.querySelector('.poi_t').value.trim()})).filter(x=>x.t),bundle:bundleCollect(c),bundle_mode:((c.querySelector('.po_bmode:checked')||{}).value||'all'),hidden:(c.querySelector('.po_hidden')||{}).checked?1:0})).filter(o=>o.name)}
 /* ── 미리보기 링크 (NEW/DROPS 와 동일) ── */
 function pvShow(url){if(PAGE.mode!=='edit')return;$('#pvRow').style.display='';$('#pvUrl').value=url||'';if(!url)pvIssue(false)}
 async function pvIssue(rotate){try{const d=await api('/admin/api/products/preview-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:PAGE.id,rotate:!!rotate})});$('#pvUrl').value=d.url;if(rotate)toast('미리보기 링크를 재발급했습니다 — 이전 링크는 더 이상 열리지 않습니다')}catch(e){if(e.message!=='세션 만료')toast(e.message)}}
@@ -8121,14 +8140,13 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:$('#fs').value===''?null:Number($('#fs').value),
-     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
+     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,stock_baseline:$('#fs').value===''?null:Number($('#fs').value),expected_stock_baseline:_stockBaseline,
-    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),options:poCollect(),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
+   body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,
+    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
   toast('저장되었습니다');expUI();
-  try{const d2=await api('/admin/api/products/detail?id='+encodeURIComponent(PAGE.id));poLoad(d2.options);stockLoad(d2)}catch(e){}
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
 }
@@ -8782,6 +8800,11 @@ def pdp(pid: str, request: Request):
     try: ensure_ready()
     except Exception: pass
     if not _state['pcols']: raise HTTPException(404)
+    if pid.startswith(PROD_OPT_PREFIX):
+        from unified_inventory import inventory_owner
+        owner = inventory_owner(pid)
+        if owner:
+            return RedirectResponse('/p/' + urllib.parse.quote(owner, safe=''), status_code=303)
     sel = 'id, %s AS name, stock, soldout' % (_state['pname'] or 'id')
     if _state['pprice']: sel += ', %s AS price' % _state['pprice']
     # (버그 수정) info_rows·ship_rows 가 SELECT 목록에서 빠져 있어 관리자가 저장한

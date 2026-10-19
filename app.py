@@ -335,6 +335,8 @@ def _initialize_services():
         raise RuntimeError('Database initialization failed; startup aborted')
     import admin_v2
     admin_v2.ensure_ready()
+    from unified_inventory import ensure_schema
+    ensure_schema()
     print('[startup] 데이터베이스 및 관리자 초기화 완료', flush=True)
 
 @asynccontextmanager
@@ -753,6 +755,8 @@ async def create_order(req: Request, response: Response):
     changed_stock_ids = []
     try:
         with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
+            from unified_inventory import lock_order_inventory
+            lock_order_inventory(c, items, _product_id_candidates)
             sub, resolved = 0, []
             for it in items:
                 pid = str(it.get('id', '')); q = max(1, min(99, int(it.get('q', 1))))
@@ -778,7 +782,8 @@ async def create_order(req: Request, response: Response):
                 except HTTPException:
                     raise
                 except Exception:
-                    parts = []
+                    # A component failure must roll back the entire order and stock.
+                    raise
                 if parts:
                     changed_stock_ids.extend(p['id'] for p in parts)
                 sub += row['price'] * q
@@ -1794,6 +1799,8 @@ try:
 except Exception as _e:
     print('globalshop load skipped:', _e)
 try:
+    from unified_inventory import inventory_router
+    app.include_router(inventory_router)
     from admin_v2 import admin_router
     app.include_router(admin_router)
 except Exception as _e:

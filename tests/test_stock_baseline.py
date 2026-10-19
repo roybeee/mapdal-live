@@ -6,6 +6,8 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class HTTPException(Exception):
@@ -25,6 +27,10 @@ class StockBaselineTests(unittest.TestCase):
             self.connections.append(c)
             return c
         self.conn = conn
+        stock_admin = SimpleNamespace(_conn=conn, _q=lambda sql: sql, IS_PG=False)
+        inventory_patch = patch('unified_inventory._admin', return_value=stock_admin)
+        inventory_patch.start()
+        self.addCleanup(inventory_patch.stop)
         self.ns = {'_conn': conn, '_q': lambda s: s, 'IS_PG': False,
                    'HTTPException': HTTPException, 'json': json,
                    're': re, 'Request': object, 'Body': lambda x: None,
@@ -42,6 +48,8 @@ class StockBaselineTests(unittest.TestCase):
         with conn() as c:
             c.execute('CREATE TABLE products(id TEXT PRIMARY KEY, stock INTEGER, stock_baseline INTEGER, soldout INTEGER,name TEXT,options TEXT,show_from TEXT,show_until TEXT)')
             c.execute('CREATE TABLE orders(order_id TEXT PRIMARY KEY,status TEXT,items TEXT,admin_memo TEXT)')
+            c.execute('CREATE TABLE product_inventory_items(product_id TEXT PRIMARY KEY,parent_product_id TEXT,label TEXT,active INTEGER)')
+            c.execute('CREATE TABLE product_variants(id TEXT PRIMARY KEY,legacy_product_id TEXT,sale_status TEXT)')
             c.executemany('INSERT INTO products(id,stock,stock_baseline,soldout) VALUES(?,?,?,?)', [('a', 90, 100, 0), ('b', None, None, 0), ('c', 12, None, 0)])
         noop = lambda *args, **kwargs: None
         self.ns.update({name: noop for name in ('need', 'audit', '_prod_opt_attach_group', '_bundle_resolve',
@@ -142,6 +150,13 @@ class StockBaselineTests(unittest.TestCase):
     def test_cancel_without_restock_preserves_stock(self):
         self.cancel([{'id': 'a', 'q': 2}], restock=False)
         self.assertEqual(self.product()['stock'], 90)
+
+    def test_cancel_restores_quantity_without_reopening_retired_option(self):
+        with self.conn() as c:
+            c.execute("INSERT INTO product_variants VALUES('v_a','a','PAUSED')")
+            c.execute("UPDATE products SET soldout=1 WHERE id='a'")
+        self.cancel([{'id': 'a', 'q': 2}])
+        self.assertEqual((self.product()['stock'], self.product()['soldout']), (92, 1))
 
     def test_payment_completed_during_cancel_requires_refund_recheck(self):
         with self.conn() as c:

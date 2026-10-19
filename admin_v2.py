@@ -8188,13 +8188,13 @@ init();
 
 # ═══════════════════════════════════════════════════════════════════════
 # 카테고리별 상세페이지 메타 (뱃지 · 브랜드라인 · 혜택 아코디언)
-#   · album 은 K2G 앨범과 동일한 리치 구성(영상통화·한터차트·4F)
+#   · album 은 상품에 저장된 행사 배지와 한터차트·4F 정보를 표시
 #   · 그 외 카테고리는 성격에 맞는 뱃지/혜택으로 자동 전환
 #   · 각 값은 (badges[list of (label, cls)], brand_line, benefits[list of (head, hl, rest, detail)])
 # ═══════════════════════════════════════════════════════════════════════
 _PDP_META = {
     'album': {
-        'badges': [('영상통화', 'dream'), ('한터차트', 'best')],
+        'badges': [('한터차트', 'best')],
         'brand': 'KPOPTOGETHER × 맵달SEOUL · 4F',
         'benefits': [
             ('차트반영', '한터차트 집계', ' · 4F = 온라인 동시',
@@ -8308,10 +8308,13 @@ def _kv_rows_html(raw, limit=16):
     return ''.join(out)
 
 
-def _pdp_meta_html(cat):
-    """카테고리 → (badges_html, brand_text, benefits_html)"""
+def _pdp_meta_html(cat, badge=''):
+    """카테고리와 명시된 상품 배지 → (badges_html, brand_text, benefits_html)"""
     m = _PDP_META.get(cat, _PDP_META_DEFAULT)
-    bdgs = ''.join('<span class="bdg %s">%s</span>' % (c, b) for b, c in m['badges'])
+    label = str(badge or '').strip()
+    badges = ([(label, 'dream')] + m['badges']
+              if cat == 'album' and label and label not in {b for b, _ in m['badges']} else m['badges'])
+    bdgs = ''.join('<span class="bdg %s">%s</span>' % (c, _esc(b)) for b, c in badges)
     bens = ''
     for head, hl, rest, detail in m['benefits']:
         bens += ('<div class="ben-row"><div class="bh"><h6>%s</h6>'
@@ -8807,7 +8810,7 @@ def pdp(pid: str, request: Request):
         _exp_banner = ('<div id="mpExpBanner" style="position:sticky;top:0;z-index:9999;background:#1d4ed8;color:#fff;font:700 13px/1.4 sans-serif;'
                        'padding:10px 16px;text-align:center">%s — %s · 일반 고객에게는 보이지 않으며 결제는 노출 기간 안에서만 가능합니다</div>'
                        % ('관리자 미리보기' if _is_admin else '미리보기 링크', h(_exp_label)))
-    soldout = num(r.get('soldout')) or num(r.get('stock')) <= 0
+    soldout = num(r.get('soldout')) or (r.get('stock') is not None and num(r.get('stock')) <= 0)
     img = (r.get('img') or '').strip()
     # 카테고리 칩 → 해당 목록으로 이동 (앨범은 KPOP(음반) 전용관 직행)
     cat = norm_cat(r.get('category'))
@@ -8863,7 +8866,7 @@ def pdp(pid: str, request: Request):
                + _jsonld(prod_ld)
                + _jsonld(_seo_breadcrumb(_su, _sn, str(r.get('name') or '')[:60], canon)))
     # ── 카테고리별 메타 (뱃지·브랜드라인·혜택 아코디언) ──
-    badges_html, brand_line, benefits_html = _pdp_meta_html(cat)
+    badges_html, brand_line, benefits_html = _pdp_meta_html(cat, r.get('badge'))
     # 카테고리별 flavor 태그 + 구매정보 탭 추가행
     _FLAVOR = {'album': 'ALBUM', 'md': 'OFFICIAL MD', 'kfood': 'K-FOOD',
                'apparel': 'APPAREL', 'living': 'LIFESTYLE'}
@@ -8940,7 +8943,8 @@ def pdp(pid: str, request: Request):
         'name': h(r.get('name')), 'namejs': json.dumps(str(r.get('name') or '')),
         'pricehtml': pricehtml, 'price_fmt': format(sale, ','), 'pricejs': sale,
         'bcls': 'no' if soldout else 'ok',
-        'bmsg': '품절 (SOLD OUT)' if soldout else '구매 가능 · 재고 %d' % num(r.get('stock')),
+        'bmsg': ('품절 (SOLD OUT)' if soldout else '구매 가능' if r.get('stock') is None
+                 else '구매 가능 · 재고 %d' % num(r.get('stock'))),
         'stockjs': num(r.get('stock')),
         'descrblock': ('<div class="descbody">%s</div>' % h(r.get('descr'))) if str(r.get('descr') or '').strip() else '',
         'imgtag': ('<img src="%s" alt="">' % h(img)) if img else '<span class="ph-word">MAPDAL SEOUL</span>',

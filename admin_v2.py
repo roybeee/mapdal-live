@@ -6168,6 +6168,7 @@ const _pub=r?(r._pub||(r.on===false?'off':'now')):'off';   /* 새 이벤트 기�
  <button class="btn sm ghost" type="button" onclick="drOptAdd()">+ 옵션 추가</button>
  <div class="hint" style="margin-top:5px">가격을 입력한 옵션은 사이트에서 <b>수량 선택 카드</b>(메이크스타형)로 표시되고, 저장하면 구매용 상품이 자동 생성·연동됩니다. 재고를 비우면 무제한 판매이며, <b>저장할 때마다 입력한 재고 수치로 재설정</b>됩니다. 가격 없이 이름만 넣으면 예전처럼 안내 목록으로만 표시됩니다. 구매형 옵션이 하나라도 있으면 [구매 링크] 버튼 대신 옵션 카드가 노출됩니다.</div></span>
  <b>차트 문구</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_chart" ${v.chart_note?'checked':''}> “음반 판매량 한터·써클차트 100% 반영” 문구 표시</label></span>
+ <b>관련 상품</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="dr_related" ${v.show_related!==false?'checked':''}> 관련 상품 노출</label><div class="hint">체크를 해제하면 이 이벤트 상세페이지의 관련 상품 영역을 숨깁니다.</div></span>
  <b>상세 콘텐츠</b><span><div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="hint" style="display:inline;white-space:nowrap">탭 이름</span><input id="dr_tab_info" maxlength="30" value="${esc(v.tab_info_title||'')}" placeholder="이벤트 안내" style="flex:0 0 240px"></div><textarea id="dr_html" rows="12" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="이벤트 상세 HTML — 아래 버튼으로 이미지·영상을 올리면 본문에 자동 삽입됩니다">${esc(v.content_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_htmlfile" accept="image/*" style="display:none" onchange="drUpBody(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_htmlvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_htmlvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_html')"><input id="dr_htmlvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_html','dr_htmlvurl')">링크로 영상 삽입</button></div><div class="hint" style="margin-top:4px;font-size:11px">영상 파일은 mp4·webm·mov, 최대 50MB (10~30초 클립 권장). 유튜브·비메오 링크는 16:9 반응형 플레이어로, 그 밖의 mp4 주소는 재생 컨트롤이 있는 플레이어로 삽입됩니다.</div></span>
  <b>특전 콘텐츠</b><span><div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="hint" style="display:inline;white-space:nowrap">탭 이름</span><input id="dr_tab_benefit" maxlength="40" value="${esc(v.tab_benefit_title||'')}" placeholder="KPOPTOGETHER X 맵달SEOUL 특전" style="flex:0 0 300px"></div><textarea id="dr_benefit" rows="9" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.6" placeholder="KPOPTOGETHER X 맵달SEOUL 특전 섹션 HTML — 이미지·영상을 올리면 본문에 자동 삽입됩니다 (비우면 섹션 숨김)">${esc(v.benefit_html||'')}</textarea><div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitfile').click()">이미지 업로드 → 본문 삽입</button><input type="file" id="dr_benefitfile" accept="image/*" style="display:none" onchange="drUpBenefit(this)"><button class="btn sm ghost" type="button" onclick="document.getElementById('dr_benefitvid').click()">영상 업로드 → 본문 삽입</button><input type="file" id="dr_benefitvid" accept="video/mp4,video/webm,video/quicktime" style="display:none" onchange="drUpVideo(this,'dr_benefit')"><input id="dr_benefitvurl" placeholder="YouTube·Vimeo·mp4 링크 붙여넣기" style="flex:1;min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px"><button class="btn sm ghost" type="button" onclick="drAddVideoUrl('dr_benefit','dr_benefitvurl')">링크로 영상 삽입</button></div></span>
  <b>추가 탭</b><span><div id="dr_xtabs">${(v.extra_tabs||[]).map(drXTabCard).join('')}</div><button class="btn sm ghost" type="button" onclick="drXTabAdd()">+ 탭 추가</button>
@@ -6215,7 +6216,7 @@ async function saveDrop(id){try{
   image:$('#dr_img').value,sales_start:$('#dr_start').value,sales_end:$('#dr_end').value,
   announce_at:$('#dr_ann').value,buy_url:$('#dr_buy').value,buy_label:$('#dr_buylabel').value,
   schedule:sched,options:drOptsCollect(),
-  chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,tab_info_title:$('#dr_tab_info').value.trim(),tab_benefit_title:$('#dr_tab_benefit').value.trim(),extra_tabs:drXTabsCollect(),
+  show_related:$('#dr_related').checked,chart_note:$('#dr_chart').checked,content_html:$('#dr_html').value,tab_info_title:$('#dr_tab_info').value.trim(),tab_benefit_title:$('#dr_tab_benefit').value.trim(),extra_tabs:drXTabsCollect(),
   benefit_html:$('#dr_benefit').value,
   winner_fansign_extra:$('#dr_twf_extra').value,
   winner_videocall_extra:$('#dr_twv_extra').value,
@@ -12215,8 +12216,9 @@ def api_drop_public_detail(did: int, request: Request):
         if isinstance(s, dict):
             sched.append({'name': str(s.get('name') or '')[:40], 'date': str(s.get('date') or '')[:20],
                           'time': str(s.get('time') or '')[:20], 'desc': str(s.get('desc') or '')[:80]})
+    show_related = d.get('show_related') is not False
     rel, art = [], c['artist'].strip().lower()
-    for x in ds:
+    for x in (ds if show_related else []):
         if num(x.get('id')) == did or not _drop_is_live(x, now): continue   # 관련 이벤트는 공개분만
         xc = _drop_card(x, now)
         xc['_rank'] = 0 if (art and xc['artist'].strip().lower() == art) else (1 if set(xc.get('cats') or []) & set(c.get('cats') or []) else 2)
@@ -12239,8 +12241,9 @@ def api_drop_public_detail(did: int, request: Request):
               'announce_notice': str(d.get('announce_notice') or ''),
               'announce_body': str(d.get('announce_body') or ''),
               'winner_groups': (_drop_winner_groups(d, masked=True) if c['announce'] == 'ANNOUNCED' else []),
+              'show_related': show_related,
               'related': rel[:8],
-              'related_products': _drop_related_products(c)})
+              'related_products': _drop_related_products(c) if show_related else []})
     _live = _drop_is_live(d, now)
     c.update({'live': _live, 'preview': (not _live),          # preview=True → 프런트 구매·응모 잠금 표시
               'pub': _drop_pub_mode(d), 'publish_at': str(d.get('publish_at') or '')})
@@ -12274,6 +12277,8 @@ def api_drops_admin(request: Request):
 @admin_router.post('/admin/api/drops/save')
 def api_drops_save(request: Request, body: dict = Body(...)):
     a = get_actor(request); need(a, 2, 'NEW/DROPS 관리')
+    if 'show_related' in body and type(body['show_related']) is not bool:
+        raise HTTPException(400, '관련 상품 노출 여부는 true 또는 false여야 합니다')
     title = re.sub(r'\s+', ' ', str(body.get('title') or '')).strip()
     if not title: raise HTTPException(400, '이벤트 제목을 입력하세요')
     for k, lb in (('sales_start', '판매 시작'), ('sales_end', '판매 종료'), ('announce_at', '당첨자 발표')):
@@ -12327,6 +12332,7 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'buy_label': str(body.get('buy_label') or '').strip()[:20],
            'options': _drop_opts_norm(body.get('options')),
            'chart_note': bool(body.get('chart_note')),
+           'show_related': body.get('show_related', (cur or {}).get('show_related') is not False),
            'content_html': str(body.get('content_html') or '')[:200000],
            'benefit_html': str(body.get('benefit_html') or '')[:200000],
            'tab_info_title': str(body.get('tab_info_title') or '').strip()[:30],

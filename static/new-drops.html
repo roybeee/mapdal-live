@@ -663,6 +663,7 @@ function dropAddCart(c){
 
 function won(n){n=Number(n||0);return '\u20A9'+n.toLocaleString('ko-KR')}
 function relSideHTML(c){
+ if(c.show_related===false)return '';
  var ps=c.related_products||[];
  if(ps.length){ /* KPOP SHOP의 같은 아티스트 앨범(A/Z/Diary VER. 등) → 앨범 상세로 연결 */
   return '<div class="nd-relside"><h4>관련 상품</h4><div class="rs-track">'+ps.slice(0,6).map(function(p,i){

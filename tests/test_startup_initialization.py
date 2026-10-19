@@ -10,11 +10,13 @@ from types import SimpleNamespace
 import pytest
 
 
-def startup_scope(monkeypatch, init_db, ensure_ready):
+def startup_scope(monkeypatch, init_db, ensure_ready, ensure_inventory=lambda: None):
     scope = {'asyncio': asyncio, 'threading': threading,
              'asynccontextmanager': asynccontextmanager, 'DB_READY': False,
              '_init_db': init_db}
     monkeypatch.setitem(sys.modules, 'admin_v2', SimpleNamespace(ensure_ready=ensure_ready))
+    import unified_inventory
+    monkeypatch.setattr(unified_inventory, 'ensure_schema', ensure_inventory)
     tree = ast.parse((Path(__file__).resolve().parents[1] / 'app.py').read_text())
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in {
@@ -41,7 +43,9 @@ def test_startup_serializes_initialization_without_blocking_event_loop(monkeypat
         admin_started.set()
         assert admin_release.wait(2), 'test did not release admin initialization'
 
-    scope = startup_scope(monkeypatch, init_db, ensure_ready)
+    def ensure_inventory():
+        calls.append(('inventory', threading.get_ident()))
+    scope = startup_scope(monkeypatch, init_db, ensure_ready, ensure_inventory)
 
     async def run():
         main_thread = threading.get_ident()
@@ -64,7 +68,7 @@ def test_startup_serializes_initialization_without_blocking_event_loop(monkeypat
             assert not task.done(), 'server accepted requests before admin initialization'
             admin_release.set()
             await asyncio.wait_for(task, 2)
-            assert [call[0] for call in calls] == ['db', 'admin']
+            assert [call[0] for call in calls] == ['db', 'admin', 'inventory']
             assert all(call[1] != main_thread for call in calls)
         finally:
             db_release.set()
@@ -102,4 +106,17 @@ def test_admin_initialization_failure_prevents_startup(monkeypatch):
             async with scope['lifespan'](None):
                 pytest.fail('startup must not yield before admin initialization succeeds')
 
+    asyncio.run(run())
+
+
+def test_inventory_schema_failure_prevents_unready_instance_accepting_traffic(monkeypatch):
+    def init_db():
+        scope['DB_READY'] = True
+    def fail_inventory():
+        raise RuntimeError('inventory schema unavailable')
+    scope = startup_scope(monkeypatch, init_db, lambda: None, fail_inventory)
+    async def run():
+        with pytest.raises(RuntimeError, match='inventory schema unavailable'):
+            async with scope['lifespan'](None):
+                pytest.fail('an unready instance must not accept traffic')
     asyncio.run(run())

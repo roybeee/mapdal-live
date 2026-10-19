@@ -312,6 +312,8 @@ def _clean(s, n=120):
 def _intl_order_tx(a, items, country, buyer, customer_id, member_id, phone_norm, cp):
     """단일 트랜잭션: 재고 잠금 조회 → 검증 → 차감 → 주문 INSERT. (트랜잭션 안에서는 실패해도 되는 문장을 두지 않는다)"""
     with a.db() as c:
+        from unified_inventory import lock_order_inventory
+        lock_order_inventory(c, items, a._product_id_candidates)
         q = quote(items, country, '', buyer['email'], customer_id, lock_c=c)
         if q['blocked']:
             raise HTTPException(400, 'Some items in your cart can only be shipped within Korea — please remove them first')

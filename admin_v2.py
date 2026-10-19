@@ -12687,11 +12687,11 @@ def _mp_shop_cards():
         badges_html = '<div class="card-badges">%s</div>' % ''.join(states)
         _gal = [u.strip() for u in re.split(r'[\r\n]+', str(r.get('gallery') or '')) if u.strip().startswith('http')][:12]
         _gal_attr = (' data-gal="%s"' % h(json.dumps(([img] if img else []) + _gal, ensure_ascii=False))) if _gal else ''
-        cards.append('<a class="col-card" data-cat="%s" href="/p/%s"%s>%s'
+        cards.append('<a class="col-card" data-cat="%s" href="/p/%s" data-mp-created="%s"%s>%s'
                      '<div class="col-body"><span class="card-artist">%s</span><h3>%s</h3>'
                      '<div class="price-row">%s</div>%s'
                      '</div></a>'
-                     % (h(cat), h(r['id']), _gal_attr, cover, h(artist_of(name)), h(name), pr_html, badges_html))
+                     % (h(cat), h(r['id']), h(r.get('created_at')), _gal_attr, cover, h(artist_of(name)), h(name), pr_html, badges_html))
     return '<!-- mpShopDyn -->' + ''.join(cards) + '<!-- /mpShopDyn -->'
 
 _own_rm_cache = {'t': 0.0, 'set': None}
@@ -12892,7 +12892,7 @@ def _k2g_catalog_json():
                     was if was > sale else 0, sale, 1 if num(r.get('soldout')) else 0,
                     1 if is_new_product(r.get('created_at')) else 0,
                     str(r.get('badge') or '').strip(), badge_color(r.get('badge_color')),
-                    gal])                                     # [9] 추가 썸네일 — 목록 카드 넘겨보기(mpCardGal)
+                    gal, str(r.get('created_at') or '')])     # [9] 추가 썸네일, [10] 등록일(미기록은 빈 값)
     body = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
     body = body.replace('</', '<\\/').replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
     _k2g_cat_cache.update(t=time.time(), body=body)
@@ -13078,14 +13078,30 @@ def _fb_toolbar_html(mode):
 # [Q4] JS — 원본 sync() 말미에서 호출되는 확장 훅. 원본 전역(F,Q,K2G,VIEW,ptr,
 #   albumEligible,renderBatch,K2G_FIRST 등)을 그대로 사용. 앨범은 VIEW 정렬/필터 후
 #   재렌더, 자체상품(col-card)은 DOM 정렬. 개수는 표시중 항목 합산.
-_FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20261015.1 */(function(){
+_FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20261019.1 */(function(){
   var T=document.getElementById('mpTools'); if(!T) return;
   var MODE=T.dataset.mode, grid=document.getElementById('shopGrid');
-  // 최초 카탈로그 순번을 별도 보존한다. 품절 플래그(r[5])가 바뀌어도
-  // 신상품순 위치와 다른 정렬의 동순위 위치는 절대 달라지지 않는다.
-  var originalOrder={};
-  if(typeof K2G!=='undefined') K2G.forEach(function(r,i){originalOrder[String(r[0])]=i;});
+  // 등록일이 같거나 미기록인 상품은 기존 카탈로그 순서를 유지한다.
+  var originalOrder=Object.create(null), catalogById=Object.create(null), dateCache=Object.create(null);
+  if(typeof K2G!=='undefined') K2G.forEach(function(r,i){originalOrder[String(r[0])]=i;catalogById[String(r[0])]=r;});
   function opos(r){var n=originalOrder[String(r[0])];return typeof n==='number'?n:999999999;}
+  function registeredAt(value){
+    var raw=String(value||'').trim();
+    if(Object.prototype.hasOwnProperty.call(dateCache,raw)) return dateCache[raw];
+    var iso=raw.replace(' ','T');
+    if(/^\d{4}-\d{2}-\d{2}$/.test(iso)) iso+='T00:00:00';
+    // DB의 시간대 없는 등록일은 KST이며 방문자의 브라우저 시간대와 무관하다.
+    if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(iso)) iso+='+09:00';
+    var validFormat=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/.test(iso);
+    var stamp=validFormat?Date.parse(iso):NaN;
+    var day=new Date(iso.slice(0,10)+'T00:00:00Z');
+    // Date.parse가 2월 30일 등을 다음 달로 보정한 값도 미기록으로 취급한다.
+    if(!Number.isFinite(day.getTime())||day.toISOString().slice(0,10)!==iso.slice(0,10)) stamp=NaN;
+    return dateCache[raw]=Number.isFinite(stamp)?stamp:-Infinity;
+  }
+  function rowKey(r){return [registeredAt(r[10]),1,opos(r)];}
+  function cardKey(c){return [registeredAt(c.dataset.mpCreated),0,+c.dataset.mpseq||0];}
+  function newest(a,b){return (b[0]-a[0])||(a[1]-b[1])||(a[2]-b[2]);}
   function pnum(el){ // col-card 가격 텍스트(₩4,500~)→숫자
     var t=(el.querySelector('.price')||{}).textContent||''; 
     var m=t.replace(/[^0-9]/g,''); return m?parseInt(m,10):0; }
@@ -13154,9 +13170,26 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20261015.1 */(func
     if(s==='asc')  v.sort(function(a,b){return ((a[4]||0)-(b[4]||0))||(opos(a)-opos(b));});
     else if(s==='desc') v.sort(function(a,b){return ((b[4]||0)-(a[4]||0))||(opos(a)-opos(b));});
     else if(s==='name') v.sort(function(a,b){return (a[2]||'').localeCompare(b[2]||'','ko')||(opos(a)-opos(b));});
-    else v.sort(function(a,b){return opos(a)-opos(b);}); // 'new': 품절과 무관한 원본 순서
+    else v.sort(function(a,b){return MODE==='kpop'?newest(rowKey(a),rowKey(b)):opos(a)-opos(b);});
     return v;
   };
+  function sortNewCards(cards){
+    var next=typeof VIEW!=='undefined'&&typeof ptr!=='undefined'&&albumEligible()?VIEW[ptr]:null;
+    var items=cards.map(function(c){return {node:c,key:cardKey(c)};});
+    // 다음 배치보다 오래된 직접등록 상품은 그 배치가 열릴 때까지 표시를 미룬다.
+    items=items.filter(function(item){
+      var deferred=next&&newest(item.key,rowKey(next))>0;
+      item.node.style.display=deferred?'none':'';
+      return !deferred;
+    });
+    grid.querySelectorAll('.k2g-card').forEach(function(c){
+      var uid=new URLSearchParams((c.getAttribute('href')||'').split('?')[1]||'').get('uid');
+      var r=catalogById[uid];
+      if(r) items.push({node:c,key:rowKey(r)});
+    });
+    items.sort(function(a,b){return newest(a.key,b.key);});
+    items.forEach(function(item){grid.appendChild(item.node);});
+  }
   // 자체상품 카드 정렬(표시중인 것만) — grid 내 col-card 재배치
   function sortCards(){
     var s=(document.getElementById('mpSort')||{}).value||'new';
@@ -13171,10 +13204,13 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20261015.1 */(func
         var types=eventTypes(text);
         var okE=!selected.length||selected.some(function(type){return types.indexOf(type)!==-1;});
         var sold=/품절|SOLD OUT/i.test(((c.querySelector('.add')||{}).textContent||''));
-        c.style.display=okF&&okQ&&okE&&(!hide||!sold)?'':'none';
+        var eligible=okF&&okQ&&okE&&(!hide||!sold);
+        c.dataset.mpEligible=eligible?'1':'0';
+        c.style.display=eligible?'':'none';
       });
     }
     var vis=cards.filter(function(c){return c.style.display!=='none';});
+    if(MODE==='kpop'&&s==='new'){sortNewCards(vis);return;}
     if(s==='new'){ // 원래 문서순 복원
       vis.sort(function(a,b){return (+a.dataset.mpseq||0)-(+b.dataset.mpseq||0);});
     } else if(s==='asc'){ vis.sort(function(a,b){return pnum(a)-pnum(b);}); }
@@ -13187,7 +13223,9 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20261015.1 */(func
   }
   function count(){
     var n=0;
-    grid.querySelectorAll('.col-card').forEach(function(c){ if(c.style.display!=='none') n++; });
+    grid.querySelectorAll('.col-card').forEach(function(c){
+      if(MODE==='kpop'?c.dataset.mpEligible==='1':c.style.display!=='none') n++;
+    });
     // 앨범: 로드된 DOM이 아니라 전체 VIEW 길이로 집계(더보기 방식이므로)
     if(typeof VIEW!=='undefined' && typeof albumEligible==='function' && albumEligible())
       n += VIEW.length;
@@ -13203,7 +13241,7 @@ _FB_TOOLS_JS = r"""<script id="mpListToolsJs">/* mpListTools v20261015.1 */(func
   // 더보기 클릭 후에도 개수·정렬 반영
   var lb=document.getElementById('lmBtn');
   if(lb) lb.addEventListener('click', function(){ setTimeout(window.__mpApplyExtra,0); });
-  window.__mpApplyExtra();
+  if(MODE==='kpop'&&typeof sync==='function') sync(); else window.__mpApplyExtra();
 })();</script>"""
 
 

@@ -12584,6 +12584,8 @@ CARD_CSS_SNIPPET = r"""<style id="mpCardCss">/* mpCardCss v20260715.6 */
 #shopGrid .card-state{display:inline-flex;align-items:center;margin:0;padding:3px 6px;border-radius:3px;background:#050505;color:#fff;font-family:var(--body),'Noto Sans KR',sans-serif;font-size:8.5px;font-weight:700;line-height:1.25;letter-spacing:.02em}
 #shopGrid .card-state.sold{background:#777}
 #shopGrid .card-state.card-label{background:var(--badge-bg,#050505)}
+#shopGrid .k2g-card.sold .k2g-cover,
+#shopGrid .col-card:has(.card-state.sold) .col-cover{filter:grayscale(.85);opacity:.75}
 </style>"""
 
 def _patch_legacy_footer(html):

@@ -12591,7 +12591,7 @@ CARD_CSS_SNIPPET = r"""<style id="mpCardCss">/* mpCardCss v20260715.6 */
 #shopGrid .card-state.sold{background:#777}
 #shopGrid .card-state.card-label{background:var(--badge-bg,#050505)}
 #shopGrid .k2g-card.sold .k2g-cover,
-#shopGrid .col-card:has(.card-state.sold) .col-cover{filter:grayscale(.85);opacity:.75}
+#shopGrid .col-card:has(.card-state.sold) :is(.col-cover,.pimg2,.bimg2){filter:grayscale(.85);opacity:.75}
 </style>"""
 
 def _patch_legacy_footer(html):
@@ -15164,12 +15164,85 @@ def _track_apply(html, path=''):
         return html
 
 
+def _own_stock_detail(html, options):
+    """정적 구매 모듈에서 DB 품절 옵션을 제거하고 재렌더링 때도 구매를 막는다."""
+    if '/* mpOwnStock */' in html:
+        return html
+    select = re.search(r'<select\b[^>]*\bid="optSel"[^>]*>(.*?)</select>', html, re.S)
+    if not select:
+        return html
+    keys = re.findall(r'<option\b[^>]*\bvalue="([^"]+)"', select.group(1))
+    sold = [key for key in keys if options.get(key, False)]
+    if not sold:
+        return html
+    def disable_option(match):
+        attrs, key, tail, label = match.groups()
+        if key not in sold:
+            return match.group(0)
+        disabled = '' if re.search(r'\bdisabled\b', attrs + tail) else ' disabled'
+        return f'<option{attrs}value="{key}"{tail}{disabled}>{label} · SOLD OUT</option>'
+    updated = re.sub(r'<option(\s[^>]*?)value="([^"]+)"([^>]*)>(.*?)</option>',
+                     disable_option, select.group(0), flags=re.S)
+    if all(key in sold for key in keys):
+        updated = updated.replace('id="optSel"', 'id="optSel" disabled', 1)
+        def disable_button(match):
+            attrs = match.group(1)
+            disabled = '' if re.search(r'\bdisabled\b', attrs) else ' disabled'
+            return f'<button{attrs}{disabled}>SOLD OUT</button>'
+        html = re.sub(r'<button([^>]*\bid="(?:btnCart|btnBuy)"[^>]*)>.*?</button>',
+                      disable_button, html, flags=re.S)
+    html = html.replace(select.group(0), updated, 1)
+    blocked = json.dumps(sold, ensure_ascii=True).replace('<', '\\u003c')
+    guard = ('/* mpOwnStock */cart=Object.fromEntries(Object.entries(cart)'
+             '.filter(([key])=>!' + blocked + '.includes(key)));')
+    return re.sub(r'(function\s+render\s*\(\)\s*\{)', lambda m: m.group(1) + guard, html, count=1)
+
+
+def _own_stock_apply(html, path=''):
+    """자사 정적 상품의 DB 재고를 카드와 상세에 반영한다. 조회 실패 시 원본 유지."""
+    card_pattern = r'<a\b[^>]*\bclass="[^"]*\bcol-card\b[^"]*"[^>]*>.*?</a>'
+    cards = list(re.finditer(card_pattern, html, re.S))
+    def page_of(value):
+        match = re.fullmatch(r'/?(product-[a-z0-9-]+)(?:\.html)?', value)
+        return match.group(1) if match else ''
+    def card_page(card):
+        href = re.search(r'\bhref="([^"]+)"', card)
+        return page_of(href.group(1)) if href else ''
+    detail = page_of(path)
+    pages = sorted(({card_page(card.group(0)) for card in cards} | {detail}) - {''})
+    if not pages:
+        return html
+    args = tuple(pattern for page in pages for pattern in (page + '::%', page + '.html::%'))
+    try:
+        records = rows('SELECT id, soldout, stock FROM products WHERE ' +
+                       ' OR '.join('id LIKE ?' for _ in args), args)
+    except Exception:
+        return html
+    states = {}
+    for record in records:
+        page, _, key = str(record['id']).partition('::')
+        page = page_of(page)
+        sold = bool(num(record.get('soldout'))) or (record.get('stock') is not None and num(record['stock']) <= 0)
+        states.setdefault(page, {}).setdefault(key, []).append(sold)
+    stock = {page: {key: all(values) for key, values in options.items()} for page, options in states.items()}
+    def patch_card(match):
+        card = match.group(0)
+        options = stock.get(card_page(card), {})
+        if options and all(options.values()):
+            return re.sub(r'(<span\b[^>]*\bclass="add"[^>]*>).*?(</span>)',
+                          r'\g<1>SOLD OUT\2', card, flags=re.S)
+        return card
+    html = re.sub(card_pattern, patch_card, html, flags=re.S)
+    return _own_stock_detail(html, stock.get(detail, {})) if detail else html
+
+
 def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html, path)
     html = _serve_det_emb(html, uid)
     html = _inject_shop_products(html)
     html = _hide_removed_static_cards(html)
     html = _kpop_apply(html)
+    html = _own_stock_apply(html, path)
     html = _feedback_apply(html)
     html = _search_apply(html)
     html = _checkout_apply(html)

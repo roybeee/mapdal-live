@@ -97,6 +97,16 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     });
     assert.deepEqual(await coverStyle(page, '[href="/p/mp::sold"] .col-cover'), soldStyle);
   });
+  for (const coverClass of ['pimg2', 'bimg2']) {
+    check(`sold-out food cover (${coverClass}) matches other sold-out cards`, async page => {
+      await page.locator('[href="/p/mp::sold"] .col-cover').evaluate((element, className) => {
+        element.style.removeProperty('filter');
+        element.style.removeProperty('opacity');
+        element.className = className;
+      }, coverClass);
+      assert.deepEqual(await coverStyle(page, `[href="/p/mp::sold"] .${coverClass}`), soldStyle);
+    });
+  }
   check('load-more catalogue cards receive the same sold-out appearance', async page => {
     await page.evaluate(() => renderBatch(1));
     assert.deepEqual(await coverStyle(page, '[href="/album-detail?uid=later"] .k2g-cover'), soldStyle);

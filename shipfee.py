@@ -181,7 +181,50 @@ def conf():
     for k, v in ((c.get('texts') or {}) if isinstance(c.get('texts'), dict) else {}).items():
         if k in t and isinstance(v, str) and v.strip():
             t[k] = v
-    return {'deadline': str(c.get('deadline') or DEFAULT_DEADLINE)[:16], 'texts': t}
+    ex = c.get('extra') if isinstance(c.get('extra'), dict) else {}
+    extra = {'jeju': _int(ex.get('jeju'), 3000), 'remote': _int(ex.get('remote'), 5000),
+             'remote_keywords': str(ex.get('remote_keywords') if ex.get('remote_keywords') is not None else DEFAULT_REMOTE_KEYWORDS),
+             'remote_zips': str(ex.get('remote_zips') or '')}
+    return {'deadline': str(c.get('deadline') or DEFAULT_DEADLINE)[:16], 'texts': t, 'extra': extra}
+
+
+def _int(v, d):
+    try:
+        return max(0, int(v))
+    except Exception:
+        return d
+
+
+# ── 제주·도서산간 추가 배송비 (2026-10-20) ──
+#   제주: 우편번호 63000~63644 또는 주소가 '제주'로 시작. 금액은 관리자 화면에서 변경.
+#   도서산간: 관리자가 지정한 지역명(시·군 단위 — '자은동' 같은 동 이름 오인 방지)·우편번호 범위.
+DEFAULT_REMOTE_KEYWORDS = '울릉군, 옹진군, 신안군, 완도군, 진도군'
+
+
+def _zip_ranges(txt):
+    out = []
+    for part in re.split(r'[\s,]+', str(txt or '')):
+        m = re.fullmatch(r'(\d{5})(?:-(\d{5}))?', part.strip())
+        if m:
+            a = int(m.group(1)); b = int(m.group(2) or m.group(1))
+            out.append((min(a, b), max(a, b)))
+    return out
+
+
+def region_of(b, ex=None):
+    """배송지 → ('jeju'|'remote'|'', 추가금액)."""
+    ex = ex or conf()['extra']
+    b = b or {}
+    z = re.sub(r'\D', '', str(b.get('zip') or ''))[:5]
+    a1 = re.sub(r'\s+', ' ', str(b.get('addr1') or '')).strip()
+    if (len(z) == 5 and 63000 <= int(z) <= 63644) or a1.startswith('제주'):
+        return 'jeju', ex['jeju']
+    kws = [k.strip() for k in re.split(r'[,\n]+', ex['remote_keywords']) if k.strip()]
+    if any(re.search(r'(^|\s)' + re.escape(k) + r'(\s|$)', a1) for k in kws):
+        return 'remote', ex['remote']
+    if len(z) == 5 and any(lo <= int(z) <= hi for lo, hi in _zip_ranges(ex['remote_zips'])):
+        return 'remote', ex['remote']
+    return '', 0
 
 
 def _raw_conf():
@@ -217,25 +260,33 @@ def overdue():
 def _orders_info(oids):
     """주문번호 → (상태, 배송지키). 청구 화면·결제 시점에 원주문 취소를 실시간 반영하기 위함."""
     av, out, ids = _av(), {}, [o for o in dict.fromkeys(oids) if o]
+    ex = conf()['extra']
     for i in range(0, len(ids), 400):
         part = ids[i:i + 400]
         for r in av.rows('SELECT order_id, status, buyer FROM orders WHERE order_id IN (%s)' % ','.join('?' * len(part)), tuple(part)):
-            out[r['order_id']] = (r.get('status') or '', addr_key(av.jload(r.get('buyer'), {}) or {}))
+            b = av.jload(r.get('buyer'), {}) or {}
+            reg, add = region_of(b, ex)
+            out[r['order_id']] = (r.get('status') or '', addr_key(b), reg, add)
     return out
 
 
-def due_of(ch, oinfo=None):
-    """현재 받아야 할 배송비 = 3,000원 × '취소되지 않은 원주문'의 서로 다른 배송지 수 (생성 당시 금액 상한).
-    원주문이 취소되면 자동으로 줄고, 모두 취소되면 0원."""
+def due_breakdown(ch, oinfo=None):
+    """{배송지키: (지역, 추가금)} — 취소되지 않은 원주문 기준."""
     oids = _orders_of(ch)
     oinfo = oinfo if oinfo is not None else _orders_info(oids)
-    addrs = set()
+    addrs = {}
     for o in oids:
-        st, ak = oinfo.get(o, ('', ''))
+        st, ak, reg, add = (tuple(oinfo.get(o) or ()) + ('', '', '', 0))[:4]
         if st in ('CANCELLED', 'FAILED'):
             continue
-        addrs.add(ak or ('order:' + o))
-    return min(_av().num(ch.get('amount')), SF_FEE * len(addrs))
+        addrs[ak or ('order:' + o)] = (reg, _av().num(add))
+    return addrs
+
+
+def due_of(ch, oinfo=None):
+    """현재 받아야 할 배송비 = 배송지마다 (기본 3,000원 + 제주·도서산간 추가금) — 취소되지 않은 원주문 기준.
+    원주문이 취소되면 자동으로 줄고, 모두 취소되면 0원. 추가금 설정을 바꾸면 미결제 청구에 즉시 반영."""
+    return sum(SF_FEE + add for _reg, add in due_breakdown(ch, oinfo).values())
 
 
 # ─────────────────────────── 대상 산출 ───────────────────────────
@@ -254,6 +305,7 @@ def candidates(since=DEFAULT_SINCE):
     · 이미 청구(취소 제외)에 포함된 주문·주소는 제외 — 재실행해도 같은 주소에 두 번 청구되지 않는다."""
     av = _av()
     ensure()
+    ex = conf()['extra']
     rs = av.rows("SELECT order_id, created, amount, discount, items, buyer, ship_method, contact_phone_norm "
                  "FROM orders WHERE created>=? AND status='PAID' AND order_id NOT LIKE ? "
                  "AND COALESCE(ship_method,'standard') NOT IN ('pickup','intl','none') ORDER BY created",
@@ -293,12 +345,13 @@ def candidates(since=DEFAULT_SINCE):
             continue
         g['orders'].append(r['order_id'])
         g['addrs'].setdefault(ak, []).append(r['order_id'])
+        g.setdefault('extra', {})[ak] = region_of(b, ex)[1]
     out = []
     for g in groups.values():
         if not g['orders']:
             continue
         g['shipments'] = len(g['addrs'])
-        g['amount'] = SF_FEE * g['shipments']
+        g['amount'] = sum(SF_FEE + g['extra'].get(k, 0) for k in g['addrs'])
         out.append(g)
     return out
 
@@ -382,6 +435,8 @@ def _list_rows():
         out.append({'id': ch['id'], 'name': ch.get('name') or '', 'phone': ch.get('phone') or '',
                     'email': ch.get('email') or '', 'orders': _orders_of(ch), 'amount': av.num(ch.get('amount')),
                     'due': due, 'cancelled_orders': cxl,
+                    'regions': sorted({reg for reg, _a in due_breakdown(ch, oinfo).values() if reg}),
+                    'shipments': len(due_breakdown(ch, oinfo)),
                     'mail_at': (ch.get('mail_at') or '')[:16].replace('T', ' '), 'mail_count': av.num(ch.get('mail_count')),
                     'state': st, 'paid_at': (paid[0]['paid_at'] if paid else '')[:16].replace('T', ' '),
                     'paid_order': paid[0]['order_id'] if paid else '', 'paid_method': paid[0]['method'] if paid else '',
@@ -419,6 +474,23 @@ def api_conf(request: Request, body: dict = Body(...)):
         if not _av()._drop_dt(dl):
             raise HTTPException(400, '결제 기한 형식이 올바르지 않습니다 (예: 2026-10-31T23:59)')
         new['deadline'] = dl; log.append('기한 ' + dl)
+    if isinstance(body.get('extra'), dict):
+        e = body['extra']; cur_ex = dict(cur.get('extra') or {}) if isinstance(cur.get('extra'), dict) else {}
+        for k in ('jeju', 'remote'):
+            if k in e:
+                try: v = int(e[k])
+                except Exception: raise HTTPException(400, '추가 배송비는 숫자로 입력하세요')
+                if not 0 <= v <= 50000: raise HTTPException(400, '추가 배송비는 0~50,000원 사이여야 합니다')
+                cur_ex[k] = v
+        if 'remote_keywords' in e: cur_ex['remote_keywords'] = str(e['remote_keywords'] or '')[:500]
+        if 'remote_zips' in e:
+            z = str(e['remote_zips'] or '')[:3000]
+            bad = [p_ for p_ in re.split(r'[\s,]+', z) if p_.strip() and not re.fullmatch(r'\d{5}(-\d{5})?', p_.strip())]
+            if bad: raise HTTPException(400, '우편번호 형식 오류: %s (예: 40200-40240, 23100)' % ', '.join(bad[:3]))
+            cur_ex['remote_zips'] = z
+        new['extra'] = cur_ex; log.append('추가배송비 %s' % cur_ex)
+    elif isinstance(cur.get('extra'), dict):
+        new['extra'] = cur['extra']
     if isinstance(body.get('texts'), dict):
         lim = {k: n for k, _, n in TEXT_FIELDS}
         for k, v in body['texts'].items():
@@ -437,14 +509,14 @@ def api_conf(request: Request, body: dict = Body(...)):
     _av()._setting_put('shipfee_conf', new, a['name'])
     _av().audit(a, '추가배송비설정', 'shipfee', ', '.join(log)[:200])
     c = conf()
-    return {'ok': True, 'deadline': c['deadline'], 'texts': c['texts']}
+    return {'ok': True, 'deadline': c['deadline'], 'texts': c['texts'], 'extra': c['extra']}
 
 
 @shipfee_router.get('/admin/api/shipfee/conf')
 def api_conf_get(request: Request):
     _actor(request, 0, '추가 배송비 조회')
     c = conf()
-    return {'deadline': c['deadline'], 'texts': c['texts'], 'defaults': default_texts(),
+    return {'deadline': c['deadline'], 'texts': c['texts'], 'extra': c['extra'], 'defaults': default_texts(),
             'fields': [{'key': k, 'label': l, 'max': n} for k, l, n in TEXT_FIELDS]}
 
 
@@ -549,7 +621,7 @@ def api_xlsx(request: Request):
     for i, r in enumerate(rs, start=1):
         due = r['due'] if r['state'] in ('UNPAID', 'VOID') else r['amount']
         rows.append([i, r['name'], r['phone'], r['email'], ', '.join(r['orders']), len(r['orders']),
-                     r['amount'] // SF_FEE if r['amount'] else 0, int(due), lab.get(r['state'], r['state']),
+                     r['shipments'], int(due), lab.get(r['state'], r['state']),
                      r['paid_at'], r['paid_order'], r['sent_at'] or '미발송', r['mail_at'] or '미발송',
                      int(r['views']), r['link'], r['note']])
     data = _xlsx(headers, rows, [6, 10, 14, 26, 26, 7, 8, 11, 10, 17, 22, 17, 17, 8, 60, 30])
@@ -730,6 +802,22 @@ def _order_summ(oids):
     return out
 
 
+def _amount_lines(ch, oinfo, amt, n_orders):
+    bd = due_breakdown(ch, oinfo)
+    n = max(1, len(bd))
+    lab = {'jeju': '제주 지역 추가 배송비', 'remote': '도서·산간 지역 추가 배송비'}
+    h = '<div class="od" style="display:flex;justify-content:space-between;font-size:14px"><span>기본 배송비 (배송지 %d곳 × 3,000원)</span><span>%s원</span></div>' % (n, format(SF_FEE * n, ','))
+    for reg in ('jeju', 'remote'):
+        adds = [a for r, a in bd.values() if r == reg and a > 0]
+        if adds:
+            h += ('<div class="od" style="display:flex;justify-content:space-between;font-size:14px"><span>%s</span><span>+%s원</span></div>'
+                  % (lab[reg], format(sum(adds), ',')))
+    h += '<div class="od amt"><span>결제하실 금액</span><b>%s원</b></div>' % format(amt, ',')
+    if n_orders > n:
+        h += '<p class="hint" style="margin-top:6px">같은 배송지로 가는 주문은 배송비를 한 번만 받습니다.</p>'
+    return h
+
+
 def _h(s):
     return str(s or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
@@ -857,8 +945,7 @@ def page_charge(token: str, request: Request, fail: str = ''):
             + '<div class="box"><p class="p">%s</p></div>' % _para(T['intro'], name=_mask(ch.get('name')))
             + '<div class="box">' + ''.join('<div class="od"><div class="n">%s · %s</div>%s</div>'
                                               % (_h(o['oid']), _h(o['date']), _h(o['label'])) for o in ods)
-            + '<div class="od amt"><span>추가 배송비 (배송지 %d곳 × 3,000원)</span><b>%s원</b></div>' % (max(1, amt // SF_FEE), format(amt, ','))
-            + ('<p class="hint" style="margin-top:6px">같은 배송지로 가는 주문은 배송비를 한 번만 받습니다.</p>' if len(ods) > max(1, amt // SF_FEE) else '')
+            + _amount_lines(ch, oinfo, amt, len(ods))
             + ('<div class="od" style="font-size:13px"><b>결제 기한</b> %s</div>' % _h(dl_txt) if dl_txt else '')
             + '</div>'
             + ('<div class="box"><p class="hint" style="color:#555">%s</p></div>' % _para(T['notices']) if T['notices'].strip() else '')
@@ -953,6 +1040,12 @@ th,td{border-bottom:1px solid #eee;padding:7px 8px;text-align:left;vertical-alig
  <span class="hint">결제완료 · 일반배송 · 배송비 0원 결제 · 배송비 필수부과 상품 포함 주문. 이미 청구된 주문은 제외되므로 여러 번 실행해도 안전합니다(입금 대기 주문이 나중에 결제되면 다시 실행).</span></div>
 <div class="bar"><b>결제 기한</b> <input id="dl" type="datetime-local" style="width:200px"><button class="g" onclick="saveDl()">기한 저장</button>
  <span class="hint" id="dlst"></span></div>
+<div class="bar"><b>지역 추가 배송비</b> 제주 +<input id="exj" type="number" min="0" step="500" style="width:90px">원
+ 도서·산간 +<input id="exr" type="number" min="0" step="500" style="width:90px">원
+ <input id="exk" placeholder="도서·산간 지역명(시·군)" style="width:260px" title="쉼표로 구분 — 주소에 시·군 이름이 단어로 들어간 경우 적용">
+ <input id="exz" placeholder="도서·산간 우편번호 (예: 40200-40240, 23100)" style="width:300px">
+ <button class="g" onclick="saveEx()">추가 배송비 저장</button>
+ <span class="hint">제주: 우편번호 63000~63644 자동 인식. 저장하면 미결제 고객 청구액에 즉시 반영됩니다.</span></div>
 <details class="bar" id="txbox" style="display:block"><summary style="cursor:pointer;font-weight:700;color:#E8332A">고객 결제 페이지 · 안내문 문구 수정 <span style="font-weight:400;font-size:12px;color:#E8332A">— 저장하면 모든 고객 링크·이후 발송 문자/메일에 즉시 반영</span></summary>
  <div class="hint" style="margin:8px 0">사용 가능한 치환어: <b>{name}</b> 고객 이름(결제 페이지는 가운데 * 처리) · <b>{deadline}</b> 결제 기한 · <b>{link}</b> 고객 전용 링크(안내문 본문 필수). 줄바꿈은 그대로 반영됩니다. 비우면 기본 문구로 돌아갑니다.</div>
  <div id="txf" style="display:grid;grid-template-columns:200px 1fr;gap:8px 12px;align-items:start"></div>
@@ -986,8 +1079,8 @@ async function load(){try{D=await api('/admin/api/shipfee/list');const s=D.summa
 function draw(){const f=$('#fst').value,q=($('#q').value||'').trim().toLowerCase();
  $('#tb').innerHTML=D.rows.filter(r=>(!f||r.state===f)&&(!q||(r.name+r.phone+r.orders.join(' ')).toLowerCase().includes(q))).map(r=>`<tr>
  <td><span class="st ${r.state}">${LAB[r.state]||r.state}</span>${r.dup_paid?`<div class="dup">중복결제 ${r.dup_paid}건</div>`:''}${r.pending&&r.state==='UNPAID'?`<div class="hint">결제창 진행 ${r.pending}</div>`:''}</td>
- <td><b>${esc(r.name)}</b><div class="mono">${esc(r.phone)}</div></td><td class="mono">${r.orders.map(o=>esc(o)).join("<br>")}</td>
- <td><b>${won(r.state==='UNPAID'||r.state==='VOID'?r.due:r.amount)}</b>${r.due<r.amount&&r.state!=='PAID'?`<div class="hint" style="text-decoration:line-through">${won(r.amount)}</div>`:''}${r.orders.length>r.amount/3000?`<div class="hint">주문 ${r.orders.length}건 · 배송지 ${r.amount/3000}곳</div>`:''}${r.cancelled_orders.length?`<div class="hint" style="color:#B71F18">취소 ${r.cancelled_orders.length}건</div>`:''}</td><td>${r.paid_order?`<div class="mono">${esc(r.paid_order)}</div><div class="hint">${esc(r.paid_at)} ${esc(r.paid_method)}</div>`:''}</td>
+ <td><b>${esc(r.name)}</b>${(r.regions||[]).map(g=>` <span class="st" style="background:#e8f3ff;color:#1a5fb4">${g==='jeju'?'제주':'도서산간'}</span>`).join('')}<div class="mono">${esc(r.phone)}</div></td><td class="mono">${r.orders.map(o=>esc(o)).join("<br>")}</td>
+ <td><b>${won(r.state==='UNPAID'||r.state==='VOID'?r.due:r.amount)}</b>${r.due<r.amount&&r.state!=='PAID'?`<div class="hint" style="text-decoration:line-through">${won(r.amount)}</div>`:''}${r.orders.length>r.shipments&&r.shipments?`<div class="hint">주문 ${r.orders.length}건 · 배송지 ${r.shipments}곳</div>`:''}${r.cancelled_orders.length?`<div class="hint" style="color:#B71F18">취소 ${r.cancelled_orders.length}건</div>`:''}</td><td>${r.paid_order?`<div class="mono">${esc(r.paid_order)}</div><div class="hint">${esc(r.paid_at)} ${esc(r.paid_method)}</div>`:''}</td>
  <td class="hint">${r.sent_count?esc(r.sent_at)+' ('+r.sent_count+'회)':'미발송'}</td><td class="hint">${r.email?(r.mail_count?esc(r.mail_at)+' ('+r.mail_count+'회)':'미발송'):'-'}</td><td class="hint">${r.views?r.views+'회<br>'+esc(r.view_at):'-'}</td>
  <td><button class="sm g" onclick="cp('${esc(r.link)}')">복사</button></td>
  <td>${r.state==='UNPAID'?`<button class="sm g" onclick="st('${r.id}','WAIVED')">면제</button> <button class="sm g" onclick="send1('${r.id}')">문자</button>`:''}${r.state==='WAIVED'||r.state==='CANCELLED'?`<button class="sm g" onclick="st('${r.id}','OPEN')">재청구</button>`:''}${r.note?`<div class="hint">${esc(r.note)}</div>`:''}</td></tr>`).join('')||'<tr><td colspan="10" class="hint" style="padding:30px;text-align:center">청구 내역이 없습니다 — 위 [대상 미리보기] 후 [청구 생성]</td></tr>'}
@@ -1015,7 +1108,10 @@ async function st(id,s){const note=s==='WAIVED'?prompt('면제 사유 (선택)')
  try{await post('/admin/api/shipfee/status',{id,status:s,note});toast('변경했습니다');load()}catch(e){toast(e.message)}}
 function cp(u){(navigator.clipboard?navigator.clipboard.writeText(u):Promise.reject()).then(()=>toast('링크를 복사했습니다')).catch(()=>prompt('링크',u))}
 let TX=null;
+async function saveEx(){try{const d=await post('/admin/api/shipfee/conf',{extra:{jeju:Number($('#exj').value||0),remote:Number($('#exr').value||0),remote_keywords:$('#exk').value,remote_zips:$('#exz').value}});
+ toast(`추가 배송비 저장 — 제주 +${won(d.extra.jeju)} · 도서산간 +${won(d.extra.remote)}`);load()}catch(e){toast(e.message)}}
 async function loadTx(){try{TX=await api('/admin/api/shipfee/conf');
+ if(TX.extra){$('#exj').value=TX.extra.jeju;$('#exr').value=TX.extra.remote;$('#exk').value=TX.extra.remote_keywords||'';$('#exz').value=TX.extra.remote_zips||''}
  $('#txf').innerHTML=TX.fields.map(f=>`<label style="font-weight:700;padding-top:6px">${esc(f.label)}</label><textarea data-k="${f.key}" rows="${f.max>1500?(f.key==='message'?16:5):(f.max>100?3:1)}" maxlength="${f.max}" style="width:100%;font:inherit;padding:7px 8px;border:1px solid #ccc">${esc(TX.texts[f.key]||'')}</textarea>`).join('');
  $('#txst').textContent=''}catch(e){toast(e.message)}}
 function txVals(){const o={};document.querySelectorAll('#txf textarea').forEach(t=>o[t.dataset.k]=t.value);return o}

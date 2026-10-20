@@ -1452,6 +1452,35 @@ def _prod_tab_body_html(body):
 #   · 결제: bundle_take() 가 같은 트랜잭션에서 낱개 상품 재고를 qty×수량만큼 잠금·검증·차감하고,
 #     주문 라인에 parts=[{id,n,q}] 스냅샷을 남긴다 → 취소/환불은 parts 로 복원, 집계·CSV 는 낱개 환산.
 #   · 표시: 세트의 잔여 = min(낱개 재고 ÷ qty), 낱개 하나라도 품절이면 세트도 SOLD OUT.
+def product_sold_out(r):
+    """카드·관련상품·좋아요 목록용 품절 판정 (2026-10-20).
+    stock NULL = 수량 미추적 — 판매 옵션이 있는 부모 상품(옵션·세트 구성품에서 재고 관리)은
+    구매 가능한 옵션(가격>0, 비공개 낱개 제외)이 하나라도 남아 있으면 판매중이다.
+    종전 num(stock)<=0 판정은 NULL 을 0 으로 보아 옵션 관리 상품을 SOLD OUT 으로 잘못 표시했다."""
+    if num(r.get('soldout')):
+        return True
+    if r.get('stock') is not None:
+        return num(r.get('stock')) <= 0
+    try:
+        raw = r.get('options') if 'options' in r else (one('SELECT options FROM products WHERE id=?', (r.get('id'),)) or {}).get('options')
+        opts = [o for o in _prod_opts_norm(raw) if not o.get('hidden') and o.get('price', 0) > 0 and o.get('product_id')]
+        if not opts:
+            return False
+        for o in opts:
+            c = one('SELECT stock, soldout, bundle FROM products WHERE id=?', (o['product_id'],))
+            if not c or num(c.get('soldout')):
+                continue
+            parts = bundle_parts_of(c)
+            if parts:
+                if not bundle_availability(parts)[0]:
+                    return False
+                continue
+            if c.get('stock') is None or num(c.get('stock')) > 0:
+                return False
+        return True
+    except Exception:
+        return False
+
 def bundle_parts_of(row):
     """상품 행(dict·Row) → [{'pid','qty'}] (없으면 [])."""
     try:
@@ -7256,7 +7285,7 @@ def _related_admin_item(r):
         img = 'https://www.kpop2gether.com/shopimages/912enter/' + img
     return {'id': r['id'], 'name': r.get('name') or r['id'],
             'img': img, 'price': num(r.get('price')),
-            'soldout': bool(num(r.get('soldout')) or num(r.get('stock')) <= 0)}
+            'soldout': product_sold_out(r)}
 
 def _related_items(ids, public=False):
     """public=True 면 노출기간 밖(예정·종료) 상품을 제외한다 — 관리자 편집 화면은 전부 표시."""
@@ -12893,7 +12922,7 @@ def _mp_shop_cards():
     for i, r in enumerate(rs):
         name = str(r.get('name') or r['id'])
         cat = norm_cat(r.get('category'))
-        soldout = bool(num(r.get('soldout')) or num(r.get('stock')) <= 0)
+        soldout = product_sold_out(r)
         badge = str(r.get('badge') or '').strip()
         label = badge or _MP_CAT_TAG.get(cat, 'MAPDAL')
         color = badge_color(r.get('badge_color'))
@@ -16561,7 +16590,7 @@ def api_m_likes(request: Request):
                     'price': num(r.get('jprice')) if r.get('jprice') is not None else num(r.get('pprice')),
                     'link': ('/p/' + pid) if pid else ('/' + (r.get('page') or '').lstrip('/')),
                     'img': like_image(r),
-                    'soldout': (num(r.get('soldout')) or num(r.get('stock')) <= 0) if pid else False})
+                    'soldout': product_sold_out({'id': pid, 'stock': r.get('stock'), 'soldout': r.get('soldout')}) if pid else False})
     return {'rows': out}
 
 @admin_router.post('/api/member/restock')
@@ -16648,7 +16677,7 @@ def api_m_restock_list(request: Request):
     nm = _state['pname'] or 'id'
     rs = rows('SELECT r.id AS rid, r.notified, r.created, p.id, p.%s AS name, p.soldout, p.stock FROM member_restock r JOIN products p ON p.id=r.product_id WHERE r.customer_id=? ORDER BY r.created DESC LIMIT 100' % nm, (m.get('customer_id') or '',))
     return {'rows': [{'rid': r['rid'], 'id': r['id'], 'name': r.get('name') or r['id'],
-                      'notified': num(r['notified']), 'soldout': num(r.get('soldout')) or num(r.get('stock')) <= 0,
+                      'notified': num(r['notified']), 'soldout': product_sold_out(r),
                       'created': (r['created'] or '')[:10]} for r in rs]}
 
 @admin_router.post('/api/member/inquiries')

@@ -11626,6 +11626,115 @@ def drop_purchase_gate(items):
                                     % str(d.get('title') or '')[:40])
 
 
+# ── 프로모션 행사 상품 쿠폰 사용 불가 (2026-10-20) ─────────────────────────────
+#   예약판매·럭키드로우·팬사인회·영상통화 등 행사 상품은 쿠폰 할인 대상에서 제외한다.
+#   행사 상품 판정(하나라도 해당하면 행사 상품):
+#     ① NEW/DROPS 이벤트 옵션 상품(mpd::) 및 이벤트 옵션에 수동 연결된 상품
+#     ② 상품 배지가 행사 키워드(예약판매·사인회·영상통화·럭키드로우 …)인 상품
+#     ③ 상품마스터 그룹의 '행사 유형'(FANCALL·팬싸인회·럭키드로우·쇼케이스)이 지정된 상품
+#     ④ 상품명의 【…】 태그에 행사 키워드가 있는 상품 (K2G 【7/12 영상통화】 등 — 【예약특전종료】는 제외)
+#     판매 옵션 자식(mpo::)·세트 자식은 부모 상품의 판정을 그대로 따른다.
+#   장바구니에 행사 상품이 하나라도 있으면 그 주문 전체에 쿠폰을 쓸 수 없다(400).
+#   /api/orders(국내)·/api/intl/order(해외)·/api/coupon/check(미리보기)가 공통으로 호출한다.
+COUPON_BLOCK_RE = re.compile(r'예약\s*판매|사인회|팬\s*싸인|영상\s*통화|영통|럭키\s*드로우|'
+                             r'fan\s*sign|video\s*call|fan\s*call|lucky\s*draw|pre-?\s*order', re.I)
+COUPON_BLOCK_MSG = '예약판매·럭키드로우·팬사인회·영상통화 등 행사 상품은 쿠폰을 사용할 수 없습니다'
+
+
+def _cp_promo_row(r):
+    """상품 행 1개가 행사 상품인지 — 배지·【태그】 기준 (순수 판정)."""
+    if not r:
+        return False
+    if COUPON_BLOCK_RE.search(str(r.get('badge') or '')):
+        return True
+    for tag in re.findall(r'【([^】]*)】', str(r.get('name') or '')):
+        if COUPON_BLOCK_RE.search(tag):
+            return True
+    return False
+
+
+def _cp_cands(pid):
+    try:
+        import app as _app
+        return list(_app._product_id_candidates(pid))
+    except Exception:
+        out = [pid]
+        if '::' in pid:
+            l, rr = pid.split('::', 1)
+            if l.endswith('.html'): out.append(l[:-5] + '::' + rr)
+            else: out.append(l + '.html::' + rr)
+        return out
+
+
+def coupon_block_item(items):
+    """장바구니 중 첫 번째 행사 상품의 표시명 — 없으면 ''. 주문 트랜잭션 '밖'에서만 호출(읽기 전용)."""
+    pids = []
+    for it in (items or []):
+        if isinstance(it, dict):
+            p = str(it.get('id') or '').strip()
+            if p and p not in pids:
+                pids.append(p)
+    if not pids:
+        return ''
+    drop_pids = set()
+    try:
+        for d in _drops_all():
+            if not isinstance(d, dict):
+                continue
+            for o in _drop_opts_norm(d.get('options')):
+                if o.get('product_id'):
+                    drop_pids.add(str(o['product_id']))
+    except Exception:
+        pass
+    has_badge = 'badge' in (_state.get('pcols') or ('badge',))
+    cols = 'id, name' + (', badge' if has_badge else '')
+    for pid in pids:
+        for cand in _cp_cands(pid):
+            if cand.startswith('mpd::') or cand in drop_pids:
+                r = None
+                try: r = one('SELECT name FROM products WHERE id=?', (cand,))
+                except Exception: pass
+                return str((r or {}).get('name') or cand)
+            try:
+                r = one('SELECT %s FROM products WHERE id=?' % cols, (cand,))
+            except Exception:
+                r = None
+            if not r:
+                continue
+            nm = str(r.get('name') or cand)
+            if _cp_promo_row(r):
+                return nm
+            # 판매 옵션 자식(mpo::) → 부모 상품의 배지·행사유형을 따른다
+            check_ids = [cand]
+            if cand.startswith(PROD_OPT_PREFIX) and 'options' in (_state.get('pcols') or ('options',)):
+                try:
+                    for pr in rows('SELECT %s FROM products WHERE options LIKE ?' % cols,
+                                   ('%"' + cand + '"%',)):
+                        if _cp_promo_row(pr) or str(pr.get('id')) in drop_pids:
+                            return nm
+                        check_ids.append(str(pr.get('id')))
+                except Exception:
+                    pass
+            # 상품마스터 그룹 '행사 유형'
+            try:
+                for cid in check_ids:
+                    g = one('SELECT g.metadata AS m FROM product_variants v JOIN product_groups g ON g.id=v.group_id '
+                            'WHERE v.legacy_product_id=?', (cid,))
+                    if g and str((jload(g.get('m'), {}) or {}).get('event_type') or '').strip():
+                        return nm
+            except Exception:
+                pass
+            break
+    return ''
+
+
+def coupon_promo_gate(items):
+    """행사 상품이 섞인 장바구니에 쿠폰을 쓰면 400."""
+    nm = coupon_block_item(items)
+    if nm:
+        raise HTTPException(400, '%s (%s)' % (COUPON_BLOCK_MSG, nm[:40]))
+
+
 def _drop_card(d, now):
     status, announce = _drop_state(d, now)
     st, en = _drop_dt(d.get('sales_start')), _drop_dt(d.get('sales_end'))

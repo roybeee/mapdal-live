@@ -747,6 +747,13 @@ async def create_order(req: Request, response: Response):
     coupon = None
     cp_reserved = False
     if str(body.get('coupon') or '').strip():
+        # 프로모션 행사 상품(예약판매·럭키드로우·팬사인회·영상통화 등) 포함 시 쿠폰 사용 불가 (2026-10-20)
+        try:
+            import admin_v2 as _avc; _avc.coupon_promo_gate(items)
+        except HTTPException:
+            raise
+        except Exception as _ce:
+            print('[coupon-gate] %s' % _ce, flush=True)
         import growth
         coupon = growth.coupon_check(body.get('coupon'), buyer.get('email') or '', customer_id, phone_norm,
                                      bool(body.get('intl')))

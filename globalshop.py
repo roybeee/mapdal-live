@@ -137,6 +137,16 @@ def to_usd(krw):
     return round(int(krw) * _usd_rate() * (1 + margin) + 1e-9, 2)
 
 
+def _coupon_promo_gate(items):
+    """예약판매·럭키드로우·팬사인회·영상통화 등 행사 상품이 있으면 쿠폰 불가 (400). 내부 오류는 통과."""
+    try:
+        _av().coupon_promo_gate(items)
+    except HTTPException as e:
+        raise HTTPException(400, str(e.detail) + ' (Coupons cannot be used for event/pre-order items)')
+    except Exception as e:
+        print('[coupon-gate] %s' % e, flush=True)
+
+
 def quote(items, country, coupon_code='', email='', customer_id='', lock_c=None):
     """품목 검증·소계·배송비·DDP·쿠폰·합계(KRW/USD). lock_c 가 주어지면 그 트랜잭션에서 재고 잠금 조회."""
     country = str(country or '').upper()[:2]
@@ -195,7 +205,8 @@ def quote(items, country, coupon_code='', email='', customer_id='', lock_c=None)
     ddp_pct = ddp_rates().get(country, 0)
     duties = int(round(sub * ddp_pct / 100.0, -2)) if ddp_pct else 0
     cp, off = None, 0
-    if str(coupon_code or '').strip():
+    if str(coupon_code or '').strip() and lock_c is None:
+        _coupon_promo_gate(items)        # 견적(트랜잭션 밖)에서만 판정 — 트랜잭션 안 DB 읽기 금지
         cp = _g().coupon_check(coupon_code, email, customer_id, '', True)
         off = _g().coupon_amount(cp, sub)
     total = sub + fee + duties - off
@@ -436,6 +447,7 @@ async def api_intl_order(req: Request, response: Response):
     cp = None
     cp_reserved = False
     if str(d.get('coupon') or '').strip():
+        _coupon_promo_gate(items)        # 행사 상품 포함 시 쿠폰 불가 (2026-10-20)
         cp = _g().coupon_check(d.get('coupon'), buyer['email'], customer_id, phone_norm, True)
         cp_reserved = _g().coupon_reserve(cp)
     try:
@@ -795,7 +807,7 @@ input:focus,select:focus{outline:2px solid var(--ink);outline-offset:-1px}input[
  </form>
 </div>
 <aside class="sum"><div class="sec"><h2><b data-t="summary"></b></h2><div id="items"></div>
- <div class="cp"><input id="cpIn" aria-label="Coupon code"><button type="button" id="cpBtn" data-t="apply"></button></div><div class="cpm" id="cpMsg" aria-live="polite"></div>
+ <div class="cp"><input id="cpIn" aria-label="Coupon code"><button type="button" id="cpBtn" data-t="apply"></button></div><div class="cpm" id="cpMsg" aria-live="polite"></div><div id="cpNote" style="font-size:11px;color:#8A8880;line-height:1.5;margin-top:2px">※ Coupons cannot be used for promotional event items (pre-orders, lucky draws, fan signs, video calls). · 예약판매·럭키드로우·팬사인회·영상통화 등 프로모션 행사 상품은 쿠폰 사용 불가</div>
  <div class="ln"><span data-t="sub"></span><span id="vSub">—</span></div>
  <div class="ln"><span data-t="shipfee"></span><span id="vShip">—</span></div>
  <div class="ln" id="lDuty" hidden><span data-t="duties"></span><span id="vDuty">—</span></div>

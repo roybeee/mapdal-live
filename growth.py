@@ -1196,6 +1196,14 @@ async def api_coupon_check(req: Request):
         email = email or str((m or {}).get('email') or '').lower()
     except Exception:
         pass
+    items = d.get('items')
+    if isinstance(items, list) and items:          # 행사 상품 포함 장바구니 — 미리보기 단계에서 안내 (2026-10-20)
+        try:
+            _av().coupon_promo_gate(items[:50])
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     cp = coupon_check(d.get('code'), email, cid, '', bool(d.get('intl')))
     off = coupon_amount(cp, sub)
     return {'code': cp['code'], 'off': off, 'note': cp.get('note') or ''}
@@ -2488,15 +2496,16 @@ _CK_CALC_NEW = ("var _off=(window.mpCpOff&&sub>=(window.mpCpMin||0))?Math.min(wi
 _CK_COUPON_UI = r'''<div id="mpCp" style="padding:10px 0;border-bottom:1px solid var(--line)">
 <div style="display:flex;gap:6px"><input class="f-input" id="mpCpIn" placeholder="쿠폰 코드 (예: HOME-XXXXXX)" aria-label="쿠폰 코드" style="margin:0;text-transform:uppercase;font-size:14px">
 <button type="button" id="mpCpBtn" style="background:var(--ink);color:#fff;border:0;padding:0 14px;font-weight:700;cursor:pointer;white-space:nowrap">적용</button></div>
-<div id="mpCpMsg" style="font-size:12px;min-height:16px;margin-top:4px" aria-live="polite"></div></div>
+<div id="mpCpMsg" style="font-size:12px;min-height:16px;margin-top:4px" aria-live="polite"></div><div id="mpCpNote" style="font-size:11px;color:#8A8880;line-height:1.5">※ 예약판매·럭키드로우·팬사인회·영상통화 등 프로모션 행사 상품은 쿠폰 사용이 불가합니다.</div></div>
 <div class="sum-row" id="mpCpRow" style="display:none"><span>쿠폰 할인</span><span id="mpCpV" style="color:var(--red)"></span></div>'''
 _CK_COUPON_JS = r'''<script id="mpCpJs">(function(){try{
 var $=function(i){return document.getElementById(i)},fmt=function(n){return '₩'+Math.round(n).toLocaleString('ko-KR')};
 function sub(){try{return JSON.parse(localStorage.getItem('mapdal_cart')||'[]').reduce(function(a,i){return a+(Number(i.p)||0)*(Number(i.q)||1)},0)}catch(e){return 0}}
+function cpItems(){try{return JSON.parse(localStorage.getItem('mapdal_cart')||'[]').map(function(i){return {id:i.id,q:i.q}})}catch(e){return []}}
 function paint(){var r=$('mpCpRow'),v=$('mpCpV');if(!r)return;var o=window.mpCpApplied||0;r.style.display=o?'':'none';v.textContent='−'+fmt(o)}
 var _rs=window.renderSum;if(typeof _rs==='function'){window.renderSum=function(){_rs.apply(this,arguments);paint()}}
 function apply(){var c=($('mpCpIn').value||'').trim().toUpperCase(),m=$('mpCpMsg');if(!c){window.mpCpCode='';window.mpCpOff=0;rs();return}
- fetch('/api/coupon/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:c,sub:sub(),email:(($('bEmail')||{}).value||'')})})
+ fetch('/api/coupon/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:c,sub:sub(),email:(($('bEmail')||{}).value||''),items:cpItems()})})
  .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'쿠폰을 확인할 수 없습니다');return d})})
  .then(function(d){window.mpCpCode=d.code;window.mpCpOff=d.off;window.mpCpMin=0;m.style.color='#0A7D38';m.textContent='적용되었습니다 · '+(d.note||d.code);rs();try{window.mpTrack&&mpTrack('select_promotion',{})}catch(e){}})
  .catch(function(x){window.mpCpCode='';window.mpCpOff=0;m.style.color='var(--red)';m.textContent=x.message;rs()})}

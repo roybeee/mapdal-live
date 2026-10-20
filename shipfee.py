@@ -375,6 +375,100 @@ def api_csv(request: Request):
                              % datetime.datetime.now().strftime('%Y%m%d_%H%M')})
 
 
+def _xlsx(headers, rows, widths, sheet='추가배송비'):
+    """의존성 없는 최소 .xlsx 작성기 — 시트 1개 · 머리행 굵게/고정 · 자동필터 · 문자열은 inlineStr(전화번호 앞자리 0 보존)."""
+    import io, zipfile
+    from xml.sax.saxutils import escape as xe
+    def col(i):
+        s_ = ''
+        i += 1
+        while i:
+            i, r = divmod(i - 1, 26)
+            s_ = chr(65 + r) + s_
+        return s_
+    def cell(ri, ci, v, style=0):
+        ref = '%s%d' % (col(ci), ri)
+        st = ' s="%d"' % style if style else ''
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return '<c r="%s"%s><v>%s</v></c>' % (ref, st, v)
+        t = xe(str(v if v is not None else '')).replace('\n', '&#10;')
+        return '<c r="%s"%s t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>' % (ref, st, t)
+    xml_rows = ['<row r="1">' + ''.join(cell(1, i, h, 1) for i, h in enumerate(headers)) + '</row>']
+    for ri, r in enumerate(rows, start=2):
+        xml_rows.append('<row r="%d">' % ri + ''.join(cell(ri, i, v, 2 if isinstance(v, int) else 0)
+                                                     for i, v in enumerate(r)) + '</row>')
+    last = '%s%d' % (col(len(headers) - 1), max(1, len(rows) + 1))
+    sheet_xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                 '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+                 '<cols>' + ''.join('<col min="%d" max="%d" width="%s" customWidth="1"/>' % (i + 1, i + 1, w) for i, w in enumerate(widths)) + '</cols>'
+                 '<sheetData>' + ''.join(xml_rows) + '</sheetData>'
+                 '<autoFilter ref="A1:%s"/></worksheet>' % last)
+    styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+              '<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0"/></numFmts>'
+              '<fonts count="2"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font></fonts>'
+              '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+              '<fill><patternFill patternType="solid"><fgColor rgb="FFEDECE7"/><bgColor indexed="64"/></patternFill></fill></fills>'
+              '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+              '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+              '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+              '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+              '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
+              '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
+    files = {
+        '[Content_Types].xml': ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'),
+        '_rels/.rels': ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+        'xl/workbook.xml': ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="%s" sheetId="1" r:id="rId1"/></sheets>'
+            '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">\'%s\'!$A$1:$%s$%d</definedName></definedNames>'
+            '</workbook>' % (xe(sheet), xe(sheet), col(len(headers) - 1), max(1, len(rows) + 1))),
+        'xl/_rels/workbook.xml.rels': ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
+        'xl/worksheets/sheet1.xml': sheet_xml,
+        'xl/styles.xml': styles,
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for k, v in files.items():
+            z.writestr(k, v)
+    return buf.getvalue()
+
+
+@shipfee_router.get('/admin/api/shipfee.xlsx')
+def api_xlsx(request: Request):
+    """고객 전용 링크 리스트 엑셀 — 조회 시점의 결제 상태·청구액 반영."""
+    a = _actor(request, 1, '추가 배송비 엑셀')
+    lab = {'PAID': '결제완료', 'UNPAID': '미결제', 'WAIVED': '면제', 'CANCELLED': '취소', 'VOID': '원주문취소'}
+    rs = _list_rows()
+    headers = ['No', '이름', '휴대폰', '이메일', '원주문번호', '주문수', '배송지수', '청구액(원)', '결제상태',
+               '결제일시', '결제주문번호', '문자발송', '메일발송', '링크열람', '고객 전용 결제 링크', '메모']
+    rows = []
+    for i, r in enumerate(rs, start=1):
+        due = r['due'] if r['state'] in ('UNPAID', 'VOID') else r['amount']
+        rows.append([i, r['name'], r['phone'], r['email'], ', '.join(r['orders']), len(r['orders']),
+                     r['amount'] // SF_FEE if r['amount'] else 0, int(due), lab.get(r['state'], r['state']),
+                     r['paid_at'], r['paid_order'], r['sent_at'] or '미발송', r['mail_at'] or '미발송',
+                     int(r['views']), r['link'], r['note']])
+    data = _xlsx(headers, rows, [6, 10, 14, 26, 26, 7, 8, 11, 10, 17, 22, 17, 17, 8, 60, 30])
+    _av().audit(a, '엑셀다운로드', 'shipfee', '%d건' % len(rows))
+    fn = 'mapdal_shipfee_links_%s.xlsx' % datetime.datetime.now().strftime('%Y%m%d_%H%M')
+    return Response(data, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition': 'attachment; filename="%s"' % fn, 'Cache-Control': 'no-store'})
+
+
 @shipfee_router.post('/admin/api/shipfee/status')
 def api_status(request: Request, body: dict = Body(...)):
     """면제(WAIVED)·청구취소(CANCELLED)·재오픈(OPEN). 결제완료 건은 변경 불가(환불은 주문 화면에서)."""
@@ -769,7 +863,7 @@ th,td{border-bottom:1px solid #eee;padding:7px 8px;text-align:left;vertical-alig
 <div class="bar"><b>2. 안내 발송</b><button class="g" onclick="sendPv('sms')">문자 미리보기</button><button class="r" onclick="send('unsent','sms')">미발송 고객에게 문자 발송</button>
  <button class="g" onclick="send('unpaid','sms')">미결제 전체 문자 재발송</button>
  <button class="g" onclick="sendPv('email')">메일 미리보기</button><button class="r" onclick="send('unsent','email')">미발송 고객에게 메일 발송</button>
- <a class="btn g" href="/admin/api/shipfee.csv">CSV 다운로드 (링크 포함)</a>
+ <a class="btn" href="/admin/api/shipfee.xlsx">엑셀 다운로드 (링크 포함)</a> <a class="btn g" href="/admin/api/shipfee.csv">CSV</a>
  <span class="hint">결제가 끝났거나 원주문이 모두 취소된 고객에게는 보내지 않습니다. 문자(LMS)에서는 📌 이모지가 빠집니다.</span></div>
 <div class="bar"><b>3. 결제 현황</b> <select id="fst" onchange="draw()"><option value="">전체</option><option value="UNPAID">미결제</option><option value="PAID">결제완료</option><option value="WAIVED">면제</option><option value="CANCELLED">취소</option></select>
  <input id="q" placeholder="이름·휴대폰·주문번호" oninput="draw()"><button class="g" onclick="load()">새로고침</button><span class="hint" id="upd"></span></div>

@@ -53,6 +53,41 @@ def ensure():
         try: av.run(sql)                         # 컬럼 1개당 1문장 — 이미 있으면 조용히 실패
         except Exception: pass
     _READY['ok'] = True
+    try: dedupe()
+    except Exception as e: print('[shipfee] dedupe skipped: %s' % e, flush=True)
+
+
+def dedupe():
+    """중복 청구 정리 (2026-10-20 [청구 생성] 동시 2회 실행 사고 복구 · 멱등).
+    같은 고객·같은 원주문 묶음의 청구가 여러 건이면 1건만 남긴다 — 링크 열람 이력이 있는 건 → 먼저 생성된 건 순으로 유지.
+    결제(SF 주문)·문자·메일 발송 이력이 있는 사본은 지우지 않는다."""
+    av = _av()
+    chs = av.rows('SELECT id, phone, order_ids, created, view_count, sent_count, mail_count FROM ship_charges')
+    groups = {}
+    for ch in chs:
+        groups.setdefault((ch.get('phone') or '', tuple(sorted(_orders_of(ch)))), []).append(ch)
+    used = set(_sf_map().keys())
+    drop = []
+    for g in groups.values():
+        if len(g) < 2:
+            continue
+        g.sort(key=lambda c: (0 if (av.num(c.get('view_count')) or c['id'] in used or av.num(c.get('sent_count'))
+                                   or av.num(c.get('mail_count'))) else 1, str(c.get('created') or ''), c['id']))
+        for c in g[1:]:
+            if c['id'] in used or av.num(c.get('sent_count')) or av.num(c.get('mail_count')):
+                continue
+            drop.append(c['id'])
+    for i in range(0, len(drop), 200):
+        part = drop[i:i + 200]
+        av.run('DELETE FROM ship_charges WHERE id IN (%s)' % ','.join('?' * len(part)), tuple(part))
+    if drop:
+        try: av.audit({'name': 'SYSTEM', 'role': 'OWNER'}, '추가배송비중복정리', 'shipfee', '중복 청구 %d건 삭제' % len(drop))
+        except Exception: pass
+        print('[shipfee] duplicate charges removed: %d' % len(drop), flush=True)
+    return len(drop)
+
+
+_GEN_LOCK = threading.Lock()
 
 
 # ─────────────────────────── 매칭 · 상태 ───────────────────────────
@@ -234,25 +269,41 @@ def api_generate(request: Request, body: dict = Body(...)):
     since = str(body.get('since') or DEFAULT_SINCE).strip().replace(' ', 'T')[:16]
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}', since):
         raise HTTPException(400, '기준 시각 형식이 올바르지 않습니다 (예: 2026-10-19T15:00)')
+    if not body.get('dry_run', True):
+        if not _GEN_LOCK.acquire(blocking=False):
+            raise HTTPException(409, '청구 생성이 이미 진행 중입니다 — 잠시 후 새로고침해 확인하세요')
+        try:
+            return _generate(a, since)
+        finally:
+            _GEN_LOCK.release()
     gs = candidates(since)
     n_orders = sum(len(g['orders']) for g in gs)
     n_ship = sum(g['shipments'] for g in gs)
     total = sum(g['amount'] for g in gs)
     summ = {'customers': len(gs), 'orders': n_orders, 'shipments': n_ship, 'amount': total,
             'merged': n_orders - n_ship}
-    if body.get('dry_run', True):
-        return dict(ok=True, dry_run=True, **summ)
+    return dict(ok=True, dry_run=True, **summ)
+
+
+def _generate(a, since):
+    """청구 생성 본체 — _GEN_LOCK 안에서만 실행(동시 2회 실행 시 중복 청구 방지). 한 번에 일괄 INSERT."""
     av = _av()
-    made = 0
-    for g in gs:
-        av.run('INSERT INTO ship_charges(id,token,phone,name,email,order_ids,amount,status,created,created_by,sent_count,view_count) '
-               'VALUES(?,?,?,?,?,?,?,?,?,?,0,0)',
-               (av.uid(), secrets.token_urlsafe(18), g['phone'], g['name'], g['email'],
-                json.dumps(g['orders']), g['amount'], 'OPEN', av.now_iso(), a['name']))
-        made += 1
+    gs = candidates(since)
+    n_orders = sum(len(g['orders']) for g in gs)
+    n_ship = sum(g['shipments'] for g in gs)
+    total = sum(g['amount'] for g in gs)
+    now = av.now_iso()
+    pairs = [('INSERT INTO ship_charges(id,token,phone,name,email,order_ids,amount,status,created,created_by,sent_count,view_count) '
+              'VALUES(?,?,?,?,?,?,?,?,?,?,0,0)',
+              (av.uid(), secrets.token_urlsafe(18), g['phone'], g['name'], g['email'],
+               json.dumps(g['orders']), g['amount'], 'OPEN', now, a['name'])) for g in gs]
+    for i in range(0, len(pairs), 200):
+        av.runmany(pairs[i:i + 200])
+    removed = dedupe()
     av.audit(a, '추가배송비청구생성', since, '%d명 · %d주문 · 배송지 %d곳 · %s원'
-             % (made, n_orders, n_ship, format(total, ',')))
-    return dict(ok=True, dry_run=False, **summ)
+             % (len(gs), n_orders, n_ship, format(total, ',')))
+    return dict(ok=True, dry_run=False, customers=len(gs), orders=n_orders, shipments=n_ship, amount=total,
+                merged=n_orders - n_ship, dedup_removed=removed)
 
 
 def _list_rows():
@@ -748,7 +799,11 @@ function draw(){const f=$('#fst').value,q=($('#q').value||'').trim().toLowerCase
  <td class="hint">${r.sent_count?esc(r.sent_at)+' ('+r.sent_count+'회)':'미발송'}</td><td class="hint">${r.email?(r.mail_count?esc(r.mail_at)+' ('+r.mail_count+'회)':'미발송'):'-'}</td><td class="hint">${r.views?r.views+'회<br>'+esc(r.view_at):'-'}</td>
  <td><button class="sm g" onclick="cp('${esc(r.link)}')">복사</button></td>
  <td>${r.state==='UNPAID'?`<button class="sm g" onclick="st('${r.id}','WAIVED')">면제</button> <button class="sm g" onclick="send1('${r.id}')">문자</button>`:''}${r.state==='WAIVED'||r.state==='CANCELLED'?`<button class="sm g" onclick="st('${r.id}','OPEN')">재청구</button>`:''}${r.note?`<div class="hint">${esc(r.note)}</div>`:''}</td></tr>`).join('')||'<tr><td colspan="10" class="hint" style="padding:30px;text-align:center">청구 내역이 없습니다 — 위 [대상 미리보기] 후 [청구 생성]</td></tr>'}
-async function gen(dry){try{const d=await post('/admin/api/shipfee/generate',{since:$('#since').value,dry_run:dry});
+let _genBusy=false;
+async function gen(dry){if(_genBusy)return;_genBusy=true;document.querySelectorAll('.bar button').forEach(b=>{if(/청구 생성|대상 미리보기/.test(b.textContent))b.disabled=true});
+ try{await gen2(dry)}finally{_genBusy=false;document.querySelectorAll('.bar button').forEach(b=>b.disabled=false)}}
+async function gen2(dry){try{if(!dry&&!confirm('청구를 생성합니다 (문자는 발송되지 않습니다). 진행할까요?'))return;
+ const d=await post('/admin/api/shipfee/generate',{since:$('#since').value,dry_run:dry});
  if(dry){toast(`대상 ${d.customers}명 · ${d.orders}주문 · 배송지 ${d.shipments}곳(같은 주소 ${d.merged}건 합산) · ${won(d.amount)}`);return}
  if(!d.customers){toast('새로 청구할 대상이 없습니다');return}toast(`청구 생성 ${d.customers}명 · ${won(d.amount)}`);load()}catch(e){toast(e.message)}}
 const CH={sms:'문자(LMS)',email:'메일'};

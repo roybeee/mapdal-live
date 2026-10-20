@@ -435,8 +435,9 @@ function render(){
       <button class="rm" aria-label="삭제">✕</button></div>`).join('');
   }
   const sub=items.reduce((a,i)=>a+i.p*i.q,0);
-  // NEW/DROPS(mpd::) 상품이 담기면 금액과 무관하게 배송비 3,000원 정액(무료배송 미적용).
-  const _drop=items.some(i=>String(i.id||'').indexOf('mpd::')===0);
+  // 배송비 필수부과 상품(예약판매·이벤트 등 — 관리자 설정)이 담기면 금액과 무관하게 3,000원 정액(무료배송 미적용).
+  //   판정은 서버(/api/cart/rules · window._mpShipReq). 응답 전에는 종전 규칙(mpd:: 접두어).
+  const _drop=window._mpShipReq?items.some(i=>window._mpShipReq.has(String(i.id||''))):items.some(i=>String(i.id||'').indexOf('mpd::')===0);
   const ship=sub===0?0:(_drop?3000:(sub>=30000?0:3000));
   document.getElementById('sub').textContent=fmt(sub);
   document.getElementById('ship').textContent=ship?fmt(ship):'무료';
@@ -444,7 +445,7 @@ function render(){
   document.getElementById('tot').textContent=fmt(sub+ship);
   var _cn=document.getElementById('cartShipNote');
   if(_cn)_cn.innerHTML=(sub>0?(_drop
-    ? 'NEW/DROPS 상품은 금액과 관계없이 배송비 3,000원이며 무료배송·적립이 적용되지 않습니다.<br>'
+    ? '예약판매·이벤트 등 프로모션 상품이 포함되어 금액과 관계없이 배송비 3,000원이며 무료배송이 적용되지 않습니다.<br>'
     : '30,000원 이상 구매 시 배송비 무료 · 일반 상품 구매 시 1% 적립<br>'):'')
     +'제주·도서산간 등 권역별 추가 배송비가 별도 부과될 수 있습니다.';
   const ob=document.getElementById('orderBtn');
@@ -462,6 +463,8 @@ document.getElementById('cartItems').addEventListener('click',e=>{
   save(items);render();
 });
 render();
+(function(){try{var it=load();if(!it.length)return;fetch('/api/cart/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:it.map(function(i){return {id:i.id}})})})
+ .then(function(r){return r.ok?r.json():null}).then(function(d){if(!d)return;window._mpShipReq=new Set(d.ship_required||[]);render()}).catch(function(){})}catch(e){}})();
 </script>
 <script id="mpAuthJs">(function(){function go(){
 fetch('/api/member/me').then(function(r){return r.json()}).catch(function(){return {login:false}}).then(function(d){

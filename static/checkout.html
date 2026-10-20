@@ -477,8 +477,15 @@ const items=load();
 let CFG={freeShipOver:30000,shipFee:3000,clientKey:'',dropPrefix:'mpd::',dropShipFee:3000,pointRateBp:100};
 let intl=false;
 function shipMethod(){const r=document.querySelector('input[name="ship"]:checked');return r?r.value:'standard';}
-// NEW/DROPS(mpd::) 상품이 담겨 있으면 금액과 무관하게 배송비 3,000원 정액.
-function hasDrop(){const p=CFG.dropPrefix||'mpd::';return items.some(i=>String(i.id||'').indexOf(p)===0);}
+// 배송비 필수부과 상품(예약판매·이벤트 등 — 관리자 설정)이 담겨 있으면 금액과 무관하게 3,000원 정액.
+//   판정은 서버(/api/cart/rules). 응답 전에는 종전 규칙(mpd:: 접두어)으로 표시한다. 실제 결제금액은 서버가 재계산.
+let SHIPREQ=null,CPBLOCK=[];
+function hasDrop(){if(SHIPREQ)return items.some(i=>SHIPREQ.has(String(i.id||'')));const p=CFG.dropPrefix||'mpd::';return items.some(i=>String(i.id||'').indexOf(p)===0);}
+function cpGuard(){if(!CPBLOCK.length)return;var i=document.getElementById('mpCpIn'),b=document.getElementById('mpCpBtn'),m=document.getElementById('mpCpMsg');
+  if(i){i.disabled=true;i.value='';i.placeholder='쿠폰 적용 불가 상품 포함';}if(b){b.disabled=true;b.style.opacity='.4';}
+  window.mpCpCode='';window.mpCpOff=0;if(m){m.style.color='var(--red)';m.textContent='예약판매·이벤트 등 쿠폰 적용이 불가한 상품이 포함되어 있어 쿠폰을 사용할 수 없습니다.';}}
+function loadRules(){if(!items.length)return;fetch('/api/cart/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:items.map(i=>({id:i.id}))})})
+  .then(r=>r.ok?r.json():null).then(d=>{if(!d)return;SHIPREQ=new Set(d.ship_required||[]);CPBLOCK=d.coupon_blocked||[];renderSum();cpGuard();}).catch(()=>{});}
 function calc(){
   const sub=items.reduce((a,i)=>a+i.p*i.q,0);
   const drop=hasDrop();
@@ -504,7 +511,7 @@ function renderSum(){
   var _sn=document.getElementById('ckShipNote');
   if(_sn){
     var _base=drop
-      ? 'NEW/DROPS 상품은 금액과 관계없이 배송비 3,000원이 부과되며 무료배송이 적용되지 않습니다.'
+      ? '예약판매·이벤트 등 프로모션 상품이 포함되어 금액과 관계없이 배송비 3,000원이 부과되며 무료배송이 적용되지 않습니다.'
       : (sub>0&&sub<CFG.freeShipOver
           ? '30,000원 이상 구매 시 배송비가 무료입니다 (현재 '+fmt(CFG.freeShipOver-sub)+' 남음).'
           : '30,000원 이상 구매로 기본 배송비가 무료 적용되었습니다.');
@@ -522,6 +529,7 @@ function renderSum(){
   btn.style.opacity=btn.disabled?'.5':'1';
 }
 fetch('/api/config').then(r=>r.json()).then(c=>{CFG=c;renderSum();}).catch(()=>renderSum());
+loadRules();
 document.querySelectorAll('.radio-list').forEach(l=>l.addEventListener('change',()=>{
   l.querySelectorAll('.radio-item').forEach(x=>x.classList.toggle('on',x.querySelector('input').checked));
   renderSum();

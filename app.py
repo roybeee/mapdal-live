@@ -740,6 +740,15 @@ async def create_order(req: Request, response: Response):
         raise
     except Exception:
         pass
+    # ── 배송비 필수부과 (2026-10-20) ─────────────────────────────────────────
+    #   관리자 [배송비 필수부과] 체크(미지정 시 예약판매·럭키드로우·팬사인회·영상통화 등 자동 판정) 상품이
+    #   하나라도 있으면 금액과 무관하게 3,000원 — 무료배송 기준 미적용. 판정은 트랜잭션 밖(읽기).
+    #   판정 실패 시에는 종전 규칙(mpd:: 접두어)으로 폴백한다.
+    ship_forced = None
+    try:
+        import admin_v2 as _avr; ship_forced = bool(_avr.ship_required_items(items))
+    except Exception as _se:
+        print('[ship-rule] %s' % _se, flush=True)
     # ── 쿠폰 (2026-10 · growth) ─────────────────────────────────────────────
     #   유효성(기간·잔여·첫 주문 여부)은 주문 트랜잭션 '밖'에서 읽기로 확정하고,
     #   트랜잭션 안에서는 DB 접근 없는 순수 계산(coupon_amount)만 한다 — PG abort 방지.
@@ -801,6 +810,8 @@ async def create_order(req: Request, response: Response):
             #   드롭(mpd::) 상품 포함 주문: 금액 무관 3,000원 정액(무료배송 기준 미적용).
             #   일반 주문: 30,000원 이상 무료, 미만 3,000원. 픽업은 항상 무료.
             has_drop = any(str(r['id']).startswith(DROP_PREFIX) for r in resolved)
+            if ship_forced is not None:
+                has_drop = ship_forced          # 관리자 설정·자동 판정 (mpd:: 이벤트 상품은 기본 필수)
             if ship == 'pickup':
                 ship_fee = 0
             elif has_drop:

@@ -1982,7 +1982,7 @@ def ensure_ready():
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
-    for col in ('list_price', 'sort_order', 'stock_baseline'):
+    for col in ('list_price', 'sort_order', 'stock_baseline', 'ship_required', 'coupon_ok'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s INTEGER" % col)
             except Exception: pass
@@ -6280,6 +6280,7 @@ const _pub=r?(r._pub||(r.on===false?'off':'now')):'off';   /* 새 이벤트 기�
   </div>
   <div id="dr_pvbox" style="margin-top:8px;padding:9px 11px;border:1px dashed #cfcabc;border-radius:6px;background:#fbfaf6;font-size:12px">${drPvBoxHTML(r)}</div>
  </span>
+<b>판매 규칙</b><span style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:8px 10px;border:2px solid var(--black);border-radius:6px"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_shipreq" ${v.ship_required!==false?'checked':''}> 배송비 필수부과 <span class="hint" style="display:inline">(3,000원 · 무료배송 미적용)</span></label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_couponok" ${v.coupon_ok===true?'checked':''}> 쿠폰 적용 가능</label><span class="hint" style="flex-basis:100%;margin:0">이 이벤트의 옵션 상품(연결 상품 포함)에 결제 시 바로 적용됩니다. 기본값: 배송비 필수 ✓ · 쿠폰 ✗</span></span>
  <b>제목 *</b><span><input id="dr_title" style="width:100%" value="${esc(v.title||'')}" placeholder="예) 스타라이트 1st MINI 발매 기념 대면 팬사인회 EVENT"></span>
  <b>아티스트</b><span><input id="dr_artist" style="width:100%" value="${esc(v.artist||'')}" placeholder="예) 스타라이트"></span>
  <b>유형</b><span><div id="dr_cats" style="display:flex;gap:6px;flex-wrap:wrap">${DRCATS.map(c=>{const on=(v.categories&&v.categories.length?v.categories:[v.category]).includes(c.id);return `<label class="drcat${on?' on':''}" style="display:inline-flex;align-items:center;padding:6px 12px;border:1.5px solid ${on?'#141414':'#ddd'};border-radius:999px;background:${on?'#141414':'#fff'};color:${on?'#fff':'#444'};cursor:pointer;font-size:12px;font-weight:700;user-select:none"><input type="checkbox" value="${c.id}" ${on?'checked':''} style="display:none" onchange="const l=this.parentElement,k=this.checked;l.style.background=k?'#141414':'#fff';l.style.color=k?'#fff':'#444';l.style.borderColor=k?'#141414':'#ddd'">${esc(c.label)}</label>`}).join('')}</div>
@@ -6348,7 +6349,8 @@ async function saveDrop(id){try{
   winner_fansign_extra:$('#dr_twf_extra').value,
   winner_videocall_extra:$('#dr_twv_extra').value,
   entry_extra:$('#dr_te_extra').value,
-  announce_notice:$('#dr_annnotice').value,announce_body:$('#dr_annbody').value,winners:winners};
+  announce_notice:$('#dr_annnotice').value,announce_body:$('#dr_annbody').value,winners:winners,
+  ship_required:!!($('#dr_shipreq')||{}).checked,coupon_ok:!!($('#dr_couponok')||{}).checked};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  toast('저장 완료 — '+(d.pub_label||'사이트에 즉시 반영')+' (#'+d.id+')');closeM();loadDrops();
 }catch(e){toast(e.message)}}
@@ -7398,6 +7400,10 @@ def api_product_create(request: Request, body: dict = Body(...)):
         cols.append('badge_color'); vals.append(badge_color(body.get('badge_color')))
     if 'hero_bg' in _state['pcols']:
         cols.append('hero_bg'); vals.append(hex_or_empty(body.get('hero_bg')))
+    for _rk in ('ship_required', 'coupon_ok'):
+        if _rk in body and _rk in _state['pcols']:
+            if type(body[_rk]) is not bool: raise HTTPException(400, '배송비·쿠폰 설정 값이 올바르지 않습니다')
+            cols.append(_rk); vals.append(1 if body[_rk] else 0)
     if 'created_at' in _state['pcols']:
         cols.append('created_at'); vals.append(now_iso())
     if 'related_ids' in _state['pcols']:
@@ -7631,7 +7637,28 @@ def api_product_detail_get(request: Request):
         'tabs': _prod_tabs_load(pid),
         'hero_bg': hex_or_empty(r.get('hero_bg')),
         'gallery_list': [u for u in re.split(r'[\r\n]+', str(r.get('gallery') or '')) if u.strip()],
+        **_prod_rule_view(r['id']),
     }
+
+def _prod_rule_view(pid):
+    """편집 화면 체크박스 초기값 — 명시값이 없으면 자동 판정값(배지·이벤트 연결)을 보여준다."""
+    try:
+        pc = _state.get('pcols') or set()
+        cols = 'id, %s AS name' % (_state.get('pname') or 'name') + ''.join(
+            ', ' + c for c in ('badge', 'ship_required', 'coupon_ok') if c in pc)
+        r = one('SELECT %s FROM products WHERE id=?' % cols, (pid,)) or {'id': pid}
+        sr, cp, explicit = _rule_of_row(r, _drop_rules_index())
+        return {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'rules_explicit': bool(explicit)}
+    except Exception:
+        return {'ship_required': False, 'coupon_ok': True, 'rules_explicit': False}
+
+def _rule_body(body, sets, args, log):
+    """요청 본문의 체크박스 값을 컬럼 UPDATE 로 (둘 다 bool 일 때만)."""
+    pc = _state.get('pcols') or set()
+    for k, lb in (('ship_required', '배송비 필수부과'), ('coupon_ok', '쿠폰 적용 가능')):
+        if k in body and k in pc:
+            if type(body[k]) is not bool: raise HTTPException(400, '%s 값은 true 또는 false여야 합니다' % lb)
+            sets.append('%s=?' % k); args.append(1 if body[k] else 0); log.append('%s %s' % (lb, 'ON' if body[k] else 'OFF'))
 
 @admin_router.post('/admin/api/products/preview-token')
 def api_product_preview_token(request: Request, body: dict = Body(...)):
@@ -7732,6 +7759,7 @@ def api_product_detail_update(request: Request, body: dict = Body(...)):
         _tabs = _prod_tabs_norm(body.get('tabs'))
         sets.append('tabs=?'); args.append(json.dumps(_tabs, ensure_ascii=False))
         log.append('설명탭 %d개%s' % (len(_tabs['custom']), (' · 숨김 ' + ','.join(_tabs['hide'])) if _tabs['hide'] else ''))
+    _rule_body(body, sets, args, log)
     if not sets and not priced and not related_changed and not opts_changed and not stock_edits: raise HTTPException(400, '변경할 값 없음')
     normalized_opts = _prod_opts_norm(body.get('options')) if opts_changed else None
     _product_stock_baselines(stock_edits)
@@ -7856,6 +7884,13 @@ h2{font-size:19px;margin-bottom:18px}
 <header><a class="back" href="/admin/dashboard">← 대시보드</a><h1>MAPDAL<span>SEOUL</span></h1><span id="ptitle" style="font-size:13px;color:#bbb"></span></header>
 <main>
 <h2 id="h2title"></h2>
+<div class="card" id="ruleCard" style="border:2px solid var(--black)"><h3>판매 규칙<small>결제 시 바로 적용 · 예약판매·럭키드로우·팬사인회·영상통화 등 프로모션 상품 설정</small></h3>
+ <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:center">
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rShip" style="width:18px;height:18px" onchange="_ruleTouched=true"> 배송비 필수부과 <span style="font-weight:400;color:#888;font-size:12px">(3,000원 · 3만원 이상 무료배송 미적용)</span></label>
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rCoupon" style="width:18px;height:18px" checked onchange="_ruleTouched=true"> 쿠폰 적용 가능</label>
+ </div>
+ <div class="hint" id="ruleHint" style="margin-top:8px">배지에 예약판매·사인회·영상통화·럭키드로우를 입력하면 자동으로 [배송비 필수부과 ✓ · 쿠폰 적용 ✗]로 맞춰집니다. 체크를 직접 바꾸면 그 값이 우선합니다. 판매 옵션·세트 상품은 이 설정을 그대로 따릅니다.</div>
+</div>
 <div class="card"><h3><span class="no">1</span>기본 정보<small>상품명 · 카테고리 · 가격 · 재고 · 배지</small></h3>
  <div class="f"><label>상품명 *</label><input type="text" id="fn" placeholder="예: 맵달 굿즈 키링"></div>
  <div class="row2">
@@ -8114,6 +8149,8 @@ async function init(){
   stockLoad(d);$('#fd').value=d.descr;
   _info=infoParse(d.info_rows||'').map(([k,v])=>[k,String(v||'').split('//').join('\n')]);renderInfoRows();
   $('#fship').value=d.ship_rows||'';$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
+  $('#rShip').checked=!!d.ship_required;$('#rCoupon').checked=d.coupon_ok!==false;_ruleTouched=!!d.rules_explicit;
+  if(!d.rules_explicit&&(d.ship_required||d.coupon_ok===false))$('#ruleHint').innerHTML='<b style="color:#B71F18">자동 판정됨</b> — 배지·이벤트 연결 기준으로 프로모션 상품으로 인식했습니다. 저장하면 이 값으로 확정됩니다.';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
   _related=Array.isArray(d.related_products)?d.related_products:[];renderBlocks();renderRelated();
@@ -8175,6 +8212,12 @@ function pvCopy(){const u=$('#pvUrl').value;if(!u)return;(navigator.clipboard?na
 document.addEventListener('change',e=>{if(e.target&&(e.target.id==='fsf'||e.target.id==='fsu'))expUI()});
 let _stockBaseline=null;
 function stockLoad(d){_stockBaseline=d.stock_baseline==null?null:d.stock_baseline;$('#fs').value=_stockBaseline==null?'':_stockBaseline;$('#fs').placeholder='미설정 / 무제한';$('#stockRemaining').textContent='현재 남은 재고: '+(d.stock==null?'무제한 / 구성 재고 사용':Number(d.stock).toLocaleString())+(_stockBaseline==null?' · 기준량 미설정':' · 판매되어도 기본 입고수량은 유지됩니다')}
+/* ── 판매 규칙 체크박스 (2026-10-20) ── */
+let _ruleTouched=false;
+function ruleVals(){return {ship_required:$('#rShip').checked,coupon_ok:$('#rCoupon').checked}}
+document.addEventListener('input',e=>{if(!e.target||e.target.id!=='fb'||_ruleTouched)return;
+ const promo=/예약\s*판매|사인회|팬\s*싸인|영상\s*통화|영통|럭키\s*드로우|fan\s*sign|video\s*call|fan\s*call|lucky\s*draw|pre-?\s*order/i.test(e.target.value);
+ $('#rShip').checked=promo;$('#rCoupon').checked=!promo});
 async function save(){
  const name=$('#fn').value.trim(),cat=$('#fc').value;
  if(!name)return toast('상품명을 입력하세요');
@@ -8189,12 +8232,12 @@ async function save(){
   if(PAGE.mode==='new'){
    const r=await api('/admin/api/products/create',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name,category:cat,price:pr.base,discount_pct:pr.dc,stock:$('#fs').value===''?null:Number($('#fs').value),
-     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
+     img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex,...ruleVals()})});
    location.href='/admin/products/edit?id='+encodeURIComponent(r.id)+'&created=1';return;
   }
   await api('/admin/api/products/detail/update',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({id:PAGE.id,name,category:cat,price:pr.base,discount_pct:pr.dc,
-    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex})});
+    img:$('#fi').value,descr:$('#fd').value,info_rows:infoSerialize(),ship_rows:$('#fship').value,badge:$('#fb').value.trim(),badge_color:$('#fbc').value,detail_blocks:_blocks,related_ids:_related.map(x=>x.id),tabs:ptCollect(),hero_bg:hbVal(),gallery:_gal,...ex,...ruleVals()})});
   toast('저장되었습니다');expUI();
  }catch(e){if(e.message!=='세션 만료')toast(e.message);}
  btn.disabled=false;
@@ -11703,7 +11746,7 @@ def drop_purchase_gate(items):
 #   /api/orders(국내)·/api/intl/order(해외)·/api/coupon/check(미리보기)가 공통으로 호출한다.
 COUPON_BLOCK_RE = re.compile(r'예약\s*판매|사인회|팬\s*싸인|영상\s*통화|영통|럭키\s*드로우|'
                              r'fan\s*sign|video\s*call|fan\s*call|lucky\s*draw|pre-?\s*order', re.I)
-COUPON_BLOCK_MSG = '예약판매·럭키드로우·팬사인회·영상통화 등 행사 상품은 쿠폰을 사용할 수 없습니다'
+COUPON_BLOCK_MSG = '예약판매·럭키드로우·팬사인회·영상통화 등 쿠폰 적용이 불가한 상품이 포함되어 있습니다'
 
 
 def _cp_promo_row(r):
@@ -11731,73 +11774,136 @@ def _cp_cands(pid):
         return out
 
 
-def coupon_block_item(items):
-    """장바구니 중 첫 번째 행사 상품의 표시명 — 없으면 ''. 주문 트랜잭션 '밖'에서만 호출(읽기 전용)."""
+def _rule_bool(v):
+    if v is None or v == '':
+        return None
+    try:
+        return bool(int(v))
+    except Exception:
+        return None
+
+
+def _drop_rules_index():
+    """이벤트 옵션 상품 → (배송비 필수, 쿠폰 가능). 이벤트 편집기 체크박스 — 미지정이면 (필수, 불가)."""
+    idx = {}
+    try:
+        for d in _drops_all():
+            if not isinstance(d, dict):
+                continue
+            sr = d.get('ship_required'); cp = d.get('coupon_ok')
+            flags = (True if sr is None else bool(sr), False if cp is None else bool(cp))
+            for o in _drop_opts_norm(d.get('options')):
+                if o.get('product_id'):
+                    idx[str(o['product_id'])] = flags
+    except Exception:
+        pass
+    return idx
+
+
+def _rule_of_row(r, drop_idx):
+    """상품 행 → (ship_required, coupon_ok, 명시여부). 명시값(관리자 체크박스) 우선, 미지정이면 자동 판정."""
+    pid = str(r.get('id') or '')
+    if pid in drop_idx:
+        return drop_idx[pid] + (True,)
+    sr, cp = _rule_bool(r.get('ship_required')), _rule_bool(r.get('coupon_ok'))
+    promo = None
+    if sr is None or cp is None:
+        promo = _cp_promo_row(r)
+        if not promo:
+            try:
+                g = one('SELECT g.metadata AS m FROM product_variants v JOIN product_groups g ON g.id=v.group_id '
+                        'WHERE v.legacy_product_id=?', (pid,))
+                promo = bool(g and str((jload(g.get('m'), {}) or {}).get('event_type') or '').strip())
+            except Exception:
+                promo = False
+    return (promo if sr is None else sr, (not promo) if cp is None else cp, sr is not None and cp is not None)
+
+
+def product_rules(items):
+    """장바구니 항목별 판매 규칙 — {원래 id: {'ship_required','coupon_ok','name'}}.
+    (2026-10-20) 관리자 상품·이벤트 등록 화면의 [배송비 필수부과]·[쿠폰 적용 가능] 체크박스가 기준.
+    체크박스를 저장한 적 없는 상품은 자동 판정: 이벤트 옵션(mpd::)·이벤트 연결 상품 → 필수/불가,
+    배지(예약판매·사인회·영상통화·럭키드로우 등)·행사유형·【영상통화】 태그 → 필수/불가, 그 외 → 일반/가능.
+    판매 옵션 자식(mpo::)·세트 자식은 부모 상품 설정을 따른다. 주문 트랜잭션 '밖'에서만 호출(읽기 전용)."""
     pids = []
     for it in (items or []):
         if isinstance(it, dict):
             p = str(it.get('id') or '').strip()
             if p and p not in pids:
                 pids.append(p)
+    out = {}
     if not pids:
-        return ''
-    drop_pids = set()
-    try:
-        for d in _drops_all():
-            if not isinstance(d, dict):
-                continue
-            for o in _drop_opts_norm(d.get('options')):
-                if o.get('product_id'):
-                    drop_pids.add(str(o['product_id']))
-    except Exception:
-        pass
-    has_badge = 'badge' in (_state.get('pcols') or ('badge',))
-    cols = 'id, name' + (', badge' if has_badge else '')
+        return out
+    drop_idx = _drop_rules_index()
+    pc = _state.get('pcols') or set()
+    cols = 'id, ' + (_state.get('pname') or 'name') + ' AS name' + ''.join(
+        ', ' + c for c in ('badge', 'ship_required', 'coupon_ok') if c in pc)
     for pid in pids:
-        for cand in _cp_cands(pid):
-            if cand.startswith('mpd::') or cand in drop_pids:
-                r = None
-                try: r = one('SELECT name FROM products WHERE id=?', (cand,))
-                except Exception: pass
-                return str((r or {}).get('name') or cand)
+        res = None
+        for cand in _cp_cands(pid)[:4]:
             try:
                 r = one('SELECT %s FROM products WHERE id=?' % cols, (cand,))
             except Exception:
                 r = None
             if not r:
+                if cand.startswith('mpd::'):
+                    res = {'ship_required': True, 'coupon_ok': False, 'name': cand}
+                    break
                 continue
             nm = str(r.get('name') or cand)
-            if _cp_promo_row(r):
-                return nm
-            # 판매 옵션 자식(mpo::) → 부모 상품의 배지·행사유형을 따른다
-            check_ids = [cand]
-            if cand.startswith(PROD_OPT_PREFIX) and 'options' in (_state.get('pcols') or ('options',)):
+            target = r
+            if cand.startswith(PROD_OPT_PREFIX) and cand not in drop_idx and 'options' in pc:
                 try:
-                    for pr in rows('SELECT %s FROM products WHERE options LIKE ?' % cols,
-                                   ('%"' + cand + '"%',)):
-                        if _cp_promo_row(pr) or str(pr.get('id')) in drop_pids:
-                            return nm
-                        check_ids.append(str(pr.get('id')))
+                    par = rows('SELECT %s FROM products WHERE options LIKE ? LIMIT 1' % cols, ('%"' + cand + '"%',))
+                    if par: target = par[0]
                 except Exception:
                     pass
-            # 상품마스터 그룹 '행사 유형'
-            try:
-                for cid in check_ids:
-                    g = one('SELECT g.metadata AS m FROM product_variants v JOIN product_groups g ON g.id=v.group_id '
-                            'WHERE v.legacy_product_id=?', (cid,))
-                    if g and str((jload(g.get('m'), {}) or {}).get('event_type') or '').strip():
-                        return nm
-            except Exception:
-                pass
+            sr, cp, _ = _rule_of_row(target, drop_idx)
+            # 자식 이름의 【영상통화】 등 태그는 부모가 자동 판정일 때만 보조 반영
+            if target is not r and _rule_bool(target.get('coupon_ok')) is None and _cp_promo_row(r):
+                sr, cp = True, False
+            res = {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'name': nm}
             break
+        if res is None and pid.startswith('mpd::'):
+            res = {'ship_required': True, 'coupon_ok': False, 'name': pid}
+        if res is not None:
+            out[pid] = res
+    return out
+
+
+def ship_required_items(items):
+    """배송비 필수부과 대상 상품명 목록 (없으면 [])."""
+    return [v['name'] for v in product_rules(items).values() if v['ship_required']]
+
+
+def coupon_block_item(items):
+    """장바구니 중 첫 번째 쿠폰 불가 상품의 표시명 — 없으면 ''."""
+    for v in product_rules(items).values():
+        if not v['coupon_ok']:
+            return v['name']
     return ''
 
 
 def coupon_promo_gate(items):
-    """행사 상품이 섞인 장바구니에 쿠폰을 쓰면 400."""
+    """쿠폰 불가 상품(행사 상품 등)이 섞인 장바구니에 쿠폰을 쓰면 400."""
     nm = coupon_block_item(items)
     if nm:
         raise HTTPException(400, '%s (%s)' % (COUPON_BLOCK_MSG, nm[:40]))
+
+
+@admin_router.post('/api/cart/rules')
+def api_cart_rules(request: Request, body: dict = Body(...)):
+    """장바구니·체크아웃 표시용 — 배송비 필수부과·쿠폰 불가 상품 id. 실제 금액은 /api/orders 가 재계산한다."""
+    try: ensure_ready()
+    except Exception: pass
+    items = [x for x in (body.get('items') or [])[:50] if isinstance(x, dict)]
+    try:
+        rs = product_rules(items)
+    except Exception:
+        rs = {}
+    return {'ship_required': [k for k, v in rs.items() if v['ship_required']],
+            'coupon_blocked': [k for k, v in rs.items() if not v['coupon_ok']],
+            'ship_fee': 3000}
 
 
 def _drop_card(d, now):
@@ -12619,7 +12725,12 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'announce_notice': _ko_autofix(body.get('announce_notice'))[:2000],
            # 공지문 본문은 <img> 태그가 포함되므로 자동보정 없이 원문 그대로 저장한다.
            'announce_body': str(body.get('announce_body') or '')[:200000],
-           'winners': winners}
+           'winners': winners,
+           # 판매 규칙 (2026-10-20) — 미전송(구버전 편집기)이면 기존 값 유지, 신규 기본 = 배송비 필수 · 쿠폰 불가
+           'ship_required': (bool(body['ship_required']) if isinstance(body.get('ship_required'), bool)
+                             else (cur or {}).get('ship_required', True) is not False),
+           'coupon_ok': (bool(body['coupon_ok']) if isinstance(body.get('coupon_ok'), bool)
+                         else (cur or {}).get('coupon_ok') is True)}
     try:
         rec['options'] = _drop_product_sync(rec, (cur or {}).get('options'), a)
     except HTTPException:

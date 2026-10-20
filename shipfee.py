@@ -92,40 +92,68 @@ def _orders_of(ch):
 
 
 # ─────────────────────────── 대상 산출 ───────────────────────────
+def addr_key(b):
+    """배송지 동일 판정 키 — 우편번호·주소·상세주소에서 공백·구두점·대소문자 차이를 무시한다.
+    주소가 비어 있으면 '' (주문별로 따로 취급)."""
+    b = b or {}
+    raw = ' '.join(str(b.get(k) or '') for k in ('zip', 'addr1', 'addr2'))
+    return re.sub(r'[\s\-_,.()\[\]/#·]+', '', raw).lower()
+
+
 def candidates(since=DEFAULT_SINCE):
-    """배송비 0원으로 결제된 배송비 필수부과 주문 → 고객별 묶음. 이미 청구(취소 제외)에 포함된 주문은 제외."""
+    """배송비 0원으로 결제된 배송비 필수부과 주문 → 고객별 묶음.
+    청구액 = 3,000원 × 고객의 '서로 다른 배송지' 수 (2026-10-20: 같은 주소로 가는 주문은 배송비 1회).
+    · 같은 고객이 같은 주소로 이미 배송비를 낸 주문(3만원 미만 등)이 있으면 그 주소는 청구하지 않는다.
+    · 이미 청구(취소 제외)에 포함된 주문·주소는 제외 — 재실행해도 같은 주소에 두 번 청구되지 않는다."""
     av = _av()
     ensure()
     rs = av.rows("SELECT order_id, created, amount, discount, items, buyer, ship_method, contact_phone_norm "
                  "FROM orders WHERE created>=? AND status='PAID' AND order_id NOT LIKE ? "
                  "AND COALESCE(ship_method,'standard') NOT IN ('pickup','intl','none') ORDER BY created",
                  (since, SF_PREFIX + '%'))
-    parsed, ids = [], set()
+    info, zero, ids, settled = {}, [], set(), set()
     for r in rs:
         its = [x for x in (av.jload(r.get('items'), []) or []) if isinstance(x, dict)]
+        b = av.jload(r.get('buyer'), {}) or {}
+        ph = av.digits(r.get('contact_phone_norm') or b.get('phone') or '')
+        ck = ph or ('order:' + r['order_id'])
+        ak = addr_key(b) or ('order:' + r['order_id'])
+        info[r['order_id']] = (ck, ak)
         sub = sum(av.num(x.get('p')) * max(1, av.num(x.get('q')) or 1) for x in its)
-        disc = av.num(r.get('discount'))
-        if av.num(r.get('amount')) - sub + disc != 0:          # 배송비를 이미 냈거나 금액 구조가 다른 주문
-            continue
-        parsed.append((r, its))
-        ids.update(str(x.get('id') or '') for x in its)
+        shipped = av.num(r.get('amount')) - sub + av.num(r.get('discount'))
+        if shipped == 0:
+            zero.append((r, its, b, ph, ck, ak))
+            ids.update(str(x.get('id') or '') for x in its)
+        elif shipped > 0:
+            settled.add((ck, ak))                               # 이 주소는 이미 배송비를 냄
     rules = av.product_rules([{'id': i} for i in ids if i])     # 상품별 1회 판정
     covered = set()
     for ch in av.rows("SELECT order_ids FROM ship_charges WHERE COALESCE(status,'OPEN')<>'CANCELLED'"):
-        covered.update(_orders_of(ch))
+        for o in _orders_of(ch):
+            covered.add(o)
+            if o in info:
+                settled.add(info[o])                            # 이미 청구된 주소
     groups = {}
-    for r, its in parsed:
+    for r, its, b, ph, ck, ak in zero:
         if r['order_id'] in covered:
             continue
         if not any((rules.get(str(x.get('id') or '')) or {}).get('ship_required') for x in its):
             continue
-        b = av.jload(r.get('buyer'), {}) or {}
-        ph = av.digits(r.get('contact_phone_norm') or b.get('phone') or '')
-        key = ph or ('order:' + r['order_id'])
-        g = groups.setdefault(key, {'phone': ph, 'name': str(b.get('name') or '')[:30],
-                                    'email': str(b.get('email') or '').lower()[:120], 'orders': []})
+        g = groups.setdefault(ck, {'phone': ph, 'name': str(b.get('name') or '')[:30],
+                                   'email': str(b.get('email') or '').lower()[:120], 'orders': [], 'addrs': {}, 'skipped': []})
+        if (ck, ak) in settled:
+            g['skipped'].append(r['order_id'])                 # 같은 주소 배송비 기납부·기청구 → 추가 청구 없음
+            continue
         g['orders'].append(r['order_id'])
-    return list(groups.values())
+        g['addrs'].setdefault(ak, []).append(r['order_id'])
+    out = []
+    for g in groups.values():
+        if not g['orders']:
+            continue
+        g['shipments'] = len(g['addrs'])
+        g['amount'] = SF_FEE * g['shipments']
+        out.append(g)
+    return out
 
 
 # ─────────────────────────── 관리자 API ───────────────────────────
@@ -156,18 +184,23 @@ def api_generate(request: Request, body: dict = Body(...)):
         raise HTTPException(400, '기준 시각 형식이 올바르지 않습니다 (예: 2026-10-19T15:00)')
     gs = candidates(since)
     n_orders = sum(len(g['orders']) for g in gs)
+    n_ship = sum(g['shipments'] for g in gs)
+    total = sum(g['amount'] for g in gs)
+    summ = {'customers': len(gs), 'orders': n_orders, 'shipments': n_ship, 'amount': total,
+            'merged': n_orders - n_ship}
     if body.get('dry_run', True):
-        return {'ok': True, 'dry_run': True, 'customers': len(gs), 'orders': n_orders, 'amount': n_orders * SF_FEE}
+        return dict(ok=True, dry_run=True, **summ)
     av = _av()
     made = 0
     for g in gs:
         av.run('INSERT INTO ship_charges(id,token,phone,name,email,order_ids,amount,status,created,created_by,sent_count,view_count) '
                'VALUES(?,?,?,?,?,?,?,?,?,?,0,0)',
                (av.uid(), secrets.token_urlsafe(18), g['phone'], g['name'], g['email'],
-                json.dumps(g['orders']), SF_FEE * len(g['orders']), 'OPEN', av.now_iso(), a['name']))
+                json.dumps(g['orders']), g['amount'], 'OPEN', av.now_iso(), a['name']))
         made += 1
-    av.audit(a, '추가배송비청구생성', since, '%d명 · %d주문 · %s원' % (made, n_orders, format(n_orders * SF_FEE, ',')))
-    return {'ok': True, 'dry_run': False, 'customers': made, 'orders': n_orders, 'amount': n_orders * SF_FEE}
+    av.audit(a, '추가배송비청구생성', since, '%d명 · %d주문 · 배송지 %d곳 · %s원'
+             % (made, n_orders, n_ship, format(total, ',')))
+    return dict(ok=True, dry_run=False, **summ)
 
 
 def _list_rows():
@@ -242,7 +275,7 @@ def api_status(request: Request, body: dict = Body(...)):
 _SMS_TEXT = ('[맵달SEOUL] 추가 배송비 결제 안내\n\n'
              '{name}님, 맵달SEOUL을 이용해 주셔서 감사합니다.\n\n'
              '예약판매·이벤트 등 프로모션 상품은 구매 수량·금액과 관계없이 주문당 배송비 3,000원이 부과되는 상품입니다. '
-             '판매 페이지 이전 과정의 시스템 오류로 고객님의 주문({orders})에 배송비가 누락되어 결제되었습니다.\n\n'
+             '판매 페이지 이전 과정의 시스템 오류로 고객님의 주문({orders})에 배송비가 누락되어 결제되었습니다. (같은 배송지로 가는 주문은 배송비를 한 번만 받습니다)\n\n'
              '번거로우시겠지만 아래 고객님 전용 링크에서 배송비 {amount}원을 결제해 주시기 바랍니다. 불편을 드려 진심으로 죄송합니다.\n'
              '{link}\n\n'
              '문의: cx@mealzip.kr')
@@ -433,7 +466,9 @@ def page_charge(token: str, request: Request, fail: str = ''):
               '번거로우시겠지만 추가 배송비를 결제해 주시기 바랍니다. 불편을 드려 죄송합니다.</p></div>' % _h(_mask(ch.get('name')))
             + '<div class="box">' + ''.join('<div class="od"><div class="n">%s · %s</div>%s</div>'
                                               % (_h(o['oid']), _h(o['date']), _h(o['label'])) for o in ods)
-            + '<div class="od amt"><span>추가 배송비 (%d건 × 3,000원)</span><b>%s원</b></div></div>' % (len(ods) or 1, format(amt, ','))
+            + '<div class="od amt"><span>추가 배송비 (배송지 %d곳 × 3,000원)</span><b>%s원</b></div>' % (max(1, amt // SF_FEE), format(amt, ','))
+            + ('<p class="hint" style="margin-top:6px">같은 배송지로 가는 주문은 배송비를 한 번만 받습니다.</p>' if len(ods) > max(1, amt // SF_FEE) else '')
+            + '</div>'
             + '<div class="box"><div style="font-weight:700;font-size:14px">결제수단</div><div class="pm">'
               '<label><input type="radio" name="pm" value="card" checked>카드·간편결제</label>'
               '<label><input type="radio" name="pm" value="directbank">계좌이체</label>'
@@ -544,12 +579,12 @@ function draw(){const f=$('#fst').value,q=($('#q').value||'').trim().toLowerCase
  $('#tb').innerHTML=D.rows.filter(r=>(!f||r.state===f)&&(!q||(r.name+r.phone+r.orders.join(' ')).toLowerCase().includes(q))).map(r=>`<tr>
  <td><span class="st ${r.state}">${LAB[r.state]||r.state}</span>${r.dup_paid?`<div class="dup">중복결제 ${r.dup_paid}건</div>`:''}${r.pending&&r.state==='UNPAID'?`<div class="hint">결제창 진행 ${r.pending}</div>`:''}</td>
  <td><b>${esc(r.name)}</b><div class="mono">${esc(r.phone)}</div></td><td class="mono">${r.orders.map(o=>esc(o)).join("<br>")}</td>
- <td><b>${won(r.amount)}</b></td><td>${r.paid_order?`<div class="mono">${esc(r.paid_order)}</div><div class="hint">${esc(r.paid_at)} ${esc(r.paid_method)}</div>`:''}</td>
+ <td><b>${won(r.amount)}</b>${r.orders.length>r.amount/3000?`<div class="hint">주문 ${r.orders.length}건 · 배송지 ${r.amount/3000}곳</div>`:''}</td><td>${r.paid_order?`<div class="mono">${esc(r.paid_order)}</div><div class="hint">${esc(r.paid_at)} ${esc(r.paid_method)}</div>`:''}</td>
  <td class="hint">${r.sent_count?esc(r.sent_at)+' ('+r.sent_count+'회)':'미발송'}</td><td class="hint">${r.views?r.views+'회<br>'+esc(r.view_at):'-'}</td>
  <td><button class="sm g" onclick="cp('${esc(r.link)}')">복사</button></td>
  <td>${r.state==='UNPAID'?`<button class="sm g" onclick="st('${r.id}','WAIVED')">면제</button> <button class="sm g" onclick="send1('${r.id}')">문자</button>`:''}${r.state==='WAIVED'||r.state==='CANCELLED'?`<button class="sm g" onclick="st('${r.id}','OPEN')">재청구</button>`:''}${r.note?`<div class="hint">${esc(r.note)}</div>`:''}</td></tr>`).join('')||'<tr><td colspan="9" class="hint" style="padding:30px;text-align:center">청구 내역이 없습니다 — 위 [대상 미리보기] 후 [청구 생성]</td></tr>'}
 async function gen(dry){try{const d=await post('/admin/api/shipfee/generate',{since:$('#since').value,dry_run:dry});
- if(dry){toast(`대상 ${d.customers}명 · ${d.orders}주문 · ${won(d.amount)}`);return}
+ if(dry){toast(`대상 ${d.customers}명 · ${d.orders}주문 · 배송지 ${d.shipments}곳(같은 주소 ${d.merged}건 합산) · ${won(d.amount)}`);return}
  if(!d.customers){toast('새로 청구할 대상이 없습니다');return}toast(`청구 생성 ${d.customers}명 · ${won(d.amount)}`);load()}catch(e){toast(e.message)}}
 async function sendPv(){try{const d=await post('/admin/api/shipfee/send',{scope:'unsent',preview:true});
  if(!d.count){toast('발송 대상이 없습니다');return}alert(`발송 대상 ${d.count}명${d.dry?' (문자 발송사 미설정 — 실제 발송 안 됨)':''}\n\n── 예시 ──\n${d.sample}`)}catch(e){toast(e.message)}}

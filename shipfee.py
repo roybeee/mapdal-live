@@ -136,13 +136,73 @@ def _orders_of(ch):
 DEFAULT_DEADLINE = '2026-10-31T23:59'
 
 
+# 고객 결제 페이지·안내문 문구 — 관리자 화면에서 수정하면 모든 고객 링크에 즉시 반영 (2026-10-20)
+#   {name} = 고객 이름(마스킹) · {deadline} = 결제 기한(예: 10월 31일(토) 23시 59분) · {link} = 고객 전용 결제 링크(안내문 필수)
+TEXT_FIELDS = [
+    ('page_title', '페이지 제목', 60),
+    ('intro', '인사·사유 안내 ({name} = 고객 이름)', 2000),
+    ('notices', '유의사항 (한 줄에 하나)', 2000),
+    ('confirm_label', '동의 체크 문구', 200),
+    ('pay_button', '결제 버튼', 40),
+    ('footer', '하단 안내', 1000),
+    ('done_msg', '결제 완료 화면 문구', 1000),
+    ('subject', '안내 문자·메일 제목', 80),
+    ('message', '안내 문자·메일 본문 ({link} 필수)', 4000),
+]
+
+
+def default_texts():
+    return {
+        'page_title': '추가 배송비 결제',
+        'intro': ('{name}님, 안녕하세요. 맵달SEOUL입니다.\n\n'
+                  '안내 페이지에는 배송비가 명시되어 있었으나, 결제 시스템 오류로 인해 실제 결제 시 배송비가 누락되고 '
+                  '상품 금액만 결제된 것으로 확인되었습니다. 이에 누락된 배송비의 추가 결제를 요청드리오니, '
+                  '아래 내용을 확인해 주시기 바랍니다.'),
+        'notices': ('※ 기한 내 배송비 미결제 시 기존 주문은 취소 처리되며, 구매를 원하시는 경우 새롭게 주문해 주시기 바랍니다.\n'
+                    '※ 반드시 기존 주문서에 기재하신 주문자명과 동일한 이름으로 결제해 주시기 바랍니다.\n'
+                    '※ 제주도 및 도서·산간지역은 추가 배송비가 발생합니다.'),
+        'confirm_label': '위 주문의 추가 배송비 결제 내용을 확인했습니다.',
+        'pay_button': '배송비 결제하기',
+        'footer': ('이 페이지는 받으신 문자의 링크로만 열리는 고객님 전용 결제 페이지입니다. '
+                   '결제 즉시 자동으로 확인되며 별도 연락은 필요하지 않습니다.\n문의: cx@mealzip.kr'),
+        'done_msg': '협조해 주셔서 감사합니다. 주문하신 상품은 예정대로 발송됩니다.',
+        'subject': MSG_SUBJECT,
+        'message': MSG_TEXT,
+    }
+
+
 def conf():
     try:
         r = _av().one("SELECT value FROM site_settings WHERE key='shipfee_conf'")
         c = _av().jload((r or {}).get('value'), {}) or {}
     except Exception:
         c = {}
-    return {'deadline': str(c.get('deadline') or DEFAULT_DEADLINE)[:16]}
+    t = default_texts()
+    for k, v in ((c.get('texts') or {}) if isinstance(c.get('texts'), dict) else {}).items():
+        if k in t and isinstance(v, str) and v.strip():
+            t[k] = v
+    return {'deadline': str(c.get('deadline') or DEFAULT_DEADLINE)[:16], 'texts': t}
+
+
+def _raw_conf():
+    try:
+        r = _av().one("SELECT value FROM site_settings WHERE key='shipfee_conf'")
+        return _av().jload((r or {}).get('value'), {}) or {}
+    except Exception:
+        return {}
+
+
+def deadline_text():
+    d = deadline_dt()
+    return ('%d월 %d일(%s) %d시 %02d분' % (d.month, d.day, '월화수목금토일'[d.weekday()], d.hour, d.minute)) if d else ''
+
+
+def _para(text, **kw):
+    """관리자 입력 문구 → 안전한 HTML (이스케이프 · 줄바꿈 · {name} 굵게 · {deadline})."""
+    h = _h(text)
+    if 'name' in kw: h = h.replace('{name}', '<b>%s</b>' % _h(kw['name']))
+    h = h.replace('{deadline}', _h(deadline_text()))
+    return h.replace('\n', '<br>')
 
 
 def deadline_dt():
@@ -350,12 +410,42 @@ def api_list(request: Request):
 @shipfee_router.post('/admin/api/shipfee/conf')
 def api_conf(request: Request, body: dict = Body(...)):
     a = _actor(request, 2, '추가 배송비 설정')
-    dl = str(body.get('deadline') or '').strip().replace(' ', 'T')[:16]
-    if not _av()._drop_dt(dl):
-        raise HTTPException(400, '결제 기한 형식이 올바르지 않습니다 (예: 2026-10-31T23:59)')
-    _av()._setting_put('shipfee_conf', {'deadline': dl}, a['name'])
-    _av().audit(a, '추가배송비기한', 'shipfee', dl)
-    return {'ok': True, 'deadline': dl}
+    cur = _raw_conf()
+    new = {'deadline': str(cur.get('deadline') or DEFAULT_DEADLINE)[:16],
+           'texts': dict(cur.get('texts') or {}) if isinstance(cur.get('texts'), dict) else {}}
+    log = []
+    if 'deadline' in body:
+        dl = str(body.get('deadline') or '').strip().replace(' ', 'T')[:16]
+        if not _av()._drop_dt(dl):
+            raise HTTPException(400, '결제 기한 형식이 올바르지 않습니다 (예: 2026-10-31T23:59)')
+        new['deadline'] = dl; log.append('기한 ' + dl)
+    if isinstance(body.get('texts'), dict):
+        lim = {k: n for k, _, n in TEXT_FIELDS}
+        for k, v in body['texts'].items():
+            if k not in lim:
+                continue
+            v = str(v if v is not None else '').replace('\r', '')
+            if len(v) > lim[k]:
+                raise HTTPException(400, '%s 문구가 너무 깁니다 (최대 %d자)' % (dict((a_, b_) for a_, b_, _ in TEXT_FIELDS)[k], lim[k]))
+            if k == 'message' and v.strip() and '{link}' not in v:
+                raise HTTPException(400, '안내 문자·메일 본문에 {link} 가 있어야 고객 전용 링크가 들어갑니다')
+            if v.strip() == default_texts()[k].strip() or not v.strip():
+                new['texts'].pop(k, None)          # 기본값과 같거나 비우면 기본 문구 사용
+            else:
+                new['texts'][k] = v
+            log.append(k)
+    _av()._setting_put('shipfee_conf', new, a['name'])
+    _av().audit(a, '추가배송비설정', 'shipfee', ', '.join(log)[:200])
+    c = conf()
+    return {'ok': True, 'deadline': c['deadline'], 'texts': c['texts']}
+
+
+@shipfee_router.get('/admin/api/shipfee/conf')
+def api_conf_get(request: Request):
+    _actor(request, 0, '추가 배송비 조회')
+    c = conf()
+    return {'deadline': c['deadline'], 'texts': c['texts'], 'defaults': default_texts(),
+            'fields': [{'key': k, 'label': l, 'max': n} for k, l, n in TEXT_FIELDS]}
 
 
 @shipfee_router.get('/admin/api/shipfee.csv')
@@ -527,12 +617,14 @@ MSG_TEXT = """안녕하세요, 맵달SEOUL입니다.
 맵달SEOUL 드림"""
 
 
-def sms_text(r):
-    return MSG_TEXT.replace('{link}', r['link'])
+def sms_text(r, t=None):
+    t = t or conf()['texts']
+    return t['message'].replace('{link}', r['link']).replace('{deadline}', deadline_text()).replace('{name}', r.get('name') or '고객')
 
 
 def mail_html(r):
-    body = _h(MSG_TEXT).replace('{link}', '<a href="%s" style="display:inline-block;background:#E8332A;color:#fff;'
+    t = conf()['texts']
+    body = _h(t['message'].replace('{deadline}', deadline_text()).replace('{name}', r.get('name') or '고객')).replace('{link}', '<a href="%s" style="display:inline-block;background:#E8332A;color:#fff;'
                                    'padding:12px 20px;text-decoration:none;font-weight:700">배송비 결제하기</a><br>'
                                    '<span style="font-size:12px;color:#888">%s</span>' % (_h(r['link']), _h(r['link'])))
     return ('<div style="font-family:Apple SD Gothic Neo,Malgun Gothic,sans-serif;font-size:15px;line-height:1.7;'
@@ -560,7 +652,7 @@ def api_send(request: Request, body: dict = Body(...)):
         dry = not _gr.mail_enabled()
         if body.get('preview'):
             return {'ok': True, 'queued': 0, 'count': len(rs), 'dry': dry, 'channel': 'email',
-                    'subject': MSG_SUBJECT, 'sample': sms_text(rs[0])}
+                    'subject': conf()['texts']['subject'], 'sample': sms_text(rs[0])}
 
         def mwork():
             ok = fail = 0
@@ -569,7 +661,7 @@ def api_send(request: Request, body: dict = Body(...)):
                 sent = False
                 if not dry:
                     try:
-                        sent = _gr.send_mail(r['email'], MSG_SUBJECT, mail_html(r), kind='shipfee',
+                        sent = _gr.send_mail(r['email'], conf()['texts']['subject'], mail_html(r), kind='shipfee',
                                              ref='%s:%d' % (r['id'], n), text=sms_text(r))
                     except Exception:
                         sent = False
@@ -596,7 +688,7 @@ def api_send(request: Request, body: dict = Body(...)):
             if not dry:
                 try:
                     res = av.solapi_send({'to': r['phone'], 'from': av.digits(cf['sender']), 'text': text,
-                                          'type': 'LMS', 'subject': MSG_SUBJECT})
+                                          'type': 'LMS', 'subject': conf()['texts']['subject'][:40]})
                     status, detail = 'SENT', json.dumps(res, ensure_ascii=False)[:200]
                     ok += 1
                 except Exception as e:
@@ -664,7 +756,7 @@ _PAY_JS = r'''<script>
 document.getElementById('pay').addEventListener('click',function(){
  if(!document.getElementById('ag').checked){alert('결제 내용 확인에 동의해 주세요.');return}
  var pm=(document.querySelector('input[name=pm]:checked')||{}).value||'card';
- var btn=this;btn.disabled=true;btn.textContent='결제창 준비중…';
+ var btn=this;btn.dataset.t=btn.dataset.t||btn.textContent;btn.disabled=true;btn.textContent='결제창 준비중…';
  try{var x=new XMLHttpRequest();x.open('POST','/api/shipfee/__TOKEN__/pay',false);x.setRequestHeader('Content-Type','application/json');
   x.send(JSON.stringify({payMethod:pm}));var od=JSON.parse(x.responseText||'{}');
   if(x.status<200||x.status>=300)throw new Error(od.detail||'결제 준비에 실패했습니다');
@@ -678,7 +770,7 @@ document.getElementById('pay').addEventListener('click',function(){
   if(typeof INIStdPay==='undefined')throw new Error('결제 모듈 로딩 실패 — 새로고침 후 다시 시도해 주세요');
   INIStdPay.pay('sfIniForm');
  }catch(e){alert(e.message)}
- btn.disabled=false;btn.textContent='배송비 결제하기';
+ btn.disabled=false;btn.textContent=btn.dataset.t||btn.textContent;
 });
 </script>'''
 
@@ -701,8 +793,8 @@ def page_done(request: Request, oid: str = ''):
         if str(oid).startswith(SF_PREFIX) else None
     if r and r.get('status') == 'PAID':
         return _status_page('✅', '추가 배송비 결제가 완료되었습니다',
-                            '결제금액 %s원 · 결제번호 %s<br>협조해 주셔서 감사합니다. 주문하신 상품은 예정대로 발송됩니다.'
-                            % (format(av.num(r['amount']), ','), _h(r['order_id'])))
+                            '결제금액 %s원 · 결제번호 %s<br>%s'
+                            % (format(av.num(r['amount']), ','), _h(r['order_id']), _para(conf()['texts']['done_msg'])))
     return _status_page('⚠️', '결제가 확인되지 않았습니다', '받으신 결제 링크로 다시 시도해 주세요.')
 
 
@@ -728,10 +820,16 @@ def page_charge(token: str, request: Request, fail: str = ''):
     if not ch:
         return _status_page('🔒', '유효하지 않은 링크입니다', '받으신 문자의 링크를 다시 확인해 주세요.')
     av = _av()
+    is_admin = False
     try:
-        av.run('UPDATE ship_charges SET view_at=?, view_count=COALESCE(view_count,0)+1 WHERE id=?', (av.now_iso(), ch['id']))
+        av.get_actor(request); is_admin = True       # 관리자 미리보기는 고객 열람 수에 넣지 않는다
     except Exception:
-        pass
+        is_admin = False
+    if not is_admin:
+        try:
+            av.run('UPDATE ship_charges SET view_at=?, view_count=COALESCE(view_count,0)+1 WHERE id=?', (av.now_iso(), ch['id']))
+        except Exception:
+            pass
     m = _sf_map().get(ch['id'])
     oinfo = _orders_info(_orders_of(ch))
     due = due_of(ch, oinfo)
@@ -753,29 +851,24 @@ def page_charge(token: str, request: Request, fail: str = ''):
     amt = due
     dl = deadline_dt()
     dl_txt = ('%d월 %d일(%s) %d시 %02d분까지' % (dl.month, dl.day, '월화수목금토일'[dl.weekday()], dl.hour, dl.minute)) if dl else ''
-    body = ('<h1>추가 배송비 결제</h1>'
+    T = conf()['texts']
+    body = ('<h1>%s</h1>' % _h(T['page_title'])
             + ('<div class="err">결제가 완료되지 않았습니다: %s</div>' % _h(fail) if fail else '')
-            + '<div class="box"><p class="p"><b>%s</b>님, 안녕하세요. 맵달SEOUL입니다.<br><br>'
-              '안내 페이지에는 배송비가 명시되어 있었으나, 결제 시스템 오류로 인해 실제 결제 시 배송비가 누락되고 '
-              '상품 금액만 결제된 것으로 확인되었습니다. 이에 누락된 배송비의 추가 결제를 요청드리오니, '
-              '아래 내용을 확인해 주시기 바랍니다.</p></div>' % _h(_mask(ch.get('name')))
+            + '<div class="box"><p class="p">%s</p></div>' % _para(T['intro'], name=_mask(ch.get('name')))
             + '<div class="box">' + ''.join('<div class="od"><div class="n">%s · %s</div>%s</div>'
                                               % (_h(o['oid']), _h(o['date']), _h(o['label'])) for o in ods)
             + '<div class="od amt"><span>추가 배송비 (배송지 %d곳 × 3,000원)</span><b>%s원</b></div>' % (max(1, amt // SF_FEE), format(amt, ','))
             + ('<p class="hint" style="margin-top:6px">같은 배송지로 가는 주문은 배송비를 한 번만 받습니다.</p>' if len(ods) > max(1, amt // SF_FEE) else '')
             + ('<div class="od" style="font-size:13px"><b>결제 기한</b> %s</div>' % _h(dl_txt) if dl_txt else '')
             + '</div>'
-            + '<div class="box"><p class="hint" style="color:#555">※ 기한 내 배송비 미결제 시 기존 주문은 취소 처리되며, 구매를 원하시는 경우 새롭게 주문해 주시기 바랍니다.<br>'
-              '※ 반드시 기존 주문서에 기재하신 주문자명과 동일한 이름으로 결제해 주시기 바랍니다.<br>'
-              '※ 제주도 및 도서·산간지역은 추가 배송비가 발생합니다.</p></div>'
+            + ('<div class="box"><p class="hint" style="color:#555">%s</p></div>' % _para(T['notices']) if T['notices'].strip() else '')
             + '<div class="box"><div style="font-weight:700;font-size:14px">결제수단</div><div class="pm">'
               '<label><input type="radio" name="pm" value="card" checked>카드·간편결제</label>'
               '<label><input type="radio" name="pm" value="directbank">계좌이체</label>'
               '<label><input type="radio" name="pm" value="hpp">휴대폰</label></div>'
-              '<label class="ag"><input type="checkbox" id="ag"> 위 주문의 추가 배송비 결제 내용을 확인했습니다.</label>'
-              '<button id="pay">배송비 결제하기</button>'
-              '<p class="hint" style="margin-top:10px">이 페이지는 받으신 문자의 링크로만 열리는 고객님 전용 결제 페이지입니다. '
-              '결제 즉시 자동으로 확인되며 별도 연락은 필요하지 않습니다.<br>문의: cx@mealzip.kr</p></div>')
+              '<label class="ag"><input type="checkbox" id="ag"> %s</label>'
+              '<button id="pay">%s</button>'
+              '<p class="hint" style="margin-top:10px">%s</p></div>' % (_h(T['confirm_label']), _h(T['pay_button']), _para(T['footer'])))
     head = '<script src="https://stdpay.inicis.com/stdjs/INIStdPay.js" charset="UTF-8"></script>'
     if _app().INICIS_MID == 'INIpayTest':
         head = '<script src="https://stgstdpay.inicis.com/stdjs/INIStdPay.js" charset="UTF-8"></script>'
@@ -860,6 +953,11 @@ th,td{border-bottom:1px solid #eee;padding:7px 8px;text-align:left;vertical-alig
  <span class="hint">결제완료 · 일반배송 · 배송비 0원 결제 · 배송비 필수부과 상품 포함 주문. 이미 청구된 주문은 제외되므로 여러 번 실행해도 안전합니다(입금 대기 주문이 나중에 결제되면 다시 실행).</span></div>
 <div class="bar"><b>결제 기한</b> <input id="dl" type="datetime-local" style="width:200px"><button class="g" onclick="saveDl()">기한 저장</button>
  <span class="hint" id="dlst"></span></div>
+<details class="bar" id="txbox" style="display:block"><summary style="cursor:pointer;font-weight:700">고객 결제 페이지 · 안내문 문구 수정 <span class="hint" style="font-weight:400">— 저장하면 모든 고객 링크·이후 발송 문자/메일에 즉시 반영</span></summary>
+ <div class="hint" style="margin:8px 0">사용 가능한 치환어: <b>{name}</b> 고객 이름(결제 페이지는 가운데 * 처리) · <b>{deadline}</b> 결제 기한 · <b>{link}</b> 고객 전용 링크(안내문 본문 필수). 줄바꿈은 그대로 반영됩니다. 비우면 기본 문구로 돌아갑니다.</div>
+ <div id="txf" style="display:grid;grid-template-columns:200px 1fr;gap:8px 12px;align-items:start"></div>
+ <div style="display:flex;gap:8px;margin-top:10px"><button onclick="saveTx()">문구 저장 (일괄 반영)</button><button class="g" onclick="pvTx()">결제 페이지 미리보기</button><button class="g" onclick="resetTx()">전체 기본 문구로 되돌리기</button><span class="hint" id="txst"></span></div>
+</details>
 <div class="bar"><b>2. 안내 발송</b><button class="g" onclick="sendPv('sms')">문자 미리보기</button><button class="r" onclick="send('unsent','sms')">미발송 고객에게 문자 발송</button>
  <button class="g" onclick="send('unpaid','sms')">미결제 전체 문자 재발송</button>
  <button class="g" onclick="sendPv('email')">메일 미리보기</button><button class="r" onclick="send('unsent','email')">미발송 고객에게 메일 발송</button>
@@ -916,7 +1014,15 @@ async function send1(id){if(!confirm('이 고객에게 안내 문자를 발송�
 async function st(id,s){const note=s==='WAIVED'?prompt('면제 사유 (선택)')||'':'';if(s==='WAIVED'&&note===null)return;
  try{await post('/admin/api/shipfee/status',{id,status:s,note});toast('변경했습니다');load()}catch(e){toast(e.message)}}
 function cp(u){(navigator.clipboard?navigator.clipboard.writeText(u):Promise.reject()).then(()=>toast('링크를 복사했습니다')).catch(()=>prompt('링크',u))}
-load();setInterval(load,60000);
+let TX=null;
+async function loadTx(){try{TX=await api('/admin/api/shipfee/conf');
+ $('#txf').innerHTML=TX.fields.map(f=>`<label style="font-weight:700;padding-top:6px">${esc(f.label)}</label><textarea data-k="${f.key}" rows="${f.max>1500?(f.key==='message'?16:5):(f.max>100?3:1)}" maxlength="${f.max}" style="width:100%;font:inherit;padding:7px 8px;border:1px solid #ccc">${esc(TX.texts[f.key]||'')}</textarea>`).join('');
+ $('#txst').textContent=''}catch(e){toast(e.message)}}
+function txVals(){const o={};document.querySelectorAll('#txf textarea').forEach(t=>o[t.dataset.k]=t.value);return o}
+async function saveTx(){try{const d=await post('/admin/api/shipfee/conf',{texts:txVals()});TX.texts=d.texts;toast('문구를 저장했습니다 — 모든 고객 링크에 반영');$('#txst').textContent='저장됨 '+new Date().toLocaleTimeString('ko-KR');loadTx()}catch(e){toast(e.message)}}
+async function resetTx(){if(!confirm('모든 문구를 기본 문구로 되돌릴까요?'))return;const o={};TX.fields.forEach(f=>o[f.key]='');try{await post('/admin/api/shipfee/conf',{texts:o});toast('기본 문구로 되돌렸습니다');loadTx()}catch(e){toast(e.message)}}
+function pvTx(){const r=(D.rows||[]).find(x=>x.state==='UNPAID');if(!r){toast('미리볼 미결제 청구가 없습니다');return}window.open(r.link,'_blank')}
+load();loadTx();setInterval(load,60000);
 </script></body></html>'''
 
 

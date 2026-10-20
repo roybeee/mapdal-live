@@ -2776,9 +2776,14 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
                          ' · 환불완료' if refunded else (' · 수동환불(외부 처리)' if manual_paid else '')))
     except Exception:
         pass
+    shipfee_res = None
+    try:                                              # 추가 배송비 청구 연동 — 원주문 취소 시 배송비 결제 자동 환불/청구액 감액
+        import shipfee as _sf; shipfee_res = _sf.on_order_cancelled(a, oid)
+    except Exception:
+        shipfee_res = None
     return {'ok': True, 'refunded': refunded, 'manual': manual_paid,
             'stock_restored_items': restored,
-            'points_revoked': revoked, 'prev_status': prev_status}
+            'points_revoked': revoked, 'prev_status': prev_status, 'shipfee': shipfee_res}
 
 @admin_router.post('/admin/api/orders/{oid}/cancel')
 def api_cancel(oid: str, request: Request, body: dict = Body(...)):

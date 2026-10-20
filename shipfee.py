@@ -47,8 +47,10 @@ def ensure():
     av.run("""CREATE TABLE IF NOT EXISTS ship_charges(id TEXT PRIMARY KEY, token TEXT UNIQUE, phone TEXT, name TEXT,
               email TEXT, order_ids TEXT, amount INTEGER, status TEXT DEFAULT 'OPEN', created TEXT, created_by TEXT,
               sent_at TEXT, sent_count INTEGER DEFAULT 0, view_at TEXT, view_count INTEGER DEFAULT 0, note TEXT)""")
-    for sql in ('CREATE INDEX IF NOT EXISTS idx_ship_charges_phone ON ship_charges(phone)',):
-        try: av.run(sql)
+    for sql in ('CREATE INDEX IF NOT EXISTS idx_ship_charges_phone ON ship_charges(phone)',
+                'ALTER TABLE ship_charges ADD COLUMN mail_at TEXT',
+                'ALTER TABLE ship_charges ADD COLUMN mail_count INTEGER DEFAULT 0'):
+        try: av.run(sql)                         # 컬럼 1개당 1문장 — 이미 있으면 조용히 실패
         except Exception: pass
     _READY['ok'] = True
 
@@ -72,11 +74,15 @@ def _sf_map():
     return out
 
 
-def _state(ch, m):
+def _state(ch, m, due=None):
     if (m or {}).get('paid'):
         return 'PAID'
     st = ch.get('status') or 'OPEN'
-    return st if st in ('WAIVED', 'CANCELLED') else 'UNPAID'
+    if st in ('WAIVED', 'CANCELLED'):
+        return st
+    if due is not None and due <= 0:
+        return 'VOID'                            # 원주문이 모두 취소됨 — 받을 배송비 없음
+    return 'UNPAID'
 
 
 def _charge_by_token(token):
@@ -89,6 +95,52 @@ def _charge_by_token(token):
 
 def _orders_of(ch):
     return [str(x) for x in (_av().jload(ch.get('order_ids'), []) or []) if x]
+
+
+# ─────────────────────────── 결제 기한 · 청구액(실시간) ───────────────────────────
+DEFAULT_DEADLINE = '2026-10-31T23:59'
+
+
+def conf():
+    try:
+        r = _av().one("SELECT value FROM site_settings WHERE key='shipfee_conf'")
+        c = _av().jload((r or {}).get('value'), {}) or {}
+    except Exception:
+        c = {}
+    return {'deadline': str(c.get('deadline') or DEFAULT_DEADLINE)[:16]}
+
+
+def deadline_dt():
+    return _av()._drop_dt(conf()['deadline'])
+
+
+def overdue():
+    d = deadline_dt()
+    return bool(d and _av().kst_now() > d)
+
+
+def _orders_info(oids):
+    """주문번호 → (상태, 배송지키). 청구 화면·결제 시점에 원주문 취소를 실시간 반영하기 위함."""
+    av, out, ids = _av(), {}, [o for o in dict.fromkeys(oids) if o]
+    for i in range(0, len(ids), 400):
+        part = ids[i:i + 400]
+        for r in av.rows('SELECT order_id, status, buyer FROM orders WHERE order_id IN (%s)' % ','.join('?' * len(part)), tuple(part)):
+            out[r['order_id']] = (r.get('status') or '', addr_key(av.jload(r.get('buyer'), {}) or {}))
+    return out
+
+
+def due_of(ch, oinfo=None):
+    """현재 받아야 할 배송비 = 3,000원 × '취소되지 않은 원주문'의 서로 다른 배송지 수 (생성 당시 금액 상한).
+    원주문이 취소되면 자동으로 줄고, 모두 취소되면 0원."""
+    oids = _orders_of(ch)
+    oinfo = oinfo if oinfo is not None else _orders_info(oids)
+    addrs = set()
+    for o in oids:
+        st, ak = oinfo.get(o, ('', ''))
+        if st in ('CANCELLED', 'FAILED'):
+            continue
+        addrs.add(ak or ('order:' + o))
+    return min(_av().num(ch.get('amount')), SF_FEE * len(addrs))
 
 
 # ─────────────────────────── 대상 산출 ───────────────────────────
@@ -208,12 +260,18 @@ def _list_rows():
     av = _av()
     m = _sf_map()
     out = []
-    for ch in av.rows('SELECT * FROM ship_charges ORDER BY created, name'):
+    chs = av.rows('SELECT * FROM ship_charges ORDER BY created, name')
+    oinfo = _orders_info([o for ch in chs for o in _orders_of(ch)])
+    for ch in chs:
         mm = m.get(ch['id']) or {}
-        st = _state(ch, mm)
+        due = due_of(ch, oinfo)
+        st = _state(ch, mm, due)
         paid = mm.get('paid') or []
+        cxl = [o for o in _orders_of(ch) if oinfo.get(o, ('',))[0] == 'CANCELLED']
         out.append({'id': ch['id'], 'name': ch.get('name') or '', 'phone': ch.get('phone') or '',
                     'email': ch.get('email') or '', 'orders': _orders_of(ch), 'amount': av.num(ch.get('amount')),
+                    'due': due, 'cancelled_orders': cxl,
+                    'mail_at': (ch.get('mail_at') or '')[:16].replace('T', ' '), 'mail_count': av.num(ch.get('mail_count')),
                     'state': st, 'paid_at': (paid[0]['paid_at'] if paid else '')[:16].replace('T', ' '),
                     'paid_order': paid[0]['order_id'] if paid else '', 'paid_method': paid[0]['method'] if paid else '',
                     'dup_paid': max(0, len(paid) - 1), 'pending': mm.get('pending', 0),
@@ -228,12 +286,25 @@ def api_list(request: Request):
     _actor(request, 0, '추가 배송비 조회')
     rs = _list_rows()
     summ = {'customers': len(rs), 'orders': sum(len(r['orders']) for r in rs if r['state'] != 'CANCELLED')}
-    for k in ('PAID', 'UNPAID', 'WAIVED', 'CANCELLED'):
+    for k in ('PAID', 'UNPAID', 'WAIVED', 'CANCELLED', 'VOID'):
         sel = [r for r in rs if r['state'] == k]
-        summ[k] = {'n': len(sel), 'amount': sum(r['amount'] for r in sel)}
+        summ[k] = {'n': len(sel), 'amount': sum((r['due'] if k == 'UNPAID' else r['amount']) for r in sel)}
     summ['dup_paid'] = sum(r['dup_paid'] for r in rs)
     summ['unsent'] = len([r for r in rs if r['state'] == 'UNPAID' and not r['sent_count']])
-    return {'rows': rs, 'summary': summ}
+    summ['unmailed'] = len([r for r in rs if r['state'] == 'UNPAID' and r['email'] and not r['mail_count']])
+    summ['refund_flag'] = len([r for r in rs if '부분환불 필요' in (r['note'] or '')])
+    return {'rows': rs, 'summary': summ, 'deadline': conf()['deadline'], 'overdue': overdue()}
+
+
+@shipfee_router.post('/admin/api/shipfee/conf')
+def api_conf(request: Request, body: dict = Body(...)):
+    a = _actor(request, 2, '추가 배송비 설정')
+    dl = str(body.get('deadline') or '').strip().replace(' ', 'T')[:16]
+    if not _av()._drop_dt(dl):
+        raise HTTPException(400, '결제 기한 형식이 올바르지 않습니다 (예: 2026-10-31T23:59)')
+    _av()._setting_put('shipfee_conf', {'deadline': dl}, a['name'])
+    _av().audit(a, '추가배송비기한', 'shipfee', dl)
+    return {'ok': True, 'deadline': dl}
 
 
 @shipfee_router.get('/admin/api/shipfee.csv')
@@ -264,7 +335,7 @@ def api_status(request: Request, body: dict = Body(...)):
     ch = _av().one('SELECT * FROM ship_charges WHERE id=?', (str(body.get('id') or ''),))
     if not ch:
         raise HTTPException(404, '청구를 찾을 수 없습니다')
-    if _state(ch, _sf_map().get(ch['id'])) == 'PAID':
+    if _state(ch, _sf_map().get(ch['id']), due_of(ch)) == 'PAID':
         raise HTTPException(409, '이미 결제된 청구입니다 — 환불은 해당 SF 주문의 주문 상세에서 처리하세요')
     note = str(body.get('note') or ch.get('note') or '')[:200]
     _av().run('UPDATE ship_charges SET status=?, note=? WHERE id=?', (st, note, ch['id']))
@@ -272,19 +343,55 @@ def api_status(request: Request, body: dict = Body(...)):
     return {'ok': True}
 
 
-_SMS_TEXT = ('[맵달SEOUL] 추가 배송비 결제 안내\n\n'
-             '{name}님, 맵달SEOUL을 이용해 주셔서 감사합니다.\n\n'
-             '예약판매·이벤트 등 프로모션 상품은 구매 수량·금액과 관계없이 주문당 배송비 3,000원이 부과되는 상품입니다. '
-             '판매 페이지 이전 과정의 시스템 오류로 고객님의 주문({orders})에 배송비가 누락되어 결제되었습니다. (같은 배송지로 가는 주문은 배송비를 한 번만 받습니다)\n\n'
-             '번거로우시겠지만 아래 고객님 전용 링크에서 배송비 {amount}원을 결제해 주시기 바랍니다. 불편을 드려 진심으로 죄송합니다.\n'
-             '{link}\n\n'
-             '문의: cx@mealzip.kr')
+# 안내문 — 대표 제공 원문 그대로(2026-10-20 20:00). '링크' 자리에만 고객 전용 결제 링크를 넣는다.
+#   ※ 문자(LMS)에서는 4바이트 이모지(📌)를 발송사가 삭제한다 — 메일에서는 그대로 보인다.
+MSG_SUBJECT = '[맵달SEOUL] 배송비 추가 결제 안내'
+MSG_TEXT = """안녕하세요, 맵달SEOUL입니다.
+
+배송비 결제 누락과 관련하여 안내드립니다.
+
+안내 페이지에는 배송비가 명시되어 있었으나, 
+결제 시스템 오류로 인해 실제 결제 시 배송비가 누락되고 상품 금액만 결제된 것으로 확인되었습니다.
+
+이에 누락된 배송비의 추가 결제를 요청드리오니, 
+아래 내용을 확인해 주시기 바랍니다.
+
+📌 추가 배송비 안내
+
+기본 배송비: 3,000원
+
+제주도 및 도서·산간지역: 추가 배송비 발생
+
+📌 결제 안내
+
+[배송비 결제]
+{link}
+
+[결제 기한]
+10월 31일(토) 23시 59분까지
+
+※ 기한 내 배송비 미결제 시 기존 주문은 취소 처리되며, 구매를 원하시는 경우 새롭게 주문해 주시기 바랍니다.
+
+※ 반드시 기존 주문서에 기재하신 주문자명과 동일한 이름으로 결제해 주시기 바랍니다.
+
+당사 결제 시스템 오류로 불편을 드린 점 진심으로 사과드리며, 고객님의 너른 양해 부탁드립니다.
+
+다시 한번 이용에 불편을 드려 죄송합니다.
+
+감사합니다.
+맵달SEOUL 드림"""
 
 
 def sms_text(r):
-    av = _av()
-    return _SMS_TEXT.format(name=(r.get('name') or '고객'), orders=', '.join(r['orders'][:3]) + (' 외' if len(r['orders']) > 3 else ''),
-                            amount=format(av.num(r['amount']), ','), link=r['link'])
+    return MSG_TEXT.replace('{link}', r['link'])
+
+
+def mail_html(r):
+    body = _h(MSG_TEXT).replace('{link}', '<a href="%s" style="display:inline-block;background:#E8332A;color:#fff;'
+                                   'padding:12px 20px;text-decoration:none;font-weight:700">배송비 결제하기</a><br>'
+                                   '<span style="font-size:12px;color:#888">%s</span>' % (_h(r['link']), _h(r['link'])))
+    return ('<div style="font-family:Apple SD Gothic Neo,Malgun Gothic,sans-serif;font-size:15px;line-height:1.7;'
+            'color:#141414;max-width:560px;margin:0 auto;padding:24px">%s</div>' % body.replace('\n', '<br>'))
 
 
 @shipfee_router.post('/admin/api/shipfee/send')
@@ -293,15 +400,48 @@ def api_send(request: Request, body: dict = Body(...)):
     a = _actor(request, 2, '추가 배송비 문자 발송')
     av = _av()
     scope = str(body.get('scope') or 'unsent')
+    channel = 'email' if str(body.get('channel') or '') == 'email' else 'sms'
     ids = set(str(x) for x in (body.get('ids') or []))
-    rs = [r for r in _list_rows() if r['state'] == 'UNPAID' and r['phone'] and len(r['phone']) >= 10
-          and ((r['id'] in ids) if ids else (scope == 'unpaid' or not r['sent_count']))]
+    if channel == 'email':
+        rs = [r for r in _list_rows() if r['state'] == 'UNPAID' and '@' in (r['email'] or '')
+              and ((r['id'] in ids) if ids else (scope == 'unpaid' or not r['mail_count']))]
+    else:
+        rs = [r for r in _list_rows() if r['state'] == 'UNPAID' and r['phone'] and len(r['phone']) >= 10
+              and ((r['id'] in ids) if ids else (scope == 'unpaid' or not r['sent_count']))]
     if not rs:
-        return {'ok': True, 'queued': 0}
+        return {'ok': True, 'queued': 0, 'count': 0}
+    if channel == 'email':
+        import growth as _gr
+        dry = not _gr.mail_enabled()
+        if body.get('preview'):
+            return {'ok': True, 'queued': 0, 'count': len(rs), 'dry': dry, 'channel': 'email',
+                    'subject': MSG_SUBJECT, 'sample': sms_text(rs[0])}
+
+        def mwork():
+            ok = fail = 0
+            for r in rs:
+                n = av.num(r.get('mail_count')) + 1
+                sent = False
+                if not dry:
+                    try:
+                        sent = _gr.send_mail(r['email'], MSG_SUBJECT, mail_html(r), kind='shipfee',
+                                             ref='%s:%d' % (r['id'], n), text=sms_text(r))
+                    except Exception:
+                        sent = False
+                ok += 1 if sent else 0
+                fail += 0 if (sent or dry) else 1
+                if sent or dry:
+                    try: av.run('UPDATE ship_charges SET mail_at=?, mail_count=COALESCE(mail_count,0)+1 WHERE id=?',
+                                (av.now_iso(), r['id']))
+                    except Exception: pass
+            try: av.audit(a, '추가배송비메일', scope, '성공 %d · 실패 %d%s' % (ok, fail, ' · DRY' if dry else ''))
+            except Exception: pass
+        threading.Thread(target=mwork, daemon=True).start()
+        return {'ok': True, 'queued': len(rs), 'dry': dry, 'channel': 'email'}
     cf = av.solapi_conf()
     dry = not (cf.get('key') and cf.get('sec') and cf.get('sender'))
     if body.get('preview'):
-        return {'ok': True, 'queued': 0, 'count': len(rs), 'dry': dry, 'sample': sms_text(rs[0])}
+        return {'ok': True, 'queued': 0, 'count': len(rs), 'dry': dry, 'channel': 'sms', 'sample': sms_text(rs[0])}
 
     def work():
         ok = fail = 0
@@ -311,7 +451,7 @@ def api_send(request: Request, body: dict = Body(...)):
             if not dry:
                 try:
                     res = av.solapi_send({'to': r['phone'], 'from': av.digits(cf['sender']), 'text': text,
-                                          'type': 'LMS', 'subject': '맵달SEOUL 추가 배송비 안내'})
+                                          'type': 'LMS', 'subject': MSG_SUBJECT})
                     status, detail = 'SENT', json.dumps(res, ensure_ascii=False)[:200]
                     ok += 1
                 except Exception as e:
@@ -448,7 +588,9 @@ def page_charge(token: str, request: Request, fail: str = ''):
     except Exception:
         pass
     m = _sf_map().get(ch['id'])
-    st = _state(ch, m)
+    oinfo = _orders_info(_orders_of(ch))
+    due = due_of(ch, oinfo)
+    st = _state(ch, m, due)
     if st == 'PAID':
         p = m['paid'][0]
         return _status_page('✅', '이미 결제가 완료되었습니다',
@@ -456,19 +598,31 @@ def page_charge(token: str, request: Request, fail: str = ''):
                             % (format(p['amount'], ','), _h(p['paid_at'][:16].replace('T', ' '))))
     if st in ('WAIVED', 'CANCELLED'):
         return _status_page('ℹ️', '결제하실 금액이 없습니다', '이 안내는 더 이상 결제가 필요하지 않습니다.')
-    ods = _order_summ(_orders_of(ch))
-    amt = av.num(ch.get('amount'))
+    if st == 'VOID':
+        return _status_page('ℹ️', '결제하실 금액이 없습니다', '해당 주문이 취소되어 추가 배송비를 결제하실 필요가 없습니다.')
+    if overdue():
+        return _status_page('⏰', '결제 기한이 지났습니다',
+                            '추가 배송비 결제 기한(%s)이 지났습니다.<br>문의: cx@mealzip.kr'
+                            % _h(conf()['deadline'].replace('T', ' ')))
+    ods = _order_summ([o for o in _orders_of(ch) if oinfo.get(o, ('',))[0] not in ('CANCELLED', 'FAILED')])
+    amt = due
+    dl = deadline_dt()
+    dl_txt = ('%d월 %d일(%s) %d시 %02d분까지' % (dl.month, dl.day, '월화수목금토일'[dl.weekday()], dl.hour, dl.minute)) if dl else ''
     body = ('<h1>추가 배송비 결제</h1>'
             + ('<div class="err">결제가 완료되지 않았습니다: %s</div>' % _h(fail) if fail else '')
-            + '<div class="box"><p class="p"><b>%s</b>님, 맵달SEOUL을 이용해 주셔서 감사합니다.<br><br>'
-              '예약판매·이벤트 등 프로모션 상품은 구매 수량·금액과 관계없이 <b>주문당 배송비 3,000원</b>이 부과됩니다. '
-              '판매 페이지 이전 과정의 시스템 오류로 아래 주문에 배송비가 누락되어 결제되었습니다. '
-              '번거로우시겠지만 추가 배송비를 결제해 주시기 바랍니다. 불편을 드려 죄송합니다.</p></div>' % _h(_mask(ch.get('name')))
+            + '<div class="box"><p class="p"><b>%s</b>님, 안녕하세요. 맵달SEOUL입니다.<br><br>'
+              '안내 페이지에는 배송비가 명시되어 있었으나, 결제 시스템 오류로 인해 실제 결제 시 배송비가 누락되고 '
+              '상품 금액만 결제된 것으로 확인되었습니다. 이에 누락된 배송비의 추가 결제를 요청드리오니, '
+              '아래 내용을 확인해 주시기 바랍니다.</p></div>' % _h(_mask(ch.get('name')))
             + '<div class="box">' + ''.join('<div class="od"><div class="n">%s · %s</div>%s</div>'
                                               % (_h(o['oid']), _h(o['date']), _h(o['label'])) for o in ods)
             + '<div class="od amt"><span>추가 배송비 (배송지 %d곳 × 3,000원)</span><b>%s원</b></div>' % (max(1, amt // SF_FEE), format(amt, ','))
             + ('<p class="hint" style="margin-top:6px">같은 배송지로 가는 주문은 배송비를 한 번만 받습니다.</p>' if len(ods) > max(1, amt // SF_FEE) else '')
+            + ('<div class="od" style="font-size:13px"><b>결제 기한</b> %s</div>' % _h(dl_txt) if dl_txt else '')
             + '</div>'
+            + '<div class="box"><p class="hint" style="color:#555">※ 기한 내 배송비 미결제 시 기존 주문은 취소 처리되며, 구매를 원하시는 경우 새롭게 주문해 주시기 바랍니다.<br>'
+              '※ 반드시 기존 주문서에 기재하신 주문자명과 동일한 이름으로 결제해 주시기 바랍니다.<br>'
+              '※ 제주도 및 도서·산간지역은 추가 배송비가 발생합니다.</p></div>'
             + '<div class="box"><div style="font-weight:700;font-size:14px">결제수단</div><div class="pm">'
               '<label><input type="radio" name="pm" value="card" checked>카드·간편결제</label>'
               '<label><input type="radio" name="pm" value="directbank">계좌이체</label>'
@@ -489,16 +643,19 @@ def api_pay(token: str, request: Request, body: dict = Body(...)):
     ch = _charge_by_token(token)
     if not ch:
         raise HTTPException(404, '유효하지 않은 링크입니다')
-    st = _state(ch, _sf_map().get(ch['id']))
+    due = due_of(ch)
+    st = _state(ch, _sf_map().get(ch['id']), due)
     if st == 'PAID':
         raise HTTPException(409, '이미 결제가 완료되었습니다')
     if st != 'UNPAID':
         raise HTTPException(409, '결제하실 금액이 없습니다')
+    if overdue():
+        raise HTTPException(409, '추가 배송비 결제 기한이 지났습니다')
     pay_sel = _PAY_METHODS.get(str(body.get('payMethod') or 'card').lower())
     if not pay_sel:
         raise HTTPException(400, '지원하지 않는 결제수단입니다')
     A, av = _app(), _av()
-    amount = av.num(ch.get('amount'))
+    amount = due                                   # 원주문 취소가 반영된 현재 청구액
     if amount <= 0:
         raise HTTPException(409, '결제하실 금액이 없습니다')
     oids = _orders_of(ch)
@@ -556,41 +713,56 @@ th,td{border-bottom:1px solid #eee;padding:7px 8px;text-align:left;vertical-alig
 <div class="bar"><b>1. 대상 산출</b> 기준 시각 <input id="since" value="2026-10-19T15:00" style="width:160px">
  <button class="g" onclick="gen(true)">대상 미리보기</button><button onclick="gen(false)">청구 생성</button>
  <span class="hint">결제완료 · 일반배송 · 배송비 0원 결제 · 배송비 필수부과 상품 포함 주문. 이미 청구된 주문은 제외되므로 여러 번 실행해도 안전합니다(입금 대기 주문이 나중에 결제되면 다시 실행).</span></div>
-<div class="bar"><b>2. 안내 발송</b><button class="g" onclick="sendPv()">문자 미리보기</button><button class="r" onclick="send('unsent')">미발송 고객에게 문자 발송</button>
- <button class="g" onclick="send('unpaid')">미결제 고객 전체 재발송</button><a class="btn g" href="/admin/api/shipfee.csv">CSV 다운로드 (링크 포함)</a>
- <span class="hint">문자는 LMS로 발송되며 결제가 끝난 고객에게는 보내지 않습니다.</span></div>
+<div class="bar"><b>결제 기한</b> <input id="dl" type="datetime-local" style="width:200px"><button class="g" onclick="saveDl()">기한 저장</button>
+ <span class="hint" id="dlst"></span></div>
+<div class="bar"><b>2. 안내 발송</b><button class="g" onclick="sendPv('sms')">문자 미리보기</button><button class="r" onclick="send('unsent','sms')">미발송 고객에게 문자 발송</button>
+ <button class="g" onclick="send('unpaid','sms')">미결제 전체 문자 재발송</button>
+ <button class="g" onclick="sendPv('email')">메일 미리보기</button><button class="r" onclick="send('unsent','email')">미발송 고객에게 메일 발송</button>
+ <a class="btn g" href="/admin/api/shipfee.csv">CSV 다운로드 (링크 포함)</a>
+ <span class="hint">결제가 끝났거나 원주문이 모두 취소된 고객에게는 보내지 않습니다. 문자(LMS)에서는 📌 이모지가 빠집니다.</span></div>
 <div class="bar"><b>3. 결제 현황</b> <select id="fst" onchange="draw()"><option value="">전체</option><option value="UNPAID">미결제</option><option value="PAID">결제완료</option><option value="WAIVED">면제</option><option value="CANCELLED">취소</option></select>
  <input id="q" placeholder="이름·휴대폰·주문번호" oninput="draw()"><button class="g" onclick="load()">새로고침</button><span class="hint" id="upd"></span></div>
-<table><thead><tr><th>상태</th><th>고객</th><th>원주문</th><th>금액</th><th>결제</th><th>문자</th><th>열람</th><th>링크</th><th></th></tr></thead><tbody id="tb"></tbody></table>
+<div class="bar" id="odbar" style="display:none;border-color:#E8332A"><b style="color:#B71F18">결제 기한 경과</b><span class="hint" id="odtxt"></span>
+ <button class="r" onclick="cancelOverdue()">미결제 고객 원주문 일괄 취소(환불)</button></div>
+<table><thead><tr><th>상태</th><th>고객</th><th>원주문</th><th>청구액</th><th>결제</th><th>문자</th><th>메일</th><th>열람</th><th>링크</th><th></th></tr></thead><tbody id="tb"></tbody></table>
 </main><div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);let D={rows:[],summary:{}};
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const won=n=>Number(n||0).toLocaleString('ko-KR')+'원';const LAB={PAID:'결제완료',UNPAID:'미결제',WAIVED:'면제',CANCELLED:'취소'};
+const won=n=>Number(n||0).toLocaleString('ko-KR')+'원';const LAB={PAID:'결제완료',UNPAID:'미결제',WAIVED:'면제',CANCELLED:'취소',VOID:'원주문취소'};
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',3500)}
 async function api(u,o){const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(r.status===401||(r.status===403&&j.detail==='forbidden')){location.reload();throw new Error('세션 만료')}if(!r.ok)throw new Error(j.detail||'오류');return j}
 const post=(u,b)=>api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
 async function load(){try{D=await api('/admin/api/shipfee/list');const s=D.summary;
  $('#cards').innerHTML=[['청구 고객',s.customers+'명',s.orders+'주문'],['결제완료',s.PAID.n+'명',won(s.PAID.amount)],['미결제',s.UNPAID.n+'명',won(s.UNPAID.amount)],
-  ['면제·취소',(s.WAIVED.n+s.CANCELLED.n)+'명',''],['문자 미발송',s.unsent+'명',''],['중복결제',s.dup_paid+'건',s.dup_paid?'환불 필요':'']]
+  ['면제·취소',(s.WAIVED.n+s.CANCELLED.n)+'명',''],['원주문 취소',s.VOID.n+'명','청구 없음'],['문자 미발송',s.unsent+'명',''],['메일 미발송',s.unmailed+'명',''],['중복결제',s.dup_paid+'건',s.dup_paid?'환불 필요':''],['부분환불 필요',s.refund_flag+'건','']]
   .map(c=>`<div class="c"><small>${c[0]}</small><b>${c[1]}</b> <span class="hint">${c[2]}</span></div>`).join('');
- $('#upd').textContent='갱신 '+new Date().toLocaleTimeString('ko-KR');draw()}catch(e){toast(e.message)}}
+ $('#upd').textContent='갱신 '+new Date().toLocaleTimeString('ko-KR');
+ if(document.activeElement!==$('#dl'))$('#dl').value=D.deadline||'';$('#dlst').textContent=D.overdue?'기한 경과':'기한 전 — 고객 결제 가능';
+ $('#odbar').style.display=D.overdue?'flex':'none';$('#odtxt').textContent=D.overdue?` 미결제 ${s.UNPAID.n}명 — 안내문 기준 원주문 취소 대상`:'';draw()}catch(e){toast(e.message)}}
 function draw(){const f=$('#fst').value,q=($('#q').value||'').trim().toLowerCase();
  $('#tb').innerHTML=D.rows.filter(r=>(!f||r.state===f)&&(!q||(r.name+r.phone+r.orders.join(' ')).toLowerCase().includes(q))).map(r=>`<tr>
  <td><span class="st ${r.state}">${LAB[r.state]||r.state}</span>${r.dup_paid?`<div class="dup">중복결제 ${r.dup_paid}건</div>`:''}${r.pending&&r.state==='UNPAID'?`<div class="hint">결제창 진행 ${r.pending}</div>`:''}</td>
  <td><b>${esc(r.name)}</b><div class="mono">${esc(r.phone)}</div></td><td class="mono">${r.orders.map(o=>esc(o)).join("<br>")}</td>
- <td><b>${won(r.amount)}</b>${r.orders.length>r.amount/3000?`<div class="hint">주문 ${r.orders.length}건 · 배송지 ${r.amount/3000}곳</div>`:''}</td><td>${r.paid_order?`<div class="mono">${esc(r.paid_order)}</div><div class="hint">${esc(r.paid_at)} ${esc(r.paid_method)}</div>`:''}</td>
- <td class="hint">${r.sent_count?esc(r.sent_at)+' ('+r.sent_count+'회)':'미발송'}</td><td class="hint">${r.views?r.views+'회<br>'+esc(r.view_at):'-'}</td>
+ <td><b>${won(r.state==='UNPAID'||r.state==='VOID'?r.due:r.amount)}</b>${r.due<r.amount&&r.state!=='PAID'?`<div class="hint" style="text-decoration:line-through">${won(r.amount)}</div>`:''}${r.orders.length>r.amount/3000?`<div class="hint">주문 ${r.orders.length}건 · 배송지 ${r.amount/3000}곳</div>`:''}${r.cancelled_orders.length?`<div class="hint" style="color:#B71F18">취소 ${r.cancelled_orders.length}건</div>`:''}</td><td>${r.paid_order?`<div class="mono">${esc(r.paid_order)}</div><div class="hint">${esc(r.paid_at)} ${esc(r.paid_method)}</div>`:''}</td>
+ <td class="hint">${r.sent_count?esc(r.sent_at)+' ('+r.sent_count+'회)':'미발송'}</td><td class="hint">${r.email?(r.mail_count?esc(r.mail_at)+' ('+r.mail_count+'회)':'미발송'):'-'}</td><td class="hint">${r.views?r.views+'회<br>'+esc(r.view_at):'-'}</td>
  <td><button class="sm g" onclick="cp('${esc(r.link)}')">복사</button></td>
- <td>${r.state==='UNPAID'?`<button class="sm g" onclick="st('${r.id}','WAIVED')">면제</button> <button class="sm g" onclick="send1('${r.id}')">문자</button>`:''}${r.state==='WAIVED'||r.state==='CANCELLED'?`<button class="sm g" onclick="st('${r.id}','OPEN')">재청구</button>`:''}${r.note?`<div class="hint">${esc(r.note)}</div>`:''}</td></tr>`).join('')||'<tr><td colspan="9" class="hint" style="padding:30px;text-align:center">청구 내역이 없습니다 — 위 [대상 미리보기] 후 [청구 생성]</td></tr>'}
+ <td>${r.state==='UNPAID'?`<button class="sm g" onclick="st('${r.id}','WAIVED')">면제</button> <button class="sm g" onclick="send1('${r.id}')">문자</button>`:''}${r.state==='WAIVED'||r.state==='CANCELLED'?`<button class="sm g" onclick="st('${r.id}','OPEN')">재청구</button>`:''}${r.note?`<div class="hint">${esc(r.note)}</div>`:''}</td></tr>`).join('')||'<tr><td colspan="10" class="hint" style="padding:30px;text-align:center">청구 내역이 없습니다 — 위 [대상 미리보기] 후 [청구 생성]</td></tr>'}
 async function gen(dry){try{const d=await post('/admin/api/shipfee/generate',{since:$('#since').value,dry_run:dry});
  if(dry){toast(`대상 ${d.customers}명 · ${d.orders}주문 · 배송지 ${d.shipments}곳(같은 주소 ${d.merged}건 합산) · ${won(d.amount)}`);return}
  if(!d.customers){toast('새로 청구할 대상이 없습니다');return}toast(`청구 생성 ${d.customers}명 · ${won(d.amount)}`);load()}catch(e){toast(e.message)}}
-async function sendPv(){try{const d=await post('/admin/api/shipfee/send',{scope:'unsent',preview:true});
- if(!d.count){toast('발송 대상이 없습니다');return}alert(`발송 대상 ${d.count}명${d.dry?' (문자 발송사 미설정 — 실제 발송 안 됨)':''}\n\n── 예시 ──\n${d.sample}`)}catch(e){toast(e.message)}}
-async function send(scope){try{const pv=await post('/admin/api/shipfee/send',{scope,preview:true});if(!pv.count){toast('발송 대상이 없습니다');return}
- if(!confirm(`${pv.count}명에게 추가 배송비 안내 문자(LMS)를 발송합니다.${pv.dry?'\n(발송사 미설정 — 기록만 남습니다)':''}\n\n진행할까요?`))return;
- const d=await post('/admin/api/shipfee/send',{scope});toast(`${d.queued}명 발송 시작 — 잠시 후 새로고침`);setTimeout(load,4000)}catch(e){toast(e.message)}}
+const CH={sms:'문자(LMS)',email:'메일'};
+async function sendPv(channel){try{const d=await post('/admin/api/shipfee/send',{scope:'unsent',preview:true,channel});
+ if(!d.count){toast('발송 대상이 없습니다');return}alert(`${CH[channel]} 발송 대상 ${d.count}명${d.dry?' (발송 설정 없음 — 실제 발송 안 됨)':''}${d.subject?'\n제목: '+d.subject:''}\n\n── 예시 ──\n${d.sample}`)}catch(e){toast(e.message)}}
+async function send(scope,channel){try{const pv=await post('/admin/api/shipfee/send',{scope,preview:true,channel});if(!pv.count){toast('발송 대상이 없습니다');return}
+ if(!confirm(`${pv.count}명에게 추가 배송비 안내 ${CH[channel]}을(를) 발송합니다.${pv.dry?'\n(발송 설정 없음 — 기록만 남습니다)':''}\n\n진행할까요?`))return;
+ const d=await post('/admin/api/shipfee/send',{scope,channel});toast(`${d.queued}명 발송 시작 — 잠시 후 새로고침`);setTimeout(load,4000)}catch(e){toast(e.message)}}
+async function saveDl(){try{const d=await post('/admin/api/shipfee/conf',{deadline:$('#dl').value});toast('결제 기한 저장: '+d.deadline.replace('T',' '));load()}catch(e){toast(e.message)}}
+async function cancelOverdue(){try{const pv=await post('/admin/api/shipfee/cancel-overdue',{preview:true});
+ if(!pv.orders){toast('취소 대상이 없습니다');return}
+ const c=prompt(`결제 기한이 지난 미결제 고객 ${pv.customers}명의 원주문 ${pv.orders}건을 취소·환불합니다.\n되돌릴 수 없습니다. 진행하려면 '일괄취소'를 입력하세요.`);
+ if(c!=='일괄취소'){if(c!==null)toast('확인 문구가 일치하지 않습니다');return}
+ const d=await post('/admin/api/shipfee/cancel-overdue',{preview:false,confirm:c});toast(`${d.queued}건 취소 진행 중 — 잠시 후 새로고침`);setTimeout(load,8000)}catch(e){toast(e.message)}}
 async function send1(id){if(!confirm('이 고객에게 안내 문자를 발송할까요?'))return;try{const d=await post('/admin/api/shipfee/send',{ids:[id]});toast(d.queued?'발송 시작':'발송 대상 아님');setTimeout(load,3000)}catch(e){toast(e.message)}}
 async function st(id,s){const note=s==='WAIVED'?prompt('면제 사유 (선택)')||'':'';if(s==='WAIVED'&&note===null)return;
  try{await post('/admin/api/shipfee/status',{id,status:s,note});toast('변경했습니다');load()}catch(e){toast(e.message)}}
@@ -609,3 +781,84 @@ def admin_page(request: Request):
         return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center">'
                             '<h3>%s</h3><a href="/admin/dashboard">대시보드로 돌아가기</a>' % _h(e.detail), status_code=e.status_code)
     return HTMLResponse(_ADMIN, headers={'Cache-Control': 'no-store'})
+
+
+# ─────────────────────────── 원주문 취소 ↔ 배송비 결제 연동 ───────────────────────────
+def on_order_cancelled(actor, oid):
+    """원주문이 취소(환불)된 직후 admin_v2._order_cancel_core 가 호출한다 — 실패해도 원주문 취소에는 영향 없음.
+    · 미결제 청구: 청구액이 실시간으로 줄어든다(due_of) — 여기서 할 일 없음.
+    · 결제완료 청구: 남은 원주문 기준 청구액이 0원이면 배송비 결제(SF 주문)를 자동 취소·환불한다.
+      일부만 줄었으면(배송지가 여러 곳인 고객) 부분환불 금액을 메모로 남겨 관리자가 처리하게 한다."""
+    oid = str(oid or '')
+    if not oid or oid.startswith(SF_PREFIX):
+        return None
+    av = _av()
+    try:
+        ensure()
+        ch = av.one('SELECT * FROM ship_charges WHERE order_ids LIKE ?', ('%"' + oid + '"%',))
+    except Exception:
+        return None
+    if not ch:
+        return None
+    paid = (_sf_map().get(ch['id']) or {}).get('paid') or []
+    if not paid:
+        return {'charge': ch['id'], 'action': 'due_reduced', 'due': due_of(ch)}
+    due = due_of(ch)
+    paid_amt = sum(p['amount'] for p in paid)
+    if due <= 0:
+        results = []
+        for p in paid:
+            r = av.one('SELECT * FROM orders WHERE order_id=?', (p['order_id'],))
+            if not r or r.get('status') == 'CANCELLED':
+                continue
+            try:
+                av._order_cancel_core(actor, r, '원주문 %s 취소에 따른 추가 배송비 환불' % oid)
+                results.append(p['order_id'])
+            except Exception as e:
+                msg = '배송비 자동환불 실패(%s): %s — 주문 상세에서 직접 환불 필요' % (p['order_id'], getattr(e, 'detail', e))
+                av.run('UPDATE ship_charges SET note=? WHERE id=?', (msg[:200], ch['id']))
+                av.audit(actor, '추가배송비환불실패', ch['id'], msg[:200])
+        if results:
+            av.audit(actor, '추가배송비자동환불', ch['id'], '원주문 %s 취소 → %s 환불' % (oid, ', '.join(results)))
+        return {'charge': ch['id'], 'action': 'refunded', 'orders': results}
+    if due < paid_amt:
+        msg = '부분환불 필요 %s원 (원주문 %s 취소 · 결제 %s원 → 청구 %s원)' % (
+            format(paid_amt - due, ','), oid, format(paid_amt, ','), format(due, ','))
+        av.run('UPDATE ship_charges SET note=? WHERE id=?', (msg[:200], ch['id']))
+        av.audit(actor, '추가배송비부분환불필요', ch['id'], msg)
+        return {'charge': ch['id'], 'action': 'partial_refund_needed', 'amount': paid_amt - due}
+    return {'charge': ch['id'], 'action': 'none'}
+
+
+@shipfee_router.post('/admin/api/shipfee/cancel-overdue')
+def api_cancel_overdue(request: Request, body: dict = Body(...)):
+    """결제 기한 경과 미결제 고객의 원주문 일괄 취소(환불). 기한 전에는 실행 불가.
+    preview=true 면 대상만 집계. 실행은 '일괄취소' 확인 문구 필수 · 백그라운드 처리 · 건별 결과를 메모에 기록."""
+    a = _actor(request, 2, '배송비 미결제 주문 일괄 취소')
+    if not overdue():
+        raise HTTPException(409, '결제 기한(%s) 전에는 실행할 수 없습니다' % conf()['deadline'].replace('T', ' '))
+    av = _av()
+    rows_ = [r for r in _list_rows() if r['state'] == 'UNPAID' and r['due'] > 0]
+    targets = [(r, o) for r in rows_ for o in r['orders'] if o not in r['cancelled_orders']]
+    if body.get('preview', True):
+        return {'ok': True, 'customers': len(rows_), 'orders': len(targets)}
+    if str(body.get('confirm') or '') != '일괄취소':
+        raise HTTPException(400, "확인 문구 '일괄취소'를 입력하세요")
+
+    def work():
+        ok = fail = 0
+        for r, o in targets:
+            row = av.one('SELECT * FROM orders WHERE order_id=?', (o,))
+            if not row or row.get('status') == 'CANCELLED':
+                continue
+            try:
+                av._order_cancel_core(a, row, '추가 배송비 미결제 — 결제 기한(%s) 경과 취소' % conf()['deadline'].replace('T', ' '))
+                ok += 1
+            except Exception as e:
+                fail += 1
+                try: av.run('UPDATE ship_charges SET note=? WHERE id=?',
+                            (('원주문 %s 취소 실패: %s' % (o, getattr(e, 'detail', e)))[:200], r['id']))
+                except Exception: pass
+        av.audit(a, '배송비미결제일괄취소', 'shipfee', '성공 %d · 실패 %d' % (ok, fail))
+    threading.Thread(target=work, daemon=True).start()
+    return {'ok': True, 'queued': len(targets)}

@@ -1970,7 +1970,7 @@ def ensure_ready():
         try: run('ALTER TABLE member_inquiries ADD COLUMN photos TEXT')
         except Exception: pass
     # 고객 직접 수정·삭제 (2026-10-20) — 수정 횟수·최종 수정/삭제 시각. 원문은 member_inquiry_history
-    for col, typ in (('edited_at', 'TEXT'), ('edit_count', 'INTEGER DEFAULT 0'), ('deleted_at', 'TEXT')):
+    for col, typ in (('edited_at', 'TEXT'), ('edit_count', 'INTEGER DEFAULT 0'), ('deleted_at', 'TEXT'), ('category', 'TEXT')):
         if icx and col not in icx:
             try: run('ALTER TABLE member_inquiries ADD COLUMN %s %s' % (col, typ))
             except Exception: pass
@@ -5006,7 +5006,10 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 <section id="t-cs" style="display:none">
   <div class="panel"><h3>취소/반품/교환 요청</h3><div id="csreq" class="loading">불러오는 중…</div>
   <div class="hint">취소 요청 승인 시: [완료]로 바꾼 뒤 [주문 관리]에서 해당 주문의 결제취소(환불)를 실행하세요. 재고는 자동 복원됩니다.</div></div>
-  <div class="panel"><h3>1:1 문의</h3><div class="hint">문의를 클릭하면 회원번호·구매내역·CS 이력을 바로 확인할 수 있습니다.</div><div id="csinq" class="loading">불러오는 중…</div></div>
+  <div class="panel"><h3>1:1 문의</h3><div class="hint">문의를 클릭하면 회원번호·구매내역·CS 이력을 바로 확인할 수 있습니다. 카테고리를 누르면 해당 유형만 모아봅니다.</div>
+  <div id="csicat" style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px"></div>
+  <label class="hint" style="display:inline-flex;gap:5px;align-items:center;margin-bottom:6px;cursor:pointer"><input type="checkbox" id="csiopen" onchange="csInqDraw()"> 미답변만 보기</label>
+  <div id="csinq" class="loading">불러오는 중…</div></div>
   <div class="panel"><h3>상품 Q&amp;A <span class="tag">답변 시 상품페이지에 공개</span></h3><div id="cspq" class="loading">불러오는 중…</div></div></section>
 <section id="t-admins" style="display:none">
   <div class="panel"><h3>관리자 계정</h3><div id="alist" class="loading">불러오는 중…</div>
@@ -6603,15 +6606,15 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
  <td>${esc(r.mname)}<br><span class="mono" style="font-size:10.5px;color:#888">${esc(r.mphone)}</span></td>
  <td style="font-size:12px">${esc(r.reason)}${r.memo?'<br><span style="color:#888">메모: '+esc(r.memo)+'</span>':''}</td>
  <td>${stag(r.status)}</td><td>${can(1)?`<button class="btn sm ghost" onclick="csReq('${r.id}')">처리</button>`:''}</td></tr>`).join('')}</table>`:'<div class="loading">요청 없음</div>';
- const block=(rows,kind)=>rows.length?rows.map(q=>`<div style="border-bottom:1px solid var(--line);padding:10px 4px">
+ const block=window._csBlock=(rows,kind)=>rows.length?rows.map(q=>`<div style="border-bottom:1px solid var(--line);padding:10px 4px">
  <div class="cs-head" onclick="${q.cid?`openAccount('${esc(q.cid)}')`:`toast('연결된 회원 계정을 찾을 수 없습니다')`}" title="클릭 → 회원번호·구매내역·CS 이력" style="cursor:pointer;margin:-4px;padding:4px;border-radius:4px" onmouseover="this.style.background='#faf9f5'" onmouseout="this.style.background=''">
- <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)}${kind==='inq'&&q.edits?` <span class="st PENDING" title="최종 수정 ${esc(q.edited_at)}">고객수정 ${q.edits}회</span>`:''} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${q.cno?` · <b class="mono" style="color:#E8332A">${esc(q.cno)}</b>`:''}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span></div>
+ ${kind==='inq'?`<select onclick="event.stopPropagation()" onchange="csSetCat('${esc(q.id)}',this.value)" title="${q.cat_auto?'자동 분류 — 바꾸면 확정':'문의 유형'}" style="font-size:11px;padding:2px 4px;margin-right:6px;font-weight:700;border:1px solid ${q.cat_auto?'#ccc':'#141414'};color:${q.cat_auto?'#888':'#141414'}">${(window._CSCATS||[]).map(c=>`<option ${c===q.category?'selected':''}>${esc(c)}</option>`).join('')}</select>`:''}<b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)}${kind==='inq'&&q.edits?` <span class="st PENDING" title="최종 수정 ${esc(q.edited_at)}">고객수정 ${q.edits}회</span>`:''} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${q.cno?` · <b class="mono" style="color:#E8332A">${esc(q.cno)}</b>`:''}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span></div>
  ${kind==='inq'&&q.deleted_at?`<div style="margin-top:6px;font-size:12px;color:#B71F18"><b>고객이 ${esc(q.deleted_at)}에 직접 삭제한 문의</b> — 고객 화면에서는 보이지 않으며 답변할 수 없습니다. 원문·삭제 기록은 [이력]에서 확인</div>`:''}
  <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap;${kind==='inq'&&q.deleted_at?'color:#999':''}">${esc(kind==='inq'?q.body:q.question)}</div>
  ${(q.photos&&q.photos.length)?`<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${q.photos.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" style="width:72px;height:72px;object-fit:cover;border:1px solid var(--line)"></a>`).join('')}</div>`:''}
  ${q.answer?`<div style="margin-top:6px;background:#faf9f5;padding:8px;font-size:12.5px;white-space:pre-wrap"><b>답변</b> ${esc(q.answer)}</div>`:''}
  <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)&&!(kind==='inq'&&q.status==='고객삭제')?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${kind==='inq'&&(q.edits||q.deleted_at)?`<button class="btn sm ghost" onclick="csInqHist('${esc(q.id)}')" title="고객이 수정·삭제하기 전 원문">이력</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}${kind==='inq'&&q.order_id&&can(1)?`<button class="btn sm ghost" onclick="shipAddrEdit('${esc(q.order_id)}','${esc(q.id)}')" title="이 화면에서 주문 배송지를 바로 변경 — 저장 시 답변 종결·안내 문자까지 한 번에">배송지 변경</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
- $('#csinq').innerHTML=block(d.inq,'inq');$('#cspq').innerHTML=block(d.pqna,'pqna');
+ window._CSD=d;window._CSCATS=d.inq_cats||[];csInqDraw();$('#cspq').innerHTML=block(d.pqna,'pqna');
 }catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 /*mpInqHist — 고객 수정·삭제 전 원문 확인 (2026-10-20)*/
 async function csInqHist(id){try{const d=await api('/admin/api/cs/inq-history/'+encodeURIComponent(id));const c=d.current;
@@ -6622,6 +6625,19 @@ async function csInqHist(id){try{const d=await api('/admin/api/cs/inq-history/'+
  ${d.history.map(h=>card(h.action,h.title,h.body,h.order_id,h.photos,h.at+(h.ip?' · IP '+h.ip:''))).join('')||'<div class="loading">이력 없음</div>'}
  ${card(c.status==='고객삭제'?'최종 내용 (삭제됨)':'현재 내용',c.title,c.body,c.order_id,c.photos,c.status)}
  <div style="text-align:right;margin-top:8px"><button class="btn ghost" onclick="closeM()">닫기</button></div>`;$('#mbg').style.display='flex'}catch(e){toast(e.message)}}
+/*mpInqCat — 1:1 문의 카테고리 모아보기 (2026-10-20)*/
+let _csCat='';
+function csInqDraw(){const d=window._CSD;if(!d)return;const open=$('#csiopen')&&$('#csiopen').checked;
+ const base=(d.inq||[]).filter(q=>q.status!=='고객삭제'||_csCat==='__deleted');
+ const live=base.filter(q=>!open||q.status!=='답변완료');
+ const cnt=c=>live.filter(q=>q.category===c).length,pend=c=>base.filter(q=>q.category===c&&q.status!=='답변완료').length;
+ const chip=(v,label,n,p)=>`<button class="btn sm ${_csCat===v?'':'ghost'}" onclick="_csCat='${v}';csInqDraw()">${esc(label)} <b>${n}</b>${p?` <span style="color:#E8332A">·미답변 ${p}</span>`:''}</button>`;
+ $('#csicat').innerHTML=chip('','전체',live.length,base.filter(q=>q.status!=='답변완료').length)+(window._CSCATS||[]).map(c=>chip(c,c,cnt(c),pend(c))).join('')
+  +((d.inq||[]).some(q=>q.status==='고객삭제')?chip('__deleted','고객삭제',(d.inq||[]).filter(q=>q.status==='고객삭제').length,0):'');
+ const rows=_csCat==='__deleted'?(d.inq||[]).filter(q=>q.status==='고객삭제'):live.filter(q=>!_csCat||q.category===_csCat);
+ $('#csinq').innerHTML=window._csBlock(rows,'inq')}
+async function csSetCat(id,cat){try{await api('/admin/api/cs/inq-category',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,category:cat})});
+ const q=(window._CSD.inq||[]).find(x=>x.id===id);if(q){q.category=cat;q.cat_auto=false}toast('분류: '+cat);csInqDraw()}catch(e){toast(e.message)}}
 async function csAnswer(kind,id){const ans=prompt('답변 내용을 입력하세요 (회원에게 표시됩니다)');if(!ans)return;
  try{await api('/admin/api/cs/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id,answer:ans})});toast('답변 등록');loadCS()}catch(e){toast(e.message)}}
 let _csAfter=null;
@@ -10138,8 +10154,12 @@ async function doWithdraw(pw){if(!confirm('정말 탈퇴하시겠습니까?'))re
  try{await post('/api/member/withdraw',pw?{password:$('#wpw').value}:{confirm:$('#wcf').value});
  alert('탈퇴가 완료되었습니다. 이용해 주셔서 감사합니다.');location.href='/'}catch(e){toast(e.message)}}
 
+let INQC=[];
+function inqCatSel(id,cur){return '<select id="'+id+'" style="max-width:320px"><option value="">문의 유형을 선택하세요</option>'+INQC.map(function(c){return '<option'+(c===cur?' selected':'')+'>'+esc(c)+'</option>'}).join('')+'</select>'}
 async function inqPane(){const d=await api('/api/member/inquiries');
+ if(!INQC.length){try{INQC=(await api('/api/inquiry-categories')).categories||[]}catch(e){INQC=[]}}
  $('#pane').innerHTML='<div class="panel"><h3>1:1 문의하기</h3>'+
+ (INQC.length?'<label>문의 유형 *</label>'+inqCatSel('iqc',''):'')+
  '<label>제목</label><input id="iqt"><label>내용</label><textarea id="iqb" rows="4"></textarea>'+
  '<label>관련 주문번호 (선택)</label><input id="iqo" placeholder="MPD...">'+
  '<label>사진 첨부 (선택 · 최대 3장)</label><input id="iqp" type="file" accept="image/*" multiple>'+
@@ -10147,7 +10167,7 @@ async function inqPane(){const d=await api('/api/member/inquiries');
  '<div id="iqpv" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>'+
  '<div style="margin-top:12px"><button class="b" id="iqbtn" onclick="inqAdd()">문의 등록</button></div></div>'+
  '<div class="panel"><h3>1:1 문의내역</h3>'+
- (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q">'+esc(q.title)+' <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+(q.order_id?' · '+esc(q.order_id):'')+'</span></div>'+
+ (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q">'+(q.category?'<span class="tagst s0" style="margin-right:6px">'+esc(q.category)+'</span>':'')+esc(q.title)+' <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+(q.order_id?' · '+esc(q.order_id):'')+'</span></div>'+
  '<div style="margin-top:6px;white-space:pre-wrap;font-size:13px">'+esc(q.body)+'</div>'+
  ((q.photos&&q.photos.length)?'<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'+q.photos.map(u=>'<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" style="width:64px;height:64px;object-fit:cover;border:1px solid #ddd"></a>').join('')+'</div>':'')+
  (q.answer?'<div class="a"><b>맵달SEOUL 답변</b> <span class="hint" style="display:inline">'+esc(q.answered_at)+'</span><br>'+esc(q.answer)+'</div>':'')+
@@ -10158,21 +10178,21 @@ async function inqPane(){const d=await api('/api/member/inquiries');
 function inqEdit(id){const q=(window._INQ||{})[id];const box=$('#iqe_'+id);if(!q||!box)return;
  if(box.innerHTML){box.innerHTML='';return}
  box.innerHTML='<div style="margin-top:8px;padding:10px;background:#faf9f5;border:1px solid var(--line)">'+
- '<label>제목</label><input id="iqet_'+id+'"><label>내용</label><textarea id="iqeb_'+id+'" rows="4"></textarea>'+
+ (INQC.length?'<label>문의 유형</label>'+inqCatSel('iqec_'+id,q.category||''):'')+'<label>제목</label><input id="iqet_'+id+'"><label>내용</label><textarea id="iqeb_'+id+'" rows="4"></textarea>'+
  '<label>관련 주문번호 (선택)</label><input id="iqeo_'+id+'">'+
  '<div style="margin-top:8px;display:flex;gap:6px"><button class="b" onclick="inqSave(\''+id+'\',this)">저장</button><button class="b ghost" onclick="inqEdit(\''+id+'\')">취소</button></div></div>';
  $('#iqet_'+id).value=q.title;$('#iqeb_'+id).value=q.body;$('#iqeo_'+id).value=q.order_id||''}
 async function inqSave(id,btn){btn.disabled=true;
- try{const r=await post('/api/member/inquiries/update',{id,title:$('#iqet_'+id).value,body:$('#iqeb_'+id).value,order_id:$('#iqeo_'+id).value});
+ try{const r=await post('/api/member/inquiries/update',{id,category:($('#iqec_'+id)||{}).value||'',title:$('#iqet_'+id).value,body:$('#iqeb_'+id).value,order_id:$('#iqeo_'+id).value});
  toast(r&&r.changed===false?'변경된 내용이 없습니다':'문의가 수정되었습니다');inqPane()}catch(e){toast(e.message);btn.disabled=false}}
 async function inqDel(id){if(!confirm('이 문의를 삭제할까요?\n문제가 해결되어 더 이상 답변이 필요 없을 때 삭제해 주세요.'))return;
  try{await post('/api/member/inquiries/delete',{id});toast('문의가 삭제되었습니다');inqPane()}catch(e){toast(e.message)}}
-async function inqAdd(){const btn=$('#iqbtn');btn.disabled=true;
+async function inqAdd(){const btn=$('#iqbtn');if(INQC.length&&$('#iqc')&&!$('#iqc').value){toast('문의 유형을 선택하세요');$('#iqc').focus();return}btn.disabled=true;
  try{const files=Array.from(($('#iqp').files)||[]).slice(0,3);const photos=[];
  for(const f of files){const fd=new FormData();fd.append('file',f);
   const r=await fetch('/api/member/inquiries/photo',{method:'POST',body:fd});
   const j=await r.json();if(!r.ok)throw new Error(j.detail||'사진 업로드 실패');photos.push(j.url)}
- await post('/api/member/inquiries',{title:$('#iqt').value,body:$('#iqb').value,order_id:$('#iqo').value,photos});
+ await post('/api/member/inquiries',{category:($('#iqc')||{}).value||'',title:$('#iqt').value,body:$('#iqb').value,order_id:$('#iqo').value,photos});
  toast('문의가 접수되었습니다');inqPane()}catch(e){toast(e.message)}finally{btn.disabled=false}}
 
 async function pqnaPane(){const d=await api('/api/member/pqna');
@@ -15744,7 +15764,7 @@ def api_cs(request: Request):
                'COALESCE(q.customer_id, m.customer_id) AS cid, c.customer_no AS cno '
                'FROM member_inquiries q LEFT JOIN members m ON m.id=q.member_id '
                'LEFT JOIN customer_profiles c ON c.id=COALESCE(q.customer_id, m.customer_id) '
-               'ORDER BY q.created DESC LIMIT 100')
+               'ORDER BY q.created DESC LIMIT 1000')
     nm = _state['pname'] or 'id'
     pq = rows('SELECT q.*, m.name AS mname, p.%s AS pname, '
               'COALESCE(q.customer_id, m.customer_id) AS cid, c.customer_no AS cno '
@@ -15759,12 +15779,14 @@ def api_cs(request: Request):
                      'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
                      'answer': r.get('answer') or '', 'photos': jload(r.get('photos'), []),
                      'edits': num(r.get('edit_count')), 'edited_at': (r.get('edited_at') or '')[:16].replace('T', ' '),
+                     'category': inq_category(r)[0], 'cat_auto': inq_category(r)[1],
                      'deleted_at': (r.get('deleted_at') or '')[:16].replace('T', ' '),
                      'cid': r.get('cid') or '', 'cno': r.get('cno') or ''} for r in inq],
             'pqna': [{'id': r['id'], 'pname': r.get('pname') or r.get('product_id'), 'question': r['question'],
                       'mname': r.get('mname') or '', 'created': (r['created'] or '')[:16].replace('T', ' '),
                       'status': r['status'], 'answer': r.get('answer') or '',
                       'cid': r.get('cid') or '', 'cno': r.get('cno') or ''} for r in pq],
+            'inq_cats': INQ_CATS,
             'reqs': [{'id': r['id'], 'order_id': r['order_id'], 'rtype': krt.get(r['rtype'], r['rtype']),
                       'reason': r['reason'], 'mname': r.get('mname') or '', 'mphone': r.get('mphone') or '',
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
@@ -16799,6 +16821,58 @@ def api_m_restock_list(request: Request):
                       'notified': num(r['notified']), 'soldout': product_sold_out(r),
                       'created': (r['created'] or '')[:10]} for r in rs]}
 
+# ── 1:1 문의 카테고리 (2026-10-20 · CS팀 요청 명칭 그대로) ─────────────────────
+INQ_CATS = ['취소&환불', '주문변경', '교환&반품', '결제&입금', '배송&배송비', '특전&포토카드', '상품&옵션문의', '주문확인', '기타문의']
+#   고객이 고르지 않은 과거 문의는 제목 → 내용 순으로 키워드 자동 분류(관리자가 바꾸면 그 값 우선).
+#   순서가 우선순위다 — '입금했는데 취소됨, 환불' 처럼 겹치면 앞쪽 카테고리.
+_INQ_RULES = [
+    ('취소&환불', r'취소|환불|철회'),
+    ('교환&반품', r'교환|반품|불량|파손|하자'),
+    ('특전&포토카드', r'특전|포토\s*카드|포카|럭키\s*드로우|럭드|사인회|영상\s*통화|미공포'),
+    ('주문변경', r'변경|연락처|배송지|주소'),
+    ('결제&입금', r'결제|결재|입금|가상\s*계좌|무통장|쿠폰|카드|계좌'),
+    ('배송&배송비', r'배송|택배|송장|도착|출고|배달'),
+    ('상품&옵션문의', r'상품|옵션|구성|세트|버전|ver|재고|앨범'),
+    ('주문확인', r'주문\s*내역|주문\s*번호|주문\s*확인|주문\s*상태|조회|확인|인증|order|status'),
+]
+
+def inq_auto_category(title, body=''):
+    for txt in (str(title or ''), str(body or '')):
+        for cat, rx in _INQ_RULES:
+            if re.search(rx, txt, re.I):
+                return cat
+    return '기타문의'
+
+def inq_category(r):
+    """(카테고리, 자동분류여부)"""
+    c = str((r or {}).get('category') or '').strip()
+    if c in INQ_CATS:
+        return c, False
+    return inq_auto_category((r or {}).get('title'), (r or {}).get('body')), True
+
+def _inq_cat_in(body, required=False):
+    c = str((body or {}).get('category') or '').strip()
+    if not c:
+        if required: raise HTTPException(400, '문의 유형을 선택하세요')
+        return ''
+    if c not in INQ_CATS: raise HTTPException(400, '문의 유형이 올바르지 않습니다')
+    return c
+
+@admin_router.get('/api/inquiry-categories')
+def api_inq_cats():
+    return {'categories': INQ_CATS}
+
+@admin_router.post('/admin/api/cs/inq-category')
+def api_cs_inq_category(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 1, '문의 분류')
+    cat = _inq_cat_in(body, required=True)
+    q = one('SELECT category, title, body FROM member_inquiries WHERE id=?', (str(body.get('id') or ''),))
+    if not q: raise HTTPException(404, '문의를 찾을 수 없습니다')
+    prev = inq_category(q)[0]
+    run('UPDATE member_inquiries SET category=? WHERE id=?', (cat, body.get('id')))
+    audit(a, '문의분류', body.get('id'), '%s → %s' % (prev, cat))
+    return {'ok': True, 'category': cat}
+
 @admin_router.post('/api/member/inquiries')
 def api_m_inq_create(request: Request, body: dict = Body(...)):
     m = member_required(request)
@@ -16811,9 +16885,13 @@ def api_m_inq_create(request: Request, body: dict = Body(...)):
         u = str(u or '')
         if (pub and u.startswith(pub + '/')) or u.startswith('/admin/asset/'):
             photos.append(u[:2000])
+    cat = _inq_cat_in(body) or inq_auto_category(title, bd)    # 구버전 화면(유형 미전송)은 자동 분류
+    iid = uid()
     run('INSERT INTO member_inquiries(id,member_id,order_id,title,body,created,status,answer,answered_at,answered_by,customer_id,photos) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-        (uid(), m['id'], (body.get('order_id') or '')[:40], title, bd, now_iso(), '접수', '', '', '', m.get('customer_id') or '',
+        (iid, m['id'], (body.get('order_id') or '')[:40], title, bd, now_iso(), '접수', '', '', '', m.get('customer_id') or '',
          json.dumps(photos, ensure_ascii=False)))
+    try: run('UPDATE member_inquiries SET category=? WHERE id=?', (cat, iid))
+    except Exception: pass
     return {'ok': True}
 
 @admin_router.post('/api/member/inquiries/photo')
@@ -16832,6 +16910,7 @@ def api_m_inq_list(request: Request):
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
                       'photos': jload(r.get('photos'), []),
                       'answer': contact_mail_apply(r.get('answer') or ''), 'answered_at': (r.get('answered_at') or '')[:16].replace('T', ' '),
+                      'category': inq_category(r)[0],
                       'editable': (r.get('status') or '') == '접수' and not (r.get('answer') or '').strip(),
                       'edited': num(r.get('edit_count')) > 0}
                      for r in rows("SELECT * FROM member_inquiries WHERE customer_id=? AND COALESCE(status,'')<>'고객삭제' "
@@ -16870,7 +16949,9 @@ def api_m_inq_update(request: Request, body: dict = Body(...)):
     oid = body.get('order_id')
     oid = str(q.get('order_id') or '' if oid is None else oid).strip()[:40]
     if not title or not bd: raise HTTPException(400, '제목과 내용을 입력하세요')
-    if title == (q.get('title') or '') and bd == (q.get('body') or '') and oid == (q.get('order_id') or ''):
+    cat = _inq_cat_in(body)
+    cat_changed = bool(cat) and cat != inq_category(q)[0]
+    if title == (q.get('title') or '') and bd == (q.get('body') or '') and oid == (q.get('order_id') or '') and not cat_changed:
         return {'ok': True, 'changed': False}
     hid = _inq_snapshot(q, 'EDIT', m, request)
     n = run("UPDATE member_inquiries SET title=?, body=?, order_id=?, edited_at=?, edit_count=COALESCE(edit_count,0)+1 "
@@ -16880,6 +16961,9 @@ def api_m_inq_update(request: Request, body: dict = Body(...)):
         try: run('DELETE FROM member_inquiry_history WHERE id=?', (hid,))
         except Exception: pass
         raise HTTPException(409, '방금 답변이 등록되어 수정할 수 없습니다 — 새로고침해 주세요')
+    if cat:
+        try: run('UPDATE member_inquiries SET category=? WHERE id=?', (cat, q['id']))
+        except Exception: pass
     return {'ok': True, 'changed': True}
 
 @admin_router.post('/api/member/inquiries/delete')

@@ -1742,6 +1742,9 @@ def ensure_ready():
            rtype TEXT, reason TEXT, created TEXT, status TEXT DEFAULT '접수', admin_memo TEXT, updated TEXT, customer_id TEXT)""",
         """CREATE TABLE IF NOT EXISTS member_inquiries(id TEXT PRIMARY KEY, member_id TEXT, order_id TEXT,
            title TEXT, body TEXT, created TEXT, status TEXT DEFAULT '접수', answer TEXT, answered_at TEXT, answered_by TEXT, customer_id TEXT)""",
+        """CREATE TABLE IF NOT EXISTS member_inquiry_history(id TEXT PRIMARY KEY, inquiry_id TEXT, action TEXT,
+           title TEXT, body TEXT, order_id TEXT, photos TEXT, status TEXT, created TEXT,
+           member_id TEXT, customer_id TEXT, ip TEXT, user_agent TEXT)""",
         """CREATE TABLE IF NOT EXISTS member_pqna(id TEXT PRIMARY KEY, member_id TEXT, product_id TEXT,
            question TEXT, created TEXT, status TEXT DEFAULT '접수', answer TEXT, answered_at TEXT, answered_by TEXT, customer_id TEXT)""",
         """CREATE TABLE IF NOT EXISTS phone_verifications(id TEXT PRIMARY KEY, member_id TEXT, phone TEXT,
@@ -1937,6 +1940,13 @@ def ensure_ready():
     if icx and 'photos' not in icx:
         try: run('ALTER TABLE member_inquiries ADD COLUMN photos TEXT')
         except Exception: pass
+    # 고객 직접 수정·삭제 (2026-10-20) — 수정 횟수·최종 수정/삭제 시각. 원문은 member_inquiry_history
+    for col, typ in (('edited_at', 'TEXT'), ('edit_count', 'INTEGER DEFAULT 0'), ('deleted_at', 'TEXT')):
+        if icx and col not in icx:
+            try: run('ALTER TABLE member_inquiries ADD COLUMN %s %s' % (col, typ))
+            except Exception: pass
+    try: run('CREATE INDEX IF NOT EXISTS idx_inq_hist ON member_inquiry_history(inquiry_id, created)')
+    except Exception: pass
     pcx = _cols('products')
     for col in ('img', 'descr', 'category', 'detail_html', 'gallery', 'badge', 'badge_color', 'created_at', 'related_ids',
                 'info_rows', 'ship_rows', 'show_from', 'show_until', 'preview_token', 'options', 'tabs', 'hero_bg', 'bundle'):
@@ -6550,7 +6560,7 @@ async function saveSeo(){try{
 
 async function loadCS(){try{const d=await api('/admin/api/cs');
  window._CSINQ={};(d.inq||[]).forEach(q=>{_CSINQ[q.id]=q});/*mpShipAddrEdit — 배송지 변경 모달의 원문 참조·자동 입력용*/
- const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':v==='거절'?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
+ const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':(v==='거절'||v==='고객삭제')?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
  $('#csreq').innerHTML=d.reqs.length?`<table><tr><th>일시</th><th>유형</th><th>주문번호</th><th>회원</th><th>사유</th><th>상태</th><th></th></tr>
  ${d.reqs.map(r=>`<tr><td class="mono">${esc(r.created)}</td><td><b>${esc(r.rtype)}</b></td><td class="mono" style="font-size:11px">${esc(r.order_id)}</td>
  <td>${esc(r.mname)}<br><span class="mono" style="font-size:10.5px;color:#888">${esc(r.mphone)}</span></td>
@@ -6558,13 +6568,23 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
  <td>${stag(r.status)}</td><td>${can(1)?`<button class="btn sm ghost" onclick="csReq('${r.id}')">처리</button>`:''}</td></tr>`).join('')}</table>`:'<div class="loading">요청 없음</div>';
  const block=(rows,kind)=>rows.length?rows.map(q=>`<div style="border-bottom:1px solid var(--line);padding:10px 4px">
  <div class="cs-head" onclick="${q.cid?`openAccount('${esc(q.cid)}')`:`toast('연결된 회원 계정을 찾을 수 없습니다')`}" title="클릭 → 회원번호·구매내역·CS 이력" style="cursor:pointer;margin:-4px;padding:4px;border-radius:4px" onmouseover="this.style.background='#faf9f5'" onmouseout="this.style.background=''">
- <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${q.cno?` · <b class="mono" style="color:#E8332A">${esc(q.cno)}</b>`:''}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span></div>
- <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap">${esc(kind==='inq'?q.body:q.question)}</div>
+ <b>${esc(kind==='inq'?q.title:q.pname)}</b> ${stag(q.status)}${kind==='inq'&&q.edits?` <span class="st PENDING" title="최종 수정 ${esc(q.edited_at)}">고객수정 ${q.edits}회</span>`:''} <span class="hint" style="display:inline">${esc(q.created)} · ${esc(q.mname)}${q.cno?` · <b class="mono" style="color:#E8332A">${esc(q.cno)}</b>`:''}${kind==='inq'&&q.order_id?' · '+esc(q.order_id):''}</span></div>
+ ${kind==='inq'&&q.deleted_at?`<div style="margin-top:6px;font-size:12px;color:#B71F18"><b>고객이 ${esc(q.deleted_at)}에 직접 삭제한 문의</b> — 고객 화면에서는 보이지 않으며 답변할 수 없습니다. 원문·삭제 기록은 [이력]에서 확인</div>`:''}
+ <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap;${kind==='inq'&&q.deleted_at?'color:#999':''}">${esc(kind==='inq'?q.body:q.question)}</div>
  ${(q.photos&&q.photos.length)?`<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${q.photos.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" style="width:72px;height:72px;object-fit:cover;border:1px solid var(--line)"></a>`).join('')}</div>`:''}
  ${q.answer?`<div style="margin-top:6px;background:#faf9f5;padding:8px;font-size:12.5px;white-space:pre-wrap"><b>답변</b> ${esc(q.answer)}</div>`:''}
- <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}${kind==='inq'&&q.order_id&&can(1)?`<button class="btn sm ghost" onclick="shipAddrEdit('${esc(q.order_id)}','${esc(q.id)}')" title="이 화면에서 주문 배송지를 바로 변경 — 저장 시 답변 종결·안내 문자까지 한 번에">배송지 변경</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
+ <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)&&!(kind==='inq'&&q.status==='고객삭제')?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${kind==='inq'&&(q.edits||q.deleted_at)?`<button class="btn sm ghost" onclick="csInqHist('${esc(q.id)}')" title="고객이 수정·삭제하기 전 원문">이력</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}${kind==='inq'&&q.order_id&&can(1)?`<button class="btn sm ghost" onclick="shipAddrEdit('${esc(q.order_id)}','${esc(q.id)}')" title="이 화면에서 주문 배송지를 바로 변경 — 저장 시 답변 종결·안내 문자까지 한 번에">배송지 변경</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
  $('#csinq').innerHTML=block(d.inq,'inq');$('#cspq').innerHTML=block(d.pqna,'pqna');
 }catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+/*mpInqHist — 고객 수정·삭제 전 원문 확인 (2026-10-20)*/
+async function csInqHist(id){try{const d=await api('/admin/api/cs/inq-history/'+encodeURIComponent(id));const c=d.current;
+ const card=(lbl,t,b,o,ph,meta)=>`<div style="border:1px solid var(--line);padding:10px;margin-bottom:8px"><div class="hint" style="margin-bottom:4px"><b>${esc(lbl)}</b> · ${esc(meta)}</div>
+ <div><b>${esc(t)}</b>${o?` <span class="mono" style="font-size:11px">· ${esc(o)}</span>`:''}</div><div style="margin-top:4px;font-size:12.5px;white-space:pre-wrap">${esc(b)}</div>
+ ${(ph&&ph.length)?`<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${ph.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" style="width:56px;height:56px;object-fit:cover;border:1px solid var(--line)"></a>`).join('')}</div>`:''}</div>`;
+ $('#mbox').innerHTML=`<h3>1:1 문의 수정·삭제 이력</h3><div class="hint" style="margin-bottom:10px">최초 등록 ${esc(c.created)}${c.edited_at?' · 최종 수정 '+esc(c.edited_at):''}${c.deleted_at?' · 고객 삭제 '+esc(c.deleted_at):''} — 오래된 순</div>
+ ${d.history.map(h=>card(h.action,h.title,h.body,h.order_id,h.photos,h.at+(h.ip?' · IP '+h.ip:''))).join('')||'<div class="loading">이력 없음</div>'}
+ ${card(c.status==='고객삭제'?'최종 내용 (삭제됨)':'현재 내용',c.title,c.body,c.order_id,c.photos,c.status)}
+ <div style="text-align:right;margin-top:8px"><button class="btn ghost" onclick="closeM()">닫기</button></div>`;$('#mbg').style.display='flex'}catch(e){toast(e.message)}}
 async function csAnswer(kind,id){const ans=prompt('답변 내용을 입력하세요 (회원에게 표시됩니다)');if(!ans)return;
  try{await api('/admin/api/cs/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id,answer:ans})});toast('답변 등록');loadCS()}catch(e){toast(e.message)}}
 let _csAfter=null;
@@ -10052,7 +10072,23 @@ async function inqPane(){const d=await api('/api/member/inquiries');
  (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q">'+esc(q.title)+' <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+(q.order_id?' · '+esc(q.order_id):'')+'</span></div>'+
  '<div style="margin-top:6px;white-space:pre-wrap;font-size:13px">'+esc(q.body)+'</div>'+
  ((q.photos&&q.photos.length)?'<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'+q.photos.map(u=>'<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" style="width:64px;height:64px;object-fit:cover;border:1px solid #ddd"></a>').join('')+'</div>':'')+
- (q.answer?'<div class="a"><b>맵달SEOUL 답변</b> <span class="hint" style="display:inline">'+esc(q.answered_at)+'</span><br>'+esc(q.answer)+'</div>':'')+'</div>').join(''):'<div class="empty">문의 내역이 없습니다</div>')+'</div>'}
+ (q.answer?'<div class="a"><b>맵달SEOUL 답변</b> <span class="hint" style="display:inline">'+esc(q.answered_at)+'</span><br>'+esc(q.answer)+'</div>':'')+
+ (q.editable?'<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="b ghost" style="padding:5px 12px;font-size:12px" onclick="inqEdit(\''+esc(q.id)+'\')">수정</button><button class="b ghost" style="padding:5px 12px;font-size:12px" onclick="inqDel(\''+esc(q.id)+'\')">삭제</button>'+(q.edited?'<span class="hint" style="display:inline">수정됨</span>':'')+'</div><div id="iqe_'+esc(q.id)+'"></div>':'')+'</div>').join(''):'<div class="empty">문의 내역이 없습니다</div>')+
+ '<div class="hint" style="margin-top:8px">답변 전 문의는 직접 수정·삭제할 수 있습니다. 답변이 등록된 후에는 수정·삭제할 수 없습니다.</div></div>';
+ window._INQ={};d.rows.forEach(q=>{_INQ[q.id]=q})}
+/*mpInqEdit — 고객 직접 수정·삭제 (2026-10-20)*/
+function inqEdit(id){const q=(window._INQ||{})[id];const box=$('#iqe_'+id);if(!q||!box)return;
+ if(box.innerHTML){box.innerHTML='';return}
+ box.innerHTML='<div style="margin-top:8px;padding:10px;background:#faf9f5;border:1px solid var(--line)">'+
+ '<label>제목</label><input id="iqet_'+id+'"><label>내용</label><textarea id="iqeb_'+id+'" rows="4"></textarea>'+
+ '<label>관련 주문번호 (선택)</label><input id="iqeo_'+id+'">'+
+ '<div style="margin-top:8px;display:flex;gap:6px"><button class="b" onclick="inqSave(\''+id+'\',this)">저장</button><button class="b ghost" onclick="inqEdit(\''+id+'\')">취소</button></div></div>';
+ $('#iqet_'+id).value=q.title;$('#iqeb_'+id).value=q.body;$('#iqeo_'+id).value=q.order_id||''}
+async function inqSave(id,btn){btn.disabled=true;
+ try{const r=await post('/api/member/inquiries/update',{id,title:$('#iqet_'+id).value,body:$('#iqeb_'+id).value,order_id:$('#iqeo_'+id).value});
+ toast(r&&r.changed===false?'변경된 내용이 없습니다':'문의가 수정되었습니다');inqPane()}catch(e){toast(e.message);btn.disabled=false}}
+async function inqDel(id){if(!confirm('이 문의를 삭제할까요?\n문제가 해결되어 더 이상 답변이 필요 없을 때 삭제해 주세요.'))return;
+ try{await post('/api/member/inquiries/delete',{id});toast('문의가 삭제되었습니다');inqPane()}catch(e){toast(e.message)}}
 async function inqAdd(){const btn=$('#iqbtn');btn.disabled=true;
  try{const files=Array.from(($('#iqp').files)||[]).slice(0,3);const photos=[];
  for(const f of files){const fd=new FormData();fd.append('file',f);
@@ -10182,14 +10218,14 @@ def api_accounts(request: Request):
     support=p.get('support') or ''
     support_where={
         'request': "EXISTS(SELECT 1 FROM member_requests x WHERE x.customer_id=c.id AND x.status IN ('접수','처리중'))",
-        'inquiry': "EXISTS(SELECT 1 FROM member_inquiries x WHERE x.customer_id=c.id AND x.status<>'답변완료')",
+        'inquiry': "EXISTS(SELECT 1 FROM member_inquiries x WHERE x.customer_id=c.id AND x.status NOT IN ('답변완료','고객삭제'))",
         'pqna': "EXISTS(SELECT 1 FROM member_pqna x WHERE x.customer_id=c.id AND x.status<>'답변완료')",
         'restock': "EXISTS(SELECT 1 FROM member_restock x WHERE x.customer_id=c.id AND x.notified=0)",
         'liked': "EXISTS(SELECT 1 FROM member_likes x WHERE x.customer_id=c.id)",
         'sessions': "EXISTS(SELECT 1 FROM member_sessions s JOIN members m ON m.id=s.member_id WHERE m.customer_id=c.id AND s.expires>?)",
     }
     if support=='pending':
-        where.append("(EXISTS(SELECT 1 FROM member_requests x WHERE x.customer_id=c.id AND x.status IN ('접수','처리중')) OR EXISTS(SELECT 1 FROM member_inquiries x WHERE x.customer_id=c.id AND x.status<>'답변완료') OR EXISTS(SELECT 1 FROM member_pqna x WHERE x.customer_id=c.id AND x.status<>'답변완료'))")
+        where.append("(EXISTS(SELECT 1 FROM member_requests x WHERE x.customer_id=c.id AND x.status IN ('접수','처리중')) OR EXISTS(SELECT 1 FROM member_inquiries x WHERE x.customer_id=c.id AND x.status NOT IN ('답변완료','고객삭제')) OR EXISTS(SELECT 1 FROM member_pqna x WHERE x.customer_id=c.id AND x.status<>'답변완료'))")
     elif support in support_where:
         where.append(support_where[support])
         if support=='sessions': args.append(now_iso())
@@ -10205,7 +10241,7 @@ def api_accounts(request: Request):
         stats=one("SELECT COUNT(*) AS cnt,COALESCE(SUM(CASE WHEN status='PAID' THEN amount ELSE 0 END),0) AS spend,MAX(created) AS last_order FROM orders WHERE customer_id=?",(c['id'],)) or {}
         mp=one("SELECT "
                "(SELECT COUNT(*) FROM member_requests WHERE customer_id=? AND status IN ('접수','처리중')) AS req,"
-               "(SELECT COUNT(*) FROM member_inquiries WHERE customer_id=? AND status<>'답변완료') AS inq,"
+               "(SELECT COUNT(*) FROM member_inquiries WHERE customer_id=? AND status NOT IN ('답변완료','고객삭제')) AS inq,"
                "(SELECT COUNT(*) FROM member_pqna WHERE customer_id=? AND status<>'답변완료') AS pqna,"
                "(SELECT COUNT(*) FROM member_restock WHERE customer_id=? AND notified=0) AS restock,"
                "(SELECT COUNT(*) FROM member_likes WHERE customer_id=?) AS likes,"
@@ -10220,7 +10256,7 @@ def api_accounts(request: Request):
                     'support':{k:num(mp.get(k)) for k in ('req','inq','pqna','restock','likes','sessions')}})
     queues={
         'request':num((one("SELECT COUNT(*) AS c FROM member_requests WHERE status IN ('접수','처리중')") or {}).get('c')),
-        'inquiry':num((one("SELECT COUNT(*) AS c FROM member_inquiries WHERE status<>'답변완료'") or {}).get('c')),
+        'inquiry':num((one("SELECT COUNT(*) AS c FROM member_inquiries WHERE status NOT IN ('답변완료','고객삭제')") or {}).get('c')),
         'pqna':num((one("SELECT COUNT(*) AS c FROM member_pqna WHERE status<>'답변완료'") or {}).get('c')),
         'restock':num((one("SELECT COUNT(*) AS c FROM member_restock WHERE notified=0") or {}).get('c')),
         'locked':num((one("SELECT COUNT(*) AS c FROM customer_profiles WHERE status='LOCKED'") or {}).get('c')),
@@ -15576,6 +15612,8 @@ def api_cs(request: Request):
                      'mname': r.get('mname') or '', 'email': r.get('email') or '',
                      'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
                      'answer': r.get('answer') or '', 'photos': jload(r.get('photos'), []),
+                     'edits': num(r.get('edit_count')), 'edited_at': (r.get('edited_at') or '')[:16].replace('T', ' '),
+                     'deleted_at': (r.get('deleted_at') or '')[:16].replace('T', ' '),
                      'cid': r.get('cid') or '', 'cno': r.get('cno') or ''} for r in inq],
             'pqna': [{'id': r['id'], 'pname': r.get('pname') or r.get('product_id'), 'question': r['question'],
                       'mname': r.get('mname') or '', 'created': (r['created'] or '')[:16].replace('T', ' '),
@@ -15592,11 +15630,34 @@ def api_cs_answer(request: Request, body: dict = Body(...)):
     kind = body.get('kind'); ans = (body.get('answer') or '').strip()[:2000]
     if kind not in ('inq', 'pqna') or not ans: raise HTTPException(400, '답변 내용을 입력하세요')
     t = 'member_inquiries' if kind == 'inq' else 'member_pqna'
-    n = run("UPDATE %s SET answer=?, status='답변완료', answered_at=?, answered_by=? WHERE id=?" % t,
+    if kind == 'inq':
+        cur = one('SELECT status FROM member_inquiries WHERE id=?', (body.get('id'),))
+        if cur and cur.get('status') == '고객삭제':
+            raise HTTPException(409, '고객이 삭제한 문의입니다 — 답변할 수 없습니다 (원문은 [이력]에서 확인)')
+    n = run("UPDATE %s SET answer=?, status='답변완료', answered_at=?, answered_by=? WHERE id=?%s" % (
+                t, " AND status<>'고객삭제'" if kind == 'inq' else ''),
             (ans, now_iso(), a['name'], body.get('id')))
     if not n: raise HTTPException(404, 'not found')
     audit(a, '문의답변', body.get('id'), ('1:1' if kind == 'inq' else '상품Q&A'))
     return {'ok': True}
+
+@admin_router.get('/admin/api/cs/inq-history/{iid}')
+def api_cs_inq_history(iid: str, request: Request):
+    """1:1 문의 수정·삭제 이력 — 고객이 고치거나 지우기 전의 원문 스냅샷(분쟁 확인용). 조회 기록은 감사로그에 남긴다."""
+    a = get_actor(request); need(a, 0)
+    q = one('SELECT id, title, body, order_id, photos, status, created, edited_at, deleted_at FROM member_inquiries WHERE id=?', (iid,))
+    if not q: raise HTTPException(404, '문의를 찾을 수 없습니다')
+    hs = rows('SELECT action, title, body, order_id, photos, status, created, ip FROM member_inquiry_history '
+              'WHERE inquiry_id=? ORDER BY created', (iid,))
+    audit(a, '문의이력조회', iid, '%d건' % len(hs))
+    f = lambda v: (v or '')[:19].replace('T', ' ')
+    return {'current': {'title': q.get('title') or '', 'body': q.get('body') or '', 'order_id': q.get('order_id') or '',
+                        'photos': jload(q.get('photos'), []), 'status': q.get('status') or '',
+                        'created': f(q.get('created')), 'edited_at': f(q.get('edited_at')), 'deleted_at': f(q.get('deleted_at'))},
+            'history': [{'action': {'EDIT': '수정 전 원문', 'DELETE': '삭제 시점 원문'}.get(h.get('action'), h.get('action')),
+                         'title': h.get('title') or '', 'body': h.get('body') or '', 'order_id': h.get('order_id') or '',
+                         'photos': jload(h.get('photos'), []), 'status': h.get('status') or '',
+                         'at': f(h.get('created')), 'ip': h.get('ip') or ''} for h in hs]}
 
 @admin_router.post('/admin/api/cs/req-update')
 def api_cs_req(request: Request, body: dict = Body(...)):
@@ -16622,8 +16683,70 @@ def api_m_inq_list(request: Request):
     return {'rows': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
                       'photos': jload(r.get('photos'), []),
-                      'answer': r.get('answer') or '', 'answered_at': (r.get('answered_at') or '')[:16].replace('T', ' ')}
-                     for r in rows('SELECT * FROM member_inquiries WHERE customer_id=? ORDER BY created DESC LIMIT 50', (m.get('customer_id') or '',))]}
+                      'answer': r.get('answer') or '', 'answered_at': (r.get('answered_at') or '')[:16].replace('T', ' '),
+                      'editable': (r.get('status') or '') == '접수' and not (r.get('answer') or '').strip(),
+                      'edited': num(r.get('edit_count')) > 0}
+                     for r in rows("SELECT * FROM member_inquiries WHERE customer_id=? AND COALESCE(status,'')<>'고객삭제' "
+                                   "ORDER BY created DESC LIMIT 50", (m.get('customer_id') or '',))]}
+
+
+# ── 1:1 문의 고객 직접 수정·삭제 (2026-10-20) ─────────────────────────────────
+#   답변 전('접수')인 본인 문의만 가능. 행은 지우지 않는다(소프트 삭제 status='고객삭제').
+#   수정·삭제 직전의 원문(제목·내용·주문번호·사진·상태)을 member_inquiry_history 에 스냅샷으로 남기고
+#   관리자 [CS] 화면의 [이력]에서 확인한다 — 분쟁 시 원문 확인용. 고객 화면에는 노출하지 않는다.
+#   상태 조건부 UPDATE(…AND status='접수')로, 관리자가 같은 순간 답변하면 고객 변경은 거절된다.
+def _inq_own_open(m, iid):
+    q = one('SELECT * FROM member_inquiries WHERE id=? AND customer_id=?', (str(iid or '')[:64], m.get('customer_id') or ''))
+    if not q or (q.get('status') or '') == '고객삭제':
+        raise HTTPException(404, '문의를 찾을 수 없습니다')
+    if (q.get('status') or '') != '접수' or (q.get('answer') or '').strip():
+        raise HTTPException(409, '답변이 등록된 문의는 수정·삭제할 수 없습니다 — 추가 문의는 새로 남겨 주세요')
+    return q
+
+def _inq_snapshot(q, action, m, request):
+    hid = uid()
+    try: ip = _req_ip(request)
+    except Exception: ip = ''
+    run('INSERT INTO member_inquiry_history(id,inquiry_id,action,title,body,order_id,photos,status,created,member_id,customer_id,ip,user_agent) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (hid, q['id'], action, q.get('title') or '', q.get('body') or '', q.get('order_id') or '', q.get('photos') or '[]',
+         q.get('status') or '', now_iso(), m.get('id') or '', m.get('customer_id') or '', str(ip or '')[:64],
+         str(request.headers.get('user-agent') or '')[:300]))
+    return hid
+
+@admin_router.post('/api/member/inquiries/update')
+def api_m_inq_update(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    q = _inq_own_open(m, body.get('id'))
+    title = (body.get('title') or '').strip()[:80]; bd = (body.get('body') or '').strip()[:2000]
+    oid = body.get('order_id')
+    oid = str(q.get('order_id') or '' if oid is None else oid).strip()[:40]
+    if not title or not bd: raise HTTPException(400, '제목과 내용을 입력하세요')
+    if title == (q.get('title') or '') and bd == (q.get('body') or '') and oid == (q.get('order_id') or ''):
+        return {'ok': True, 'changed': False}
+    hid = _inq_snapshot(q, 'EDIT', m, request)
+    n = run("UPDATE member_inquiries SET title=?, body=?, order_id=?, edited_at=?, edit_count=COALESCE(edit_count,0)+1 "
+            "WHERE id=? AND customer_id=? AND status='접수' AND COALESCE(answer,'')=''",
+            (title, bd, oid, now_iso(), q['id'], m.get('customer_id') or ''))
+    if not n:
+        try: run('DELETE FROM member_inquiry_history WHERE id=?', (hid,))
+        except Exception: pass
+        raise HTTPException(409, '방금 답변이 등록되어 수정할 수 없습니다 — 새로고침해 주세요')
+    return {'ok': True, 'changed': True}
+
+@admin_router.post('/api/member/inquiries/delete')
+def api_m_inq_delete(request: Request, body: dict = Body(...)):
+    m = member_required(request)
+    q = _inq_own_open(m, body.get('id'))
+    hid = _inq_snapshot(q, 'DELETE', m, request)
+    n = run("UPDATE member_inquiries SET status='고객삭제', deleted_at=? "
+            "WHERE id=? AND customer_id=? AND status='접수' AND COALESCE(answer,'')=''",
+            (now_iso(), q['id'], m.get('customer_id') or ''))
+    if not n:
+        try: run('DELETE FROM member_inquiry_history WHERE id=?', (hid,))
+        except Exception: pass
+        raise HTTPException(409, '방금 답변이 등록되어 삭제할 수 없습니다 — 새로고침해 주세요')
+    return {'ok': True}
 
 @admin_router.post('/api/member/pqna')
 def api_m_pqna_create(request: Request, body: dict = Body(...)):

@@ -533,7 +533,7 @@ const $=s=>document.querySelector(s);let D={rows:[],summary:{}};
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const won=n=>Number(n||0).toLocaleString('ko-KR')+'원';const LAB={PAID:'결제완료',UNPAID:'미결제',WAIVED:'면제',CANCELLED:'취소'};
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',3500)}
-async function api(u,o){const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(r.status===401){location.href='/admin';throw new Error('세션 만료')}if(!r.ok)throw new Error(j.detail||'오류');return j}
+async function api(u,o){const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(r.status===401||(r.status===403&&j.detail==='forbidden')){location.reload();throw new Error('세션 만료')}if(!r.ok)throw new Error(j.detail||'오류');return j}
 const post=(u,b)=>api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
 async function load(){try{D=await api('/admin/api/shipfee/list');const s=D.summary;
  $('#cards').innerHTML=[['청구 고객',s.customers+'명',s.orders+'주문'],['결제완료',s.PAID.n+'명',won(s.PAID.amount)],['미결제',s.UNPAID.n+'명',won(s.UNPAID.amount)],
@@ -569,7 +569,8 @@ def admin_page(request: Request):
     try:
         _actor(request, 0, '추가 배송비 조회')
     except HTTPException as e:
-        if e.status_code == 401:
-            return RedirectResponse('/admin', status_code=303)
-        return HTMLResponse('<meta charset=utf-8><p style="padding:40px">%s</p>' % _h(e.detail), status_code=e.status_code)
+        if e.status_code in (401, 403) and 'forbidden' in str(e.detail):   # 미로그인·세션만료 → 관리자 로그인 화면
+            return HTMLResponse(_av().LOGIN_HTML)
+        return HTMLResponse('<meta charset=utf-8><body style="font-family:sans-serif;padding:60px;text-align:center">'
+                            '<h3>%s</h3><a href="/admin/dashboard">대시보드로 돌아가기</a>' % _h(e.detail), status_code=e.status_code)
     return HTMLResponse(_ADMIN, headers={'Cache-Control': 'no-store'})

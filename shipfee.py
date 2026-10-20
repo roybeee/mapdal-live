@@ -953,7 +953,7 @@ th,td{border-bottom:1px solid #eee;padding:7px 8px;text-align:left;vertical-alig
  <span class="hint">결제완료 · 일반배송 · 배송비 0원 결제 · 배송비 필수부과 상품 포함 주문. 이미 청구된 주문은 제외되므로 여러 번 실행해도 안전합니다(입금 대기 주문이 나중에 결제되면 다시 실행).</span></div>
 <div class="bar"><b>결제 기한</b> <input id="dl" type="datetime-local" style="width:200px"><button class="g" onclick="saveDl()">기한 저장</button>
  <span class="hint" id="dlst"></span></div>
-<details class="bar" id="txbox" style="display:block"><summary style="cursor:pointer;font-weight:700">고객 결제 페이지 · 안내문 문구 수정 <span class="hint" style="font-weight:400">— 저장하면 모든 고객 링크·이후 발송 문자/메일에 즉시 반영</span></summary>
+<details class="bar" id="txbox" style="display:block"><summary style="cursor:pointer;font-weight:700;color:#E8332A">고객 결제 페이지 · 안내문 문구 수정 <span style="font-weight:400;font-size:12px;color:#E8332A">— 저장하면 모든 고객 링크·이후 발송 문자/메일에 즉시 반영</span></summary>
  <div class="hint" style="margin:8px 0">사용 가능한 치환어: <b>{name}</b> 고객 이름(결제 페이지는 가운데 * 처리) · <b>{deadline}</b> 결제 기한 · <b>{link}</b> 고객 전용 링크(안내문 본문 필수). 줄바꿈은 그대로 반영됩니다. 비우면 기본 문구로 돌아갑니다.</div>
  <div id="txf" style="display:grid;grid-template-columns:200px 1fr;gap:8px 12px;align-items:start"></div>
  <div style="display:flex;gap:8px;margin-top:10px"><button onclick="saveTx()">문구 저장 (일괄 반영)</button><button class="g" onclick="pvTx()">결제 페이지 미리보기</button><button class="g" onclick="resetTx()">전체 기본 문구로 되돌리기</button><span class="hint" id="txst"></span></div>

@@ -36,7 +36,7 @@ class StockBaselineTests(unittest.TestCase):
                    're': re, 'Request': object, 'Body': lambda x: None,
                    '_state': {'pcols': {'stock_baseline', 'name', 'options', 'show_from', 'show_until'}, 'pname': 'name', 'pprice': None}}
         tree = ast.parse((Path(__file__).parents[1] / 'admin_v2.py').read_text())
-        names = {'num', 'rows', 'one', 'run', 'jload', '_product_stock_baselines',
+        names = {'num', 'rows', 'one', 'run', 'jload', '_product_stock_baselines', '_rule_body',
                  '_cancel_order_stock', '_catalog_stock_totals', '_prod_opts_admin', '_prod_opts_sync',
                  'api_product_detail_update', '_prod_opts_norm', '_bundle_norm'}
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]

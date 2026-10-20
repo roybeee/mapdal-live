@@ -181,10 +181,8 @@ def conf():
     for k, v in ((c.get('texts') or {}) if isinstance(c.get('texts'), dict) else {}).items():
         if k in t and isinstance(v, str) and v.strip():
             t[k] = v
-    ex = c.get('extra') if isinstance(c.get('extra'), dict) else {}
-    extra = {'jeju': _int(ex.get('jeju'), 3000), 'remote': _int(ex.get('remote'), 5000),
-             'remote_keywords': str(ex.get('remote_keywords') if ex.get('remote_keywords') is not None else DEFAULT_REMOTE_KEYWORDS),
-             'remote_zips': str(ex.get('remote_zips') or '')}
+    import shipregion
+    extra = shipregion.rates()
     return {'deadline': str(c.get('deadline') or DEFAULT_DEADLINE)[:16], 'texts': t, 'extra': extra}
 
 
@@ -195,36 +193,11 @@ def _int(v, d):
         return d
 
 
-# ── 제주·도서산간 추가 배송비 (2026-10-20) ──
-#   제주: 우편번호 63000~63644 또는 주소가 '제주'로 시작. 금액은 관리자 화면에서 변경.
-#   도서산간: 관리자가 지정한 지역명(시·군 단위 — '자은동' 같은 동 이름 오인 방지)·우편번호 범위.
-DEFAULT_REMOTE_KEYWORDS = '울릉군, 옹진군, 신안군, 완도군, 진도군'
-
-
-def _zip_ranges(txt):
-    out = []
-    for part in re.split(r'[\s,]+', str(txt or '')):
-        m = re.fullmatch(r'(\d{5})(?:-(\d{5}))?', part.strip())
-        if m:
-            a = int(m.group(1)); b = int(m.group(2) or m.group(1))
-            out.append((min(a, b), max(a, b)))
-    return out
-
-
+# ── 제주·도서산간 추가 배송비 — shipregion(업계 표준 우편번호 기준표 · 결제와 공용)으로 판정 ──
 def region_of(b, ex=None):
     """배송지 → ('jeju'|'remote'|'', 추가금액)."""
-    ex = ex or conf()['extra']
-    b = b or {}
-    z = re.sub(r'\D', '', str(b.get('zip') or ''))[:5]
-    a1 = re.sub(r'\s+', ' ', str(b.get('addr1') or '')).strip()
-    if (len(z) == 5 and 63000 <= int(z) <= 63644) or a1.startswith('제주'):
-        return 'jeju', ex['jeju']
-    kws = [k.strip() for k in re.split(r'[,\n]+', ex['remote_keywords']) if k.strip()]
-    if any(re.search(r'(^|\s)' + re.escape(k) + r'(\s|$)', a1) for k in kws):
-        return 'remote', ex['remote']
-    if len(z) == 5 and any(lo <= int(z) <= hi for lo, hi in _zip_ranges(ex['remote_zips'])):
-        return 'remote', ex['remote']
-    return '', 0
+    import shipregion
+    return shipregion.extra_for(b or {}, ex)
 
 
 def _raw_conf():
@@ -475,22 +448,15 @@ def api_conf(request: Request, body: dict = Body(...)):
             raise HTTPException(400, '결제 기한 형식이 올바르지 않습니다 (예: 2026-10-31T23:59)')
         new['deadline'] = dl; log.append('기한 ' + dl)
     if isinstance(body.get('extra'), dict):
-        e = body['extra']; cur_ex = dict(cur.get('extra') or {}) if isinstance(cur.get('extra'), dict) else {}
-        for k in ('jeju', 'remote'):
-            if k in e:
-                try: v = int(e[k])
-                except Exception: raise HTTPException(400, '추가 배송비는 숫자로 입력하세요')
-                if not 0 <= v <= 50000: raise HTTPException(400, '추가 배송비는 0~50,000원 사이여야 합니다')
-                cur_ex[k] = v
-        if 'remote_keywords' in e: cur_ex['remote_keywords'] = str(e['remote_keywords'] or '')[:500]
-        if 'remote_zips' in e:
-            z = str(e['remote_zips'] or '')[:3000]
-            bad = [p_ for p_ in re.split(r'[\s,]+', z) if p_.strip() and not re.fullmatch(r'\d{5}(-\d{5})?', p_.strip())]
-            if bad: raise HTTPException(400, '우편번호 형식 오류: %s (예: 40200-40240, 23100)' % ', '.join(bad[:3]))
-            cur_ex['remote_zips'] = z
-        new['extra'] = cur_ex; log.append('추가배송비 %s' % cur_ex)
-    elif isinstance(cur.get('extra'), dict):
-        new['extra'] = cur['extra']
+        import shipregion
+        e = body['extra']; cur_r = shipregion.rates()
+        try:
+            jj = int(e.get('jeju', cur_r['jeju'])); rr = int(e.get('remote', cur_r['remote']))
+        except Exception:
+            raise HTTPException(400, '추가 배송비는 숫자로 입력하세요')
+        if not (0 <= jj <= 50000 and 0 <= rr <= 50000):
+            raise HTTPException(400, '추가 배송비는 0~50,000원 사이여야 합니다')
+        shipregion.set_rates(jj, rr, a['name']); log.append('지역추가 제주%d·도서%d' % (jj, rr))
     if isinstance(body.get('texts'), dict):
         lim = {k: n for k, _, n in TEXT_FIELDS}
         for k, v in body['texts'].items():
@@ -1042,10 +1008,8 @@ th,td{border-bottom:1px solid #eee;padding:7px 8px;text-align:left;vertical-alig
  <span class="hint" id="dlst"></span></div>
 <div class="bar"><b>지역 추가 배송비</b> 제주 +<input id="exj" type="number" min="0" step="500" style="width:90px">원
  도서·산간 +<input id="exr" type="number" min="0" step="500" style="width:90px">원
- <input id="exk" placeholder="도서·산간 지역명(시·군)" style="width:260px" title="쉼표로 구분 — 주소에 시·군 이름이 단어로 들어간 경우 적용">
- <input id="exz" placeholder="도서·산간 우편번호 (예: 40200-40240, 23100)" style="width:300px">
  <button class="g" onclick="saveEx()">추가 배송비 저장</button>
- <span class="hint">제주: 우편번호 63000~63644 자동 인식. 저장하면 미결제 고객 청구액에 즉시 반영됩니다.</span></div>
+ <span class="hint">우편번호 기준 자동 판정(업계 표준 제주·도서산간 기준표) · <b>쇼핑몰 결제에도 공통 적용</b> · 저장하면 미결제 청구액에 즉시 반영</span></div>
 <details class="bar" id="txbox" style="display:block"><summary style="cursor:pointer;font-weight:700;color:#E8332A">고객 결제 페이지 · 안내문 문구 수정 <span style="font-weight:400;font-size:12px;color:#E8332A">— 저장하면 모든 고객 링크·이후 발송 문자/메일에 즉시 반영</span></summary>
  <div class="hint" style="margin:8px 0">사용 가능한 치환어: <b>{name}</b> 고객 이름(결제 페이지는 가운데 * 처리) · <b>{deadline}</b> 결제 기한 · <b>{link}</b> 고객 전용 링크(안내문 본문 필수). 줄바꿈은 그대로 반영됩니다. 비우면 기본 문구로 돌아갑니다.</div>
  <div id="txf" style="display:grid;grid-template-columns:200px 1fr;gap:8px 12px;align-items:start"></div>
@@ -1108,10 +1072,10 @@ async function st(id,s){const note=s==='WAIVED'?prompt('면제 사유 (선택)')
  try{await post('/admin/api/shipfee/status',{id,status:s,note});toast('변경했습니다');load()}catch(e){toast(e.message)}}
 function cp(u){(navigator.clipboard?navigator.clipboard.writeText(u):Promise.reject()).then(()=>toast('링크를 복사했습니다')).catch(()=>prompt('링크',u))}
 let TX=null;
-async function saveEx(){try{const d=await post('/admin/api/shipfee/conf',{extra:{jeju:Number($('#exj').value||0),remote:Number($('#exr').value||0),remote_keywords:$('#exk').value,remote_zips:$('#exz').value}});
+async function saveEx(){try{const d=await post('/admin/api/shipfee/conf',{extra:{jeju:Number($('#exj').value||0),remote:Number($('#exr').value||0)}});
  toast(`추가 배송비 저장 — 제주 +${won(d.extra.jeju)} · 도서산간 +${won(d.extra.remote)}`);load()}catch(e){toast(e.message)}}
 async function loadTx(){try{TX=await api('/admin/api/shipfee/conf');
- if(TX.extra){$('#exj').value=TX.extra.jeju;$('#exr').value=TX.extra.remote;$('#exk').value=TX.extra.remote_keywords||'';$('#exz').value=TX.extra.remote_zips||''}
+ if(TX.extra){$('#exj').value=TX.extra.jeju;$('#exr').value=TX.extra.remote}
  $('#txf').innerHTML=TX.fields.map(f=>`<label style="font-weight:700;padding-top:6px">${esc(f.label)}</label><textarea data-k="${f.key}" rows="${f.max>1500?(f.key==='message'?16:5):(f.max>100?3:1)}" maxlength="${f.max}" style="width:100%;font:inherit;padding:7px 8px;border:1px solid #ccc">${esc(TX.texts[f.key]||'')}</textarea>`).join('');
  $('#txst').textContent=''}catch(e){toast(e.message)}}
 function txVals(){const o={};document.querySelectorAll('#txf textarea').forEach(t=>o[t.dataset.k]=t.value);return o}

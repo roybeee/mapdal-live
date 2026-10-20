@@ -11832,6 +11832,8 @@ def _rule_of_row(r, drop_idx):
     if pid in drop_idx:
         return drop_idx[pid] + (True,)
     sr, cp = _rule_bool(r.get('ship_required')), _rule_bool(r.get('coupon_ok'))
+    if pid.startswith('mpd::'):                          # 이벤트 옵션 상품은 연결이 끊겨도 기본 = 필수/불가
+        return (True if sr is None else sr, False if cp is None else cp, sr is not None and cp is not None)
     promo = None
     if sr is None or cp is None:
         promo = _cp_promo_row(r)

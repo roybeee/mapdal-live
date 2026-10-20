@@ -596,6 +596,16 @@ def _ini_mobile_params(order_id: str, amount: int, order_name: str,
             f"{INICIS_MID}{order_id}{amount}{INICIS_MOBILE_HASHKEY}")
     return p
 
+@app.get('/api/ship/region')
+def ship_region(zip: str = '', addr: str = ''):
+    """체크아웃 표시용 — 배송지 우편번호의 제주·도서산간 추가 배송비. 실제 금액은 /api/orders 가 재계산."""
+    try:
+        import shipregion
+        reg, extra = shipregion.extra_for({'zip': zip[:10], 'addr1': addr[:200]})
+        return {'region': reg, 'extra': extra, 'label': shipregion.LABEL.get(reg, '')}
+    except Exception:
+        return {'region': '', 'extra': 0, 'label': ''}
+
 @app.get('/api/config')
 def config():
     return {'pg': 'inicis', 'mid': INICIS_MID,
@@ -605,7 +615,14 @@ def config():
             # 체크아웃 결제수단 사전선택 라디오 노출 목록 (2026-08-07).
             #   INICIS_GOPAYMETHOD 환경변수를 그대로 반영 — 수단을 내리면(예: VBank 제거)
             #   재배포 없이 체크아웃 라디오에서도 함께 사라진다(mpPayVbJs가 필터링).
-            'payMethods': [m.strip() for m in INICIS_GOPAYMETHOD.split(':') if m.strip()]}
+            'payMethods': [m.strip() for m in INICIS_GOPAYMETHOD.split(':') if m.strip()],
+            'regionRates': _region_rates()}
+
+def _region_rates():
+    try:
+        import shipregion; return shipregion.rates()
+    except Exception:
+        return {'jeju': 3000, 'remote': 5000}
 
 def _product_id_candidates(pid: str):
     """장바구니가 보낸 상품 ID를 DB 저장 형태로 정규화한 후보 목록을 만든다.
@@ -755,6 +772,13 @@ async def create_order(req: Request, response: Response):
         import admin_v2 as _avr; ship_forced = bool(_avr.ship_required_items(items))
     except Exception as _se:
         print('[ship-rule] %s' % _se, flush=True)
+    # ── 제주·도서산간 추가 배송비 (2026-10-20) — 배송지 우편번호 기준 자동 부과 (무료배송이어도 부과 · 픽업 제외) ──
+    region_name, region_extra = '', 0
+    if ship != 'pickup':
+        try:
+            import shipregion; region_name, region_extra = shipregion.extra_for(buyer)
+        except Exception as _re:
+            print('[ship-region] %s' % _re, flush=True)
     # ── 쿠폰 (2026-10 · growth) ─────────────────────────────────────────────
     #   유효성(기간·잔여·첫 주문 여부)은 주문 트랜잭션 '밖'에서 읽기로 확정하고,
     #   트랜잭션 안에서는 DB 접근 없는 순수 계산(coupon_amount)만 한다 — PG abort 방지.
@@ -824,6 +848,8 @@ async def create_order(req: Request, response: Response):
                 ship_fee = DROP_SHIP_FEE
             else:
                 ship_fee = 0 if sub >= FREE_SHIP_OVER else SHIP_FEE
+            if ship != 'pickup':
+                ship_fee += region_extra
             if coupon:
                 import growth
                 discount = growth.coupon_amount(coupon, sub)
@@ -890,7 +916,8 @@ async def create_order(req: Request, response: Response):
     order_name = name0 + (f' 외 {len(resolved)-1}건' if len(resolved) > 1 else '')
     _pay_log(order_id, 'CREATED', '%s · %s원 · %s%s' %
              ('모바일' if _is_mobile_ua(req) else 'PC', format(amount, ','), order_name[:60],
-              (' · 선택수단 ' + pay_sel) if pay_sel else ''))
+              (' · 선택수단 ' + pay_sel) if pay_sel else '')
+             + ((' · %s +%s원' % ('제주' if region_name == 'jeju' else '도서산간', format(region_extra, ','))) if region_extra else ''))
 
     # ── INIStdPay STEP1 서명 파라미터 생성 (oid=order_id, price=amount) ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -929,7 +956,8 @@ async def create_order(req: Request, response: Response):
     #   기기에 맞는 쪽을 선택한다(서버 UA 판별 결과도 함께 전달).
     inicis_mobile = _ini_mobile_params(order_id, amount, order_name, buyer, origin, pay_sel)
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
-            'sub': sub, 'shipFee': ship_fee, 'discount': discount, 'inicis': inicis,
+            'sub': sub, 'shipFee': ship_fee, 'regionExtra': region_extra, 'region': region_name,
+            'discount': discount, 'inicis': inicis,
             'inicisMobile': inicis_mobile,
             'mobilePayUrl': 'https://mobile.inicis.com/smart/payment/',
             'isMobile': _is_mobile_ua(req)}

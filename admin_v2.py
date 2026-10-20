@@ -16683,7 +16683,7 @@ def api_m_inq_list(request: Request):
     return {'rows': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
                       'photos': jload(r.get('photos'), []),
-                      'answer': r.get('answer') or '', 'answered_at': (r.get('answered_at') or '')[:16].replace('T', ' '),
+                      'answer': contact_mail_apply(r.get('answer') or ''), 'answered_at': (r.get('answered_at') or '')[:16].replace('T', ' '),
                       'editable': (r.get('status') or '') == '접수' and not (r.get('answer') or '').strip(),
                       'edited': num(r.get('edit_count')) > 0}
                      for r in rows("SELECT * FROM member_inquiries WHERE customer_id=? AND COALESCE(status,'')<>'고객삭제' "
@@ -16765,7 +16765,7 @@ def api_m_pqna_list(request: Request):
     rs = rows('SELECT q.*, p.%s AS pname FROM member_pqna q LEFT JOIN products p ON p.id=q.product_id WHERE q.customer_id=? ORDER BY q.created DESC LIMIT 50' % nm, (m.get('customer_id') or '',))
     return {'rows': [{'id': r['id'], 'product': r.get('pname') or r.get('product_id'), 'product_id': r.get('product_id'),
                       'question': r['question'], 'created': (r['created'] or '')[:16].replace('T', ' '),
-                      'status': r['status'], 'answer': r.get('answer') or ''} for r in rs]}
+                      'status': r['status'], 'answer': contact_mail_apply(r.get('answer') or '')} for r in rs]}
 
 @admin_router.get('/api/pqna')
 def api_pqna_public(request: Request):
@@ -16773,7 +16773,7 @@ def api_pqna_public(request: Request):
     except Exception: pass
     pid = request.query_params.get('product_id', '')
     rs = rows("SELECT q.question, q.answer, q.answered_at, m.name FROM member_pqna q LEFT JOIN members m ON m.id=q.member_id WHERE q.product_id=? AND q.status='답변완료' ORDER BY q.created DESC LIMIT 20", (pid,))
-    return {'rows': [{'q': r['question'], 'a': r.get('answer') or '',
+    return {'rows': [{'q': r['question'], 'a': contact_mail_apply(r.get('answer') or ''),
                       'name': ((r.get('name') or '고객')[:1] + '**'),
                       'at': (r.get('answered_at') or '')[:10]} for r in rs]}
 

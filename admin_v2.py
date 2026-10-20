@@ -4886,6 +4886,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <input id="ofrom" type="date"><input id="oto" type="date">
   <button class="btn" onclick="loadOrders(1)">검색</button>
   <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button>
+  <a class="btn" href="/admin/shipfee" target="_blank" style="background:#E8332A;border-color:#E8332A;text-decoration:none" title="배송비 누락 주문 추가 결제 링크·결제 현황">추가 배송비 청구</a>
   <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button>
   <button class="btn ghost" onclick="vbSweep()" id="vbsweepbtn" title="입금기한 만료·결제 미완료 주문을 취소하고 재고를 정리합니다 (자동으로도 주기 실행)">미결제 정리</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
@@ -16031,6 +16032,8 @@ def _order_notify(oid, event):
 
 def order_notify_async(oid, event):
     """결제 리다이렉트·관리자 응답을 붙잡지 않는 백그라운드 발송."""
+    if str(oid or '').startswith('SF-'):   # 추가 배송비 결제 — 주문 알림톡(주문완료·배송) 대상 아님
+        return
     try:
         import threading
         threading.Thread(target=_order_notify, args=(oid, event), daemon=True).start()

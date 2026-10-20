@@ -550,6 +550,12 @@ def _vbank_finalize(oid: str, tid: str, vnum: str, vbank: str, vname: str, vdate
         import admin_v2 as _av; _av.order_notify_async(oid, 'deposit_wait')
     except Exception:
         pass
+    return _paid_redirect(oid)
+
+def _paid_redirect(oid: str):
+    """결제 승인 후 이동 — 추가 배송비(SF-) 주문은 전용 완료 페이지, 그 외는 주문완료."""
+    if str(oid or '').startswith('SF-'):
+        return RedirectResponse(f'/shipfee/done?oid={urllib.parse.quote(oid)}', status_code=303)
     return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
 
 def _ini_mobile_params(order_id: str, amount: int, order_name: str,
@@ -941,6 +947,8 @@ async def inicis_return(req: Request):
 
     def _fail(msg):
         m = urllib.parse.quote(msg[:80])
+        if str(oid).startswith('SF-'):       # 추가 배송비 결제 → 고객 전용 링크로 복귀
+            return RedirectResponse(f'/shipfee/fail?oid={urllib.parse.quote(oid)}&msg={m}', status_code=303)
         return RedirectResponse(f'/checkout?fail=1&msg={m}', status_code=303)
 
     if result_code != '0000':
@@ -959,7 +967,7 @@ async def inicis_return(req: Request):
     if not order:
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
-        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+        return _paid_redirect(oid)
 
     # ── STEP3 승인요청 ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -1041,7 +1049,7 @@ async def inicis_return(req: Request):
         import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
     except Exception:
         pass
-    return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+    return _paid_redirect(oid)
 
 @app.api_route('/inicis/mobile-return', methods=['GET', 'POST'])
 async def inicis_mobile_return(req: Request):
@@ -1067,6 +1075,8 @@ async def inicis_mobile_return(req: Request):
 
     def _fail(msg):
         m = urllib.parse.quote(str(msg)[:80])
+        if str(oid).startswith('SF-'):       # 추가 배송비 결제 → 고객 전용 링크로 복귀
+            return RedirectResponse(f'/shipfee/fail?oid={urllib.parse.quote(oid)}&msg={m}', status_code=303)
         return RedirectResponse(f'/checkout?fail=1&msg={m}', status_code=303)
 
     if status != '00':
@@ -1087,7 +1097,7 @@ async def inicis_mobile_return(req: Request):
         if not order:
             return _fail('주문을 찾을 수 없습니다')
         if order['status'] == 'PAID':                # 멱등: 입금통보가 먼저 도착한 경우
-            return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+            return _paid_redirect(oid)
         try:                                          # 채번 금액 확인 — 불일치는 기록만.
             m_amt = int(str(form.get('P_AMT', '0')).replace(',', '') or 0)
         except ValueError:                            # 돈이 움직이는 관문은 입금통보이며,
@@ -1113,7 +1123,7 @@ async def inicis_mobile_return(req: Request):
     if not order:
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
-        return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+        return _paid_redirect(oid)
 
     # ── 승인요청 (P_REQ_URL 에 P_MID + P_TID) ──
     payload = urllib.parse.urlencode({
@@ -1185,7 +1195,7 @@ async def inicis_mobile_return(req: Request):
         import admin_v2 as _av; _av.order_notify_async(oid, 'paid')
     except Exception:
         pass
-    return RedirectResponse(f'/order-complete?oid={oid}', status_code=303)
+    return _paid_redirect(oid)
 
 def _noti_client_ip(req) -> str:
     """노티 발신 IP — Cloudflare 프록시 뒤라 CF-Connecting-IP 를 우선한다.
@@ -1494,6 +1504,8 @@ def _ga4_mp_purchase(oid: str):
     · 클라이언트 이벤트와 동일 transaction_id + client_id → GA4 가 중복 제거.
     · cid 미보유 주문은 전송하지 않는다(새 사용자 생성으로 인한 이중 계상 방지).
     · ga_mp_sent 클레임(행 잠금)으로 PC/모바일/가상계좌 노티 중복 수신에도 1회만 전송."""
+    if str(oid or '').startswith('SF-'):   # 추가 배송비 결제 — 구매 적립·GA 구매 이벤트 대상 아님
+        return
     if not (GA4_ID and GA4_API_SECRET and _has_ga_cols()):
         return
     def _run():
@@ -1550,6 +1562,8 @@ def _award_purchase_points(oid: str):
     - event_key 로 멱등 보장 — 재진입/새로고침 시 중복 적립되지 않는다.
     - 비회원(GUEST) 주문은 적립하지 않는다.
     """
+    if str(oid or '').startswith('SF-'):   # 추가 배송비 결제 — 구매 적립·GA 구매 이벤트 대상 아님
+        return
     try:
         with db() as c:
             o = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
@@ -1816,6 +1830,12 @@ try:
     app.include_router(global_router)
 except Exception as _e:
     print('globalshop load skipped:', _e)
+try:
+    # 추가 배송비 청구(고객 전용 결제 링크 · 결제 현황) — admin_v2 catch-all 보다 먼저 등록
+    from shipfee import shipfee_router
+    app.include_router(shipfee_router)
+except Exception as _e:
+    print('shipfee load skipped:', _e)
 try:
     from unified_inventory import inventory_router
     app.include_router(inventory_router)

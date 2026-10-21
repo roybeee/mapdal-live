@@ -5184,7 +5184,9 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="hint">계정 발급 시 임시 비밀번호가 한 번만 표시됩니다 — 전달 후 본인이 우측 상단 [비밀번호]에서 변경하도록 안내하세요. 비밀번호 분실 시 [비밀번호 재설정]으로 새 임시 비밀번호를 발급하거나, [비밀번호 변경]으로 대표가 원하는 비밀번호를 직접 지정해 전달할 수 있습니다. 마스터 토큰(Render의 ADMIN_TOKEN)은 비상용이며 로그인 화면의 '비상 접속'에서만 사용합니다.</div></div>
   <div class="panel"><h3>감사 로그 <span class="tag">누가 · 언제 · 무엇을</span></h3><div id="audit" class="loading">불러오는 중…</div></div></section>
 <section id="t-reviews" style="display:none"><div class="loading">불러오는 중…</div></section>
-<section id="t-system" style="display:none"><div id="sys" class="loading">불러오는 중…</div></section>
+<section id="t-system" style="display:none"><div class="panel"><h3>비회원 구매 <span class="tag">기본: 차단 (회원만 구매)</span></h3>
+  <div class="hint" style="margin-bottom:8px">차단하면 비회원은 결제 화면에 들어올 때 로그인 화면으로 이동하고, 로그인·가입을 마치면 결제 화면으로 돌아옵니다. 주문 생성 API도 비회원 주문을 거부합니다. 기존 비회원 주문의 조회·연결은 그대로 됩니다.</div>
+  <div id="cgbox" class="loading">불러오는 중…</div></div><div id="sys" class="loading">불러오는 중…</div></section>
 </main>
 <div class="modal-bg" id="mbg"><div class="modal" id="mbox"></div></div>
 <div id="toast"></div>
@@ -7043,7 +7045,10 @@ async function grantPoints(id,email){const v=prompt(email+' 님에게 지급(+) 
  const reason=prompt('사유 (감사로그 기록)','CS 보상')||'';
  try{const r=await api('/admin/api/members/points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,delta:Number(v),reason})});
  toast('현재 '+r.points.toLocaleString()+'P');loadMembers()}catch(e){toast(e.message)}}
-async function loadSys(){try{const s=await api('/admin/api/system');
+async function loadCG(){try{const d=await api('/admin/api/checkout-guest');const row=(k,l)=>`<label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input type="checkbox" id="cg_${k}" ${d[k]?'checked':''} onchange="saveCG()"> ${l} 비회원 구매 허용 <span class="st ${d[k]?'PENDING':'PAID'}">${d[k]?'허용 중':'차단 중'}</span></label>`;
+ $('#cgbox').innerHTML=row('domestic','국내(/checkout)')+row('intl','해외(/checkout-global)')}catch(e){$('#cgbox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+async function saveCG(){try{await api('/admin/api/checkout-guest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domestic:$('#cg_domestic').checked,intl:$('#cg_intl').checked})});toast('저장했습니다 — 즉시 반영');loadCG()}catch(e){toast(e.message);loadCG()}}
+async function loadSys(){loadCG();try{const s=await api('/admin/api/system');
  $('#sys').innerHTML=`<div class="cards">
  <div class="card"><div class="k">데이터베이스</div><div class="v" style="font-size:16px">${esc(s.db)}</div><div class="s">${s.db_ok?'정상':'연결 오류'}</div></div>
  <div class="card"><div class="k">주문 / 상품 / 고객</div><div class="v" style="font-size:16px">${s.orders} / ${s.products.toLocaleString()} / ${s.customers}</div></div>
@@ -9875,6 +9880,50 @@ def api_comp_isekai_csv(request: Request):
                     headers={'Content-Disposition': 'attachment; filename="isekai_comp_1pct.csv"'})
 
 
+# ── 회원 전용 구매 (2026-10-21 대표 지시: 비회원은 구매 불가) ─────────────────────
+#   site_settings 'checkout_guest' = {"domestic": bool, "intl": bool} — 값이 없거나 읽기 실패면 비회원 차단.
+#   서버(주문 생성 API)에서 막고, 체크아웃 화면 진입 시에는 로그인으로 보낸 뒤 로그인 완료 후 되돌아온다.
+GUEST_CHECKOUT_MSG = {'domestic': '회원만 구매할 수 있습니다 — 로그인 또는 회원가입 후 결제해 주세요',
+                      'intl': 'Please sign in or create an account to place an order'}
+
+
+def guest_checkout_allowed(channel='domestic'):
+    try:
+        r = one('SELECT value FROM site_settings WHERE key=?', ('checkout_guest',))
+        return bool(jload((r or {}).get('value'), {}).get(channel))
+    except Exception:
+        return False
+
+
+def guest_checkout_gate(member_id, channel='domestic'):
+    """비회원 주문 차단 — 주문 생성 API 가 호출. 회원이면 통과."""
+    if member_id or guest_checkout_allowed(channel):
+        return
+    raise HTTPException(401, GUEST_CHECKOUT_MSG.get(channel) or GUEST_CHECKOUT_MSG['domestic'])
+
+
+def safe_next_path(v):
+    v = str(v or '')
+    if not v.startswith('/') or v.startswith('//') or '\\' in v or len(v) > 300:
+        return ''
+    return v if re.match(r'^/(?:(?:en|ja|zh)/)?(?:checkout|checkout-global)(?:\.html)?(?:[?#].*)?$', v) else ''
+
+
+@admin_router.get('/admin/api/checkout-guest')
+def api_checkout_guest(request: Request):
+    a = get_actor(request); need(a, 0)
+    return {'domestic': guest_checkout_allowed('domestic'), 'intl': guest_checkout_allowed('intl')}
+
+
+@admin_router.post('/admin/api/checkout-guest')
+def api_checkout_guest_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 3, '비회원 구매 설정')
+    v = {'domestic': bool(body.get('domestic')), 'intl': bool(body.get('intl'))}
+    _setting_put('checkout_guest', v, a.get('name') or '')
+    audit(a, '비회원구매설정', 'checkout_guest', '국내 %s · 해외 %s' % ('허용' if v['domestic'] else '차단', '허용' if v['intl'] else '차단'))
+    return v
+
+
 def consent_record(customer_id, member_id, consent_type, granted, version, source, request=None):
     run('INSERT INTO consent_history VALUES(?,?,?,?,?,?,?,?,?)',
         (uid(), customer_id, member_id, consent_type, version, 1 if granted else 0,
@@ -10916,6 +10965,11 @@ def account_page(request: Request):
     m = member_of(request)
     def h(x): return str(x or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     if m:
+        nxt = safe_next_path(request.cookies.get('mp_next'))
+        if nxt:                                    # 체크아웃에서 로그인하러 온 고객 → 로그인 후 결제 화면으로 복귀
+            resp = RedirectResponse(nxt, status_code=302)
+            resp.delete_cookie('mp_next', path='/')
+            return resp
         mdata = {'ok': True}
         return _pdp_resp(_track_apply(_brand_apply(_MYPAGE_HTML.replace('__MDATA__', json.dumps(mdata, ensure_ascii=False))), '/account'), request, '/account')
     _prov = [
@@ -10939,6 +10993,8 @@ def account_page(request: Request):
     return _pdp_resp(_track_apply(_brand_apply('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>로그인 — MAPDAL SEOUL</title>' + _ACCOUNT_CSS + _ACCOUNT_FORM_CSS +
         '</head><body><div class="box"><h1>MAPDAL<span>SEOUL</span></h1><div class="sub">SIGN IN / SIGN UP</div>'
         '<div style="background:#fff3df;border-left:4px solid #FFB000;padding:9px 11px;font-size:12px;margin-bottom:14px"><b>최초 가입 2,000P</b> · 한 고객당 한 번만 지급</div>'
+        + (('<div style="background:#141414;color:#fff;padding:11px 12px;font-size:13px;line-height:1.6;margin-bottom:14px"><b>회원만 구매할 수 있습니다.</b><br>로그인 또는 회원가입을 마치면 결제 화면으로 바로 돌아갑니다.</div>')
+           if request.query_params.get('need') == 'login' else '')
         + social +
         '<div class="div"><span>또는 이메일로</span></div>'
         '<div class="tabs"><button id="tbL" class="on" onclick="mode(0)">로그인</button><button id="tbS" onclick="mode(1)">회원가입</button></div>'

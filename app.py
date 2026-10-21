@@ -405,6 +405,20 @@ async def clean_urls(request, call_next):
     if request.method in ('GET', 'HEAD'):
         p = request.scope['path']
         _qp = request.query_params
+        if p in ('/checkout', '/checkout-global', '/checkout.html'):
+            # 회원 전용 구매 (2026-10-21) — 비회원은 로그인으로 보내고, 로그인 후 이 화면으로 복귀(mp_next)
+            try:
+                import admin_v2 as _avg
+                _ch = 'intl' if p == '/checkout-global' else 'domestic'
+                if not _avg.guest_checkout_allowed(_ch) and not _avg.member_of(request):
+                    _nx = request.url.path + (('?' + request.url.query) if request.url.query else '')
+                    _lg = request.state.lang
+                    r = RedirectResponse((('/' + _lg) if _lg else '') + '/account?need=login', status_code=302)
+                    r.set_cookie('mp_next', _nx[:300], max_age=1800, httponly=True, secure=True, samesite='lax', path='/')
+                    r.headers['Cache-Control'] = 'no-store'
+                    return r
+            except Exception:
+                pass
         if p == '/checkout' and _qp.get('dom') != '1' and not _qp.get('fail') and not _qp.get('msg') and (
                 (request.state.lang in ('en', 'ja', 'zh')) or
                 (request.state.lang is None and request.cookies.get('mp_lang') in ('en', 'ja', 'zh'))):
@@ -687,6 +701,9 @@ async def create_order(req: Request, response: Response):
             member_row = member
     except Exception:
         pass
+    # 회원 전용 구매 (2026-10-21) — 비회원 주문 생성 차단 (관리자 [시스템]에서 허용 전환 가능)
+    import admin_v2 as _avg
+    _avg.guest_checkout_gate(member_id, 'domestic')
     # 이메일 필수 — 회원/비회원 동일. 정규화한 값을 buyer 에 되돌려 저장한다.
     buyer['email'] = _require_buyer_email(buyer, member_row)
 

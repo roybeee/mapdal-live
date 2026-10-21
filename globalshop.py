@@ -427,6 +427,7 @@ async def api_intl_order(req: Request, response: Response):
             member_id, customer_id = m.get('id') or '', m.get('customer_id') or ''
     except Exception:
         pass
+    _av().guest_checkout_gate(member_id, 'intl')     # 회원 전용 구매 (2026-10-21)
     phone_norm = re.sub(r'\D', '', buyer['phone'])
     if not customer_id:
         try:

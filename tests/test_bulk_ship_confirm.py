@@ -89,3 +89,40 @@ def test_open_return_request_blocks_confirm(client):
     assert client.post("/api/member/orders/MD-20261021-BBBBBB/request", json={"rtype": "exchange", "reason": "사이즈"}).status_code == 200
     r = client.post("/api/member/orders/MD-20261021-BBBBBB/confirm")
     assert r.status_code == 400 and "반품·교환" in r.json()["detail"]
+
+
+def _set_buyer(oid, name, phone):
+    admin.run("UPDATE orders SET buyer=? WHERE order_id=?", (json.dumps({"name": name, "phone": phone}, ensure_ascii=False), oid))
+
+
+def test_tracking_bulk_by_order_id_and_name(client, monkeypatch):
+    admin._state["ocols"] = set(admin._state["ocols"]) | {"tracking", "courier"}
+    admin.run("ALTER TABLE orders ADD COLUMN tracking TEXT")
+    admin.run("ALTER TABLE orders ADD COLUMN courier TEXT")
+    _set_buyer("MD-20261021-AAAAAA", "김용한", "010-9461-4233")
+    _set_buyer("MD-20261021-BBBBBB", "홍길동", "010-1111-2222")
+    _set_buyer("MD-20261021-FFFFFF", "홍길동", "010-1111-2222")          # 같은 고객 2건
+    _set_buyer("MD-20261021-CCCCCC", "이몽룡", "010-3333-4444")          # 이미 발송·구매확정
+    admin.run("UPDATE orders SET fulfill='DONE', confirmed_at='2026-11-08T10:00:00' WHERE order_id='MD-20261021-CCCCCC'")
+    rows = [{"order_id": "MD-20261021-AAAAAA", "tracking": "6012-3456-7890", "courier": "CJ대한통운"},
+            {"names": ["홍길동"], "phone": "01011112222", "tracking": "222233334444", "courier": "롯데"},
+            {"names": ["이몽룡"], "phone": "010-3333-4444", "tracking": "999"},
+            {"names": ["없는사람"], "tracking": "1"},
+            {"order_id": "MD-20261021-DDDDDD", "tracking": "2"},
+            {"names": ["김용한"], "tracking": ""}]
+    pv = client.post("/admin/api/orders/tracking-bulk", json={"rows": rows, "dry_run": True, "set_shipped": True}).json()
+    res = {r["row"]: r for r in pv["rows"]}
+    assert res[1]["ok"] and res[3]["ok"] and not res[2]["ok"] and "2건" in res[2]["why"]
+    assert not res[4]["ok"] and not res[5]["ok"] and "송장번호 없음" in res[6]["why"]
+    assert pv["orders"] == 2
+    d = client.post("/admin/api/orders/tracking-bulk", json={"rows": rows, "set_shipped": True, "notify": True}).json()
+    assert d["orders"] == 2 and d["shipped"] == 1
+    a = admin.one("SELECT fulfill, tracking, courier FROM orders WHERE order_id='MD-20261021-AAAAAA'")
+    assert a == {"fulfill": "SHIPPED", "tracking": "6012-3456-7890", "courier": "cj"}
+    c = admin.one("SELECT fulfill, tracking, confirmed_at FROM orders WHERE order_id='MD-20261021-CCCCCC'")
+    assert c["fulfill"] == "DONE" and c["tracking"] == "999" and c["confirmed_at"]      # 구매확정 유지
+    # 같은 고객 전 주문 동일 송장 옵션
+    d = client.post("/admin/api/orders/tracking-bulk", json={"rows": rows[1:2], "multi": "all", "set_shipped": True}).json()
+    assert d["orders"] == 2
+    assert admin.one("SELECT tracking FROM orders WHERE order_id='MD-20261021-FFFFFF'")["tracking"] == "222233334444"
+    assert admin.one("SELECT courier FROM orders WHERE order_id='MD-20261021-FFFFFF'")["courier"] == "lotte"

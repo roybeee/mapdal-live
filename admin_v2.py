@@ -2696,6 +2696,106 @@ def api_orders_bulk_ship(request: Request, body: dict = Body(...)):
     return {'rows': res, 'ok_count': done}
 
 
+# ── 송장번호 일괄 등록 (2026-10-21 · 이주현 팀장 요청 — 쇼핑박스 회신 엑셀) ─────────────
+#   행마다 주문번호(MD-…)가 있으면 그 주문에, 없으면 주문자/수령인 이름(+연락처)으로 미발송·발송 주문을 찾아 송장을 넣는다.
+#   이름만 같고 여러 주문이 걸리면 기본은 건너뛰고(동명이인 오등록 방지), '같은 고객 전 주문 동일 송장' 옵션일 때만 함께 등록.
+#   구매확정 주문(11/8 송장 없이 먼저 확정)도 송장은 넣을 수 있다 — 처리상태는 그대로 둔다.
+_COURIER_ALIAS = (('cj', ('cj', '대한통운', '씨제이')), ('post', ('우체국', 'epost', '우편')), ('lotte', ('롯데', 'lotte')),
+                  ('logen', ('로젠', 'logen')), ('hanjin', ('한진', 'hanjin')), ('cvsnet', ('gs', '편의점택배(gs')),
+                  ('cupost', ('cu', 'cu편의점')))
+
+
+def _courier_code(v, default=''):
+    t = str(v or '').strip().lower().replace(' ', '')
+    if not t: return default
+    if t in {c for c, _n, _u in _COURIERS}: return t
+    for code, keys in _COURIER_ALIAS:
+        if any(k in t for k in keys): return code
+    return default
+
+
+def _digits(v): return re.sub(r'\D', '', str(v or ''))
+
+
+@admin_router.post('/admin/api/orders/tracking-bulk')
+def api_orders_tracking_bulk(request: Request, body: dict = Body(...)):
+    """body: {rows:[{order_id,names:[..],phone,tracking,courier}], courier, dry_run, set_shipped, notify, multi:'skip'|'all'}"""
+    a = get_actor(request); need(a, 1, '송장 일괄 등록')
+    if 'fulfill' not in _state['ocols']: raise HTTPException(400, '컬럼 준비 중 — 새로고침 후 재시도')
+    src = body.get('rows') or []
+    if not isinstance(src, list) or not src: raise HTTPException(400, '등록할 송장 행이 없습니다')
+    if len(src) > 3000: raise HTTPException(400, '한 번에 3,000행까지 처리할 수 있습니다')
+    dflt = _courier_code(body.get('courier'), 'cj')
+    multi_all = body.get('multi') == 'all'
+    has_co = 'courier' in _state['ocols']
+    # 후보: 결제완료 주문 (취소 제외) — 이름·연락처 매칭용 색인
+    cand = rows("SELECT order_id, status, fulfill, buyer, tracking" + (', courier' if has_co else '') + (', confirmed_at' if 'confirmed_at' in _state['ocols'] else '')
+                + " FROM orders WHERE status='PAID' AND COALESCE(fulfill,'NEW')<>'CANCELLED' AND SUBSTR(order_id,1,3)<>'SF-'")
+    by_id, by_name = {}, {}
+    for r in cand:
+        b = jload(r.get('buyer'), {}); r['_name'] = str(b.get('name') or '').replace(' ', ''); r['_phone'] = _digits(b.get('phone'))
+        by_id[r['order_id']] = r
+        if r['_name']: by_name.setdefault(r['_name'], []).append(r)
+    out, plan = [], {}
+    for i, x in enumerate(src):
+        x = x if isinstance(x, dict) else {}
+        trk = re.sub(r'[^0-9A-Za-z\-]', '', str(x.get('tracking') or ''))[:40]
+        co = _courier_code(x.get('courier'), dflt)
+        oid = str(x.get('order_id') or '').strip().upper()
+        names = [str(n).replace(' ', '') for n in (x.get('names') or []) if str(n or '').strip()]
+        ph = _digits(x.get('phone'))
+        row = {'row': i + 1, 'tracking': trk, 'courier': co, 'name': ','.join(names[:2]), 'orders': [], 'ok': False, 'why': ''}
+        out.append(row)
+        if not trk:
+            row['why'] = '송장번호 없음'; continue
+        hits = []
+        if oid:
+            if oid in by_id: hits = [by_id[oid]]
+            else:
+                row['why'] = '주문번호 %s — 결제완료 주문 없음' % oid; continue
+        else:
+            pool = []
+            for n in names:
+                pool += [r for r in by_name.get(n, []) if r not in pool]
+            if ph and len(ph) >= 4:
+                pool = [r for r in pool if r['_phone'] and (r['_phone'] == ph or r['_phone'].endswith(ph[-8:]))]
+            if not pool:
+                row['why'] = '일치하는 주문 없음' + ('' if names else ' (주문번호·이름 열 없음)'); continue
+            open_pool = [r for r in pool if not (r.get('tracking') or '').strip()] or pool
+            if len(open_pool) > 1 and not multi_all:
+                row['why'] = '같은 고객 주문 %d건 — 주문번호로 지정하거나 \'전 주문 동일 송장\' 선택' % len(open_pool)
+                row['orders'] = [r['order_id'] for r in open_pool]; continue
+            hits = open_pool
+        notes = []
+        for r in hits:
+            if (r.get('tracking') or '').strip() and (r.get('tracking') or '').strip() != trk:
+                notes.append('기존 송장 %s 교체' % r['tracking'])
+            if r['order_id'] in plan and plan[r['order_id']][0] != trk:
+                notes.append('같은 주문 다른 행 송장 — 마지막 행 적용')
+            plan[r['order_id']] = (trk, co)
+        row['orders'] = [r['order_id'] for r in hits]; row['ok'] = True; row['why'] = ' · '.join(notes)
+    okn = len(plan)
+    if body.get('dry_run'):
+        return {'dry_run': True, 'rows': out, 'ok_rows': sum(1 for r in out if r['ok']), 'orders': okn}
+    done = shipped = 0; now = now_iso(); has_sa = 'shipped_at' in _state['ocols']
+    for oid, (trk, co) in plan.items():
+        r = by_id[oid]; f = r.get('fulfill') or 'NEW'
+        sets, args = ['tracking=?'], [trk]
+        if has_co: sets.append('courier=?'); args.append(co)
+        to_ship = bool(body.get('set_shipped')) and f in ('NEW', 'PREPARING')
+        if to_ship:
+            sets.append("fulfill='SHIPPED'")
+            if has_sa: sets.append('shipped_at=?'); args.append(now)
+        n = run("UPDATE orders SET %s WHERE order_id=? AND status='PAID'" % ', '.join(sets), tuple(args + [oid]))
+        if not n: continue
+        done += 1; shipped += 1 if to_ship else 0
+        if body.get('notify') and (to_ship or f in ('SHIPPED', 'DONE')):
+            try: order_notify_async(oid, 'shipped')
+            except Exception: pass
+    audit(a, '송장일괄등록', '', '%d건 (발송완료 전환 %d)%s' % (done, shipped, ' · 알림' if body.get('notify') else ''))
+    return {'rows': out, 'ok_rows': sum(1 for r in out if r['ok']), 'orders': done, 'shipped': shipped}
+
+
 @admin_router.post('/admin/api/orders/{oid}/confirm')
 def api_order_confirm_admin(oid: str, request: Request):
     """CS 대리 구매확정 (고객 요청·전화 확인 시)."""
@@ -5151,6 +5251,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <a class="btn" href="/admin/shipfee" target="_blank" style="background:#E8332A;border-color:#E8332A;text-decoration:none" title="배송비 누락 주문 추가 결제 링크·결제 현황">추가 배송비 청구</a>
   <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button>
   <button class="btn" onclick="bsOpen()" id="bsbtn" style="background:#141414;color:#fff" title="체크한 주문(또는 검색 조건 전체)을 발송완료로 바꿉니다 — 고객 마이페이지에 [구매확정] 버튼이 열립니다">일괄 발송완료</button>
+  <button class="btn" onclick="tkOpen()" style="background:#1565c0;color:#fff" title="쇼핑박스 회신 엑셀(주문번호 또는 주문자·연락처 + 송장번호)로 송장을 한 번에 등록합니다">송장 일괄 등록</button>
   <button class="btn ghost" onclick="rsOpen('')" title="입금통보 누락으로 잘못 취소된 가상계좌 주문을 결제완료로 되돌립니다 (여러 건 한 번에)">입금확인 복구</button>
   <button class="btn ghost" onclick="vbSweep()" id="vbsweepbtn" title="입금기한 만료·결제 미완료 주문을 취소하고 재고를 정리합니다 (자동으로도 주기 실행)">미결제 정리</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
@@ -5624,6 +5725,41 @@ async function sendNotify(oid,auto){try{const tid=auto?(TPLCACHE.find(t=>t.name.
  const r=await api('/admin/api/notify/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:oid,template:tid})});
  toast(r.dry?'기록 모드: 발송사 미설정 (로그 저장됨)':'발송 완료');}catch(e){alert(e.message)}}
 /*mpRestorePaid — 잘못 취소된 가상계좌 주문 입금 확인 복구 (2026-10-21)*/
+let TKROWS=[];
+function tkOpen(){$('#mbox').innerHTML=`<h3>송장번호 일괄 등록</h3>
+ <div class="hint" style="margin-bottom:8px">쇼핑박스 회신 엑셀(.xlsx·.xls·.csv)을 올리거나 표를 붙여넣으세요. 첫 줄 제목(주문번호 · 주문자/수령인 · 연락처 · 송장번호 · 택배사)을 자동 인식합니다. <b>주문번호가 있으면 주문번호로</b>, 없으면 <b>이름+연락처</b>로 주문을 찾습니다. 같은 고객의 주문이 여러 건이면 기본은 건너뜁니다. 구매확정된 주문도 송장은 등록되며 상태는 그대로 둡니다.</div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="file" id="tk_file" accept=".xlsx,.xls,.csv" onchange="tkFile(this)">
+ <select id="tk_co" title="택배사 열이 없을 때 적용">${Object.entries(CO).map(([k,v])=>`<option value="${k}" ${k==='cj'?'selected':''}>${esc(v)}</option>`).join('')}</select></div>
+ <textarea id="tk_paste" rows="6" style="width:100%;margin-top:8px;font-family:'IBM Plex Mono';font-size:12px" placeholder="또는 엑셀에서 복사해 붙여넣기 (첫 줄은 제목 행)&#10;주문번호	수령인	연락처	송장번호&#10;MD-20261019-1E0CB9	김용한	010-9461-4233	123456789012" oninput="tkPaste()"></textarea>
+ <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px" class="hint">
+ <label style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="tk_ship" checked> 미발송 주문은 발송완료로 변경</label>
+ <label style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="tk_multi"> 같은 고객 여러 주문에 동일 송장</label>
+ <label style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="tk_notify"> 송장 안내 알림톡 발송</label></div>
+ <div id="tk_res" style="margin-top:10px"></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn ghost" onclick="tkPreview()">대상 확인</button><button class="btn" id="tk_go" style="background:#1565c0;color:#fff" onclick="tkRun()" disabled>송장 등록</button><button class="btn ghost" onclick="closeM()">닫기</button></div>`;
+ TKROWS=[];$('#mbox').classList.add('wide');$('#mbg').style.display='flex'}
+function tkParse(rows){rows=(rows||[]).map(r=>(r||[]).map(c=>String(c==null?'':c).trim())).filter(r=>r.some(c=>c));
+ const RX={oid:/주문\s*번호|order\s*(no|id|num)/i,rcv:/수취인|수령인|받는\s*분|받는사람|고객명|성명|이름|name/i,ord:/주문자|구매자/i,ph:/연락처|휴대폰|핸드폰|전화|phone|tel|mobile/i,trk:/송장|운송장|invoice|tracking|waybill/i,co:/택배사|배송사|운송사|courier|carrier/i};
+ let hi=-1,col={};
+ for(let i=0;i<Math.min(8,rows.length)&&hi<0;i++){const c={};rows[i].forEach((v,j)=>{for(const k in RX){if(c[k]==null&&RX[k].test(v)&&!(k==='rcv'&&RX.ord.test(v))&&!(k==='oid'&&RX.trk.test(v)))c[k]=j}});if(c.trk!=null&&(c.oid!=null||c.rcv!=null||c.ord!=null||c.ph!=null)){hi=i;col=c}}
+ if(hi<0)throw new Error('송장번호 열을 찾지 못했습니다 — 첫 줄에 "송장번호" 제목이 있어야 합니다');
+ return rows.slice(hi+1).map(r=>{const all=r.join(' ');const m=all.match(/MD-\d{8}-[0-9A-Z]{6}/i);
+  return {order_id:(col.oid!=null&&/MD-\d{8}-/i.test(r[col.oid]||'')?r[col.oid]:(m?m[0]:'')).toUpperCase(),
+   names:[col.rcv!=null?r[col.rcv]:'',col.ord!=null?r[col.ord]:''].filter(Boolean),
+   phone:col.ph!=null?r[col.ph]:'',tracking:r[col.trk]||'',courier:col.co!=null?r[col.co]:''}}).filter(x=>x.tracking||x.order_id||x.names.length)}
+async function tkFile(el){const f=el.files&&el.files[0];if(!f)return;try{await loadXLSX();const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+ const ws=wb.Sheets[wb.SheetNames[0]];TKROWS=tkParse(XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''}));toast(TKROWS.length+'행 읽음');tkPreview()}catch(e){toast(e.message)}}
+function tkPaste(){try{const t=$('#tk_paste').value;if(!t.trim()){TKROWS=[];return}TKROWS=tkParse(t.split(/\r?\n/).map(l=>l.split(l.includes('\t')?'\t':',')))}catch(e){TKROWS=[]}}
+function tkBody(dry){return JSON.stringify({rows:TKROWS,courier:$('#tk_co').value,dry_run:dry,set_shipped:$('#tk_ship').checked,notify:$('#tk_notify').checked,multi:$('#tk_multi').checked?'all':'skip'})}
+async function tkPreview(){if(!TKROWS.length){try{tkPaste()}catch(e){}}if(!TKROWS.length)return toast('엑셀을 올리거나 표를 붙여넣으세요 (첫 줄 제목 행 필요)');
+ try{const d=await api('/admin/api/orders/tracking-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:tkBody(true)});
+ const bad=d.rows.filter(r=>!r.ok),note=d.rows.filter(r=>r.ok&&r.why);
+ $('#tk_res').innerHTML=`<div style="margin-bottom:6px"><b>등록 가능 ${d.ok_rows}행 → 주문 ${d.orders}건</b> / 전체 ${d.rows.length}행${bad.length?' · <span style="color:var(--red)">확인 필요 '+bad.length+'행</span>':''}</div>`+
+ ((bad.length||note.length)?`<div style="max-height:240px;overflow:auto"><table><tr><th>행</th><th>이름</th><th>송장</th><th>결과</th></tr>${bad.concat(note).slice(0,300).map(r=>`<tr><td class="mono">${r.row}</td><td>${esc(r.name)}</td><td class="mono" style="font-size:11px">${esc(r.tracking)}</td><td class="hint">${r.ok?'<span class="st PAID">등록</span> ':'<span class="st CANCELLED">제외</span> '}${esc(r.why)}${r.orders&&r.orders.length?' <span class="mono" style="font-size:10.5px">'+r.orders.map(esc).join(' ')+'</span>':''}</td></tr>`).join('')}</table></div>`:'');
+ $('#tk_go').disabled=!d.orders;window._tkN=d.orders}catch(e){toast(e.message)}}
+async function tkRun(){if(!confirm(window._tkN+'건 주문에 송장을 등록합니다.'+($('#tk_ship').checked?'\n미발송 주문은 발송완료로 바뀝니다.':'')+($('#tk_notify').checked?'\n송장 안내 알림톡도 발송합니다.':'')+'\n진행할까요?'))return;
+ try{$('#tk_go').disabled=true;const d=await api('/admin/api/orders/tracking-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:tkBody(false)});
+ toast('송장 등록 '+d.orders+'건'+(d.shipped?' · 발송완료 전환 '+d.shipped+'건':''));closeM();loadOrders(opage)}catch(e){toast(e.message);$('#tk_go').disabled=false}}
 const BSEL=new Set();
 function bsCount(){document.querySelectorAll('.osel').forEach(x=>{x.checked?BSEL.add(x.value):BSEL.delete(x.value)});const b=$('#bsbtn');if(b)b.textContent=BSEL.size?'일괄 발송완료 ('+BSEL.size+')':'일괄 발송완료'}
 function bsOpen(){bsCount();$('#mbox').innerHTML=`<h3>일괄 발송완료</h3>

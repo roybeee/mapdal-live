@@ -126,3 +126,32 @@ def test_tracking_bulk_by_order_id_and_name(client, monkeypatch):
     assert d["orders"] == 2
     assert admin.one("SELECT tracking FROM orders WHERE order_id='MD-20261021-FFFFFF'")["tracking"] == "222233334444"
     assert admin.one("SELECT courier FROM orders WHERE order_id='MD-20261021-FFFFFF'")["courier"] == "lotte"
+
+
+def test_confirm_right_after_payment_isekai_only(client):
+    admin.run("CREATE TABLE site_settings(key TEXT PRIMARY KEY, value TEXT, updated TEXT, by_admin TEXT)")
+    # 이세계아이돌(Across Dimensions) 주문은 발송 전(결제완료 즉시) 구매확정 가능, 다른 상품은 불가
+    d = client.get("/api/member/orders/MD-20261021-AAAAAA").json()
+    assert d["can_confirm"] and d["can_cancel"] and d["can_edit_addr"]
+    assert not client.get("/api/member/orders/MD-20261021-FFFFFF").json()["can_confirm"]
+    assert client.post("/api/member/orders/MD-20261021-FFFFFF/confirm").status_code == 400
+    assert client.post("/api/member/orders/MD-20261021-AAAAAA/confirm").status_code == 200
+    o = ff("MD-20261021-AAAAAA"); assert o["fulfill"] == "NEW" and o["confirmed_at"]          # 출고 흐름 유지
+    d = client.get("/api/member/orders/MD-20261021-AAAAAA").json()
+    assert d["status_kr"] == "구매확정" and not (d["can_cancel"] or d["can_edit_addr"] or d["can_return"] or d["can_confirm"])
+    # 확정 후 고객 취소·배송지 변경 불가
+    assert client.post("/api/member/orders/MD-20261021-AAAAAA/request", json={"rtype": "cancel", "reason": "x"}).status_code == 400
+    assert client.post("/api/member/orders/MD-20261021-AAAAAA/ship-addr", json={"name": "a", "addr1": "b"}).status_code == 400
+    # 관리자 취소는 막히고 강제는 OWNER만 (마스터 세션은 OWNER) — 여기서는 거부 메시지만 확인
+    r = client.post("/admin/api/orders/MD-20261021-AAAAAA/cancel", json={"reason": "x"})
+    assert r.status_code == 409 and "구매확정" in r.json()["detail"]
+    # 확정됐어도 일괄 발송은 정상 진행
+    assert client.post("/admin/api/orders/bulk-ship", json={"order_ids": ["MD-20261021-AAAAAA"]}).json()["ok_count"] == 1
+    assert ff("MD-20261021-AAAAAA")["fulfill"] == "SHIPPED"
+    # 설정을 끄면 발송 전 확정 불가
+    client.post("/admin/api/confirm-early", json={"on": False, "kw": "Across Dimensions"})
+    assert not client.get("/api/member/orders/MD-20261021-BBBBBB").json()["can_confirm"]
+    # 진행 중 취소요청이 있으면 확정 불가
+    client.post("/admin/api/confirm-early", json={"on": True, "kw": "Across Dimensions"})
+    assert client.post("/api/member/orders/MD-20261021-BBBBBB/request", json={"rtype": "cancel", "reason": "변심"}).status_code == 200
+    assert client.post("/api/member/orders/MD-20261021-BBBBBB/confirm").status_code == 400

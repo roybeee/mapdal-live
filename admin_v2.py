@@ -2391,7 +2391,7 @@ def api_order_detail(oid: str, request: Request):
             'can_mark_paid': (r.get('status') == 'WAITING_DEPOSIT'),
             'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
             'shipped_at': (r.get('shipped_at') or '')[:16].replace('T', ' '),
-            'can_confirm': bool(r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at')),
+            'can_confirm': can_confirm(r),
             'can_restore': bool(r.get('status') == 'CANCELLED' and ('vbank' in str(r.get('pay_method') or '').lower()) and '수동환불' not in str(r.get('admin_memo') or '')),
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID'),
             # 결제 당시 MID(TID 판별) — MID 교체 시 어느 상점관리자 소속 거래인지 즉시 식별.
@@ -2806,16 +2806,64 @@ def api_order_confirm_admin(oid: str, request: Request):
     return {'ok': True}
 
 
+# 결제 즉시 구매확정 (2026-10-21 · 이세계아이돌 예약판매 한정 · 이주현 팀장 요청)
+#   site_settings 'confirm_early' = {"on": bool, "kw": "상품명 키워드", "until": "YYYY-MM-DDTHH:MM"(선택)}
+#   대상 주문은 배송과 무관하게 결제완료(PAID) 즉시 [구매확정] 버튼이 열린다. 확정 후 환불·취소·변경 불가.
+CONFIRM_EARLY_DEFAULT = {'on': True, 'kw': 'Across Dimensions', 'until': ''}
+
+
+def confirm_early_conf():
+    try:
+        r = one('SELECT value FROM site_settings WHERE key=?', ('confirm_early',))
+        v = jload((r or {}).get('value'), None)
+    except Exception:
+        v = None
+    if not isinstance(v, dict): v = dict(CONFIRM_EARLY_DEFAULT)
+    return {'on': bool(v.get('on')), 'kw': str(v.get('kw') or '').strip()[:60], 'until': str(v.get('until') or '').strip()[:16]}
+
+
+def confirm_early_ok(r, conf=None):
+    """결제 즉시(발송 전) 구매확정 대상인지."""
+    c = conf or confirm_early_conf()
+    if not (c['on'] and c['kw']) or not r or r.get('status') != 'PAID': return False
+    if c['until'] and kst_now().strftime('%Y-%m-%dT%H:%M') > c['until']: return False
+    return c['kw'].lower() in str(r.get('items') or '').lower()
+
+
+def can_confirm(r, conf=None):
+    if not r or r.get('confirmed_at') or r.get('status') != 'PAID': return False
+    f = r.get('fulfill') or 'NEW'
+    if f in ('SHIPPED', 'DONE'): return True
+    return f in ('NEW', 'PREPARING') and confirm_early_ok(r, conf)
+
+
+@admin_router.get('/admin/api/confirm-early')
+def api_confirm_early(request: Request):
+    a = get_actor(request); need(a, 0)
+    return confirm_early_conf()
+
+
+@admin_router.post('/admin/api/confirm-early')
+def api_confirm_early_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '구매확정 설정')
+    v = {'on': bool(body.get('on')), 'kw': str(body.get('kw') or '').strip()[:60], 'until': str(body.get('until') or '').strip()[:16]}
+    if v['on'] and not v['kw']: raise HTTPException(400, '대상 상품명 키워드를 입력하세요')
+    _setting_put('confirm_early', v, a.get('name') or '')
+    audit(a, '구매확정설정', 'confirm_early', '%s · %s · ~%s' % ('켬' if v['on'] else '끔', v['kw'], v['until'] or '계속'))
+    return v
+
+
 def _confirm_order(r, by):
     if not r: raise HTTPException(404, '주문을 찾을 수 없습니다')
     if 'confirmed_at' not in _state['ocols']: raise HTTPException(400, '준비 중입니다 — 잠시 후 다시 시도해 주세요')
     if r.get('confirmed_at'): raise HTTPException(400, '이미 구매확정된 주문입니다')
-    if r.get('status') != 'PAID' or (r.get('fulfill') or '') not in ('SHIPPED', 'DONE'):
-        raise HTTPException(400, '발송된 주문만 구매확정할 수 있습니다')
-    if one("SELECT id FROM member_requests WHERE order_id=? AND rtype IN ('return','exchange') AND status IN ('접수','처리중')", (r['order_id'],)):
-        raise HTTPException(400, '진행 중인 반품·교환 요청이 있어 구매확정할 수 없습니다')
-    n = run("UPDATE orders SET fulfill='DONE', confirmed_at=? WHERE order_id=? AND status='PAID' "
-            "AND fulfill IN ('SHIPPED','DONE') AND COALESCE(confirmed_at,'')=''", (now_iso(), r['order_id']))
+    if not can_confirm(r):
+        raise HTTPException(400, '구매확정할 수 없는 주문입니다 (결제완료 후 발송된 주문만 가능)')
+    if one("SELECT id FROM member_requests WHERE order_id=? AND status IN ('접수','처리중')", (r['order_id'],)):
+        raise HTTPException(400, '진행 중인 취소·반품·교환 요청이 있어 구매확정할 수 없습니다 — 요청을 철회한 뒤 다시 시도해 주세요')
+    # 발송된 주문은 수령 확인 → 배송완료(DONE). 발송 전(결제 즉시 확정)은 처리상태를 그대로 두어 출고 흐름을 유지한다.
+    n = run("UPDATE orders SET fulfill=CASE WHEN fulfill='SHIPPED' THEN 'DONE' ELSE fulfill END, confirmed_at=? "
+            "WHERE order_id=? AND status='PAID' AND COALESCE(confirmed_at,'')=''", (now_iso(), r['order_id']))
     if not n: raise HTTPException(409, '주문 상태가 바뀌었습니다 — 새로고침 후 다시 시도해 주세요')
     try:
         import app as _app
@@ -2847,7 +2895,9 @@ def api_order_ship_addr(oid: str, request: Request, body: dict = Body(...)):
         raise HTTPException(400, '취소된 주문은 배송지를 변경할 수 없습니다')
     ful = (r.get('fulfill') or 'NEW')
     forced = False
-    if ful in ('SHIPPED', 'DONE'):
+    if r.get('confirmed_at') and not body.get('force'):
+        raise HTTPException(400, '구매확정된 주문입니다 — 구매확정 후에는 변경이 불가합니다. MANAGER 이상은 강제 변경할 수 있습니다.')
+    if ful in ('SHIPPED', 'DONE') or r.get('confirmed_at'):
         if not body.get('force'):
             raise HTTPException(400, '이미 발송된 주문입니다 (%s) — 택배사 배송지 변경 가능 여부를 '
                                      '먼저 확인하세요. MANAGER 이상은 강제 변경할 수 있습니다.' % ful)
@@ -3146,6 +3196,12 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
     r = one('SELECT * FROM orders WHERE order_id = ?', (oid,))
     if not r: raise HTTPException(404, 'not found')
     reason = (body.get('reason') or '관리자 취소').strip()[:200]
+    if r.get('confirmed_at') and r.get('status') != 'CANCELLED':
+        if not body.get('force'):
+            raise HTTPException(409, '구매확정된 주문입니다 (%s) — 구매확정 후에는 환불·취소가 불가합니다. '
+                                     '예외 처리는 OWNER가 강제 취소할 수 있습니다.' % str(r['confirmed_at'])[:16].replace('T', ' '))
+        need(a, 3, '구매확정 주문 강제 취소')
+        reason = ('[구매확정 후 강제취소] ' + reason)[:200]
     return _order_cancel_core(a, r, reason, manual=bool(body.get('manual')))
 
 # ── 가상계좌 입금기한 만료 자동정리 (2026-08-25) ────────────────────────
@@ -5401,7 +5457,10 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
 <section id="t-reviews" style="display:none"><div class="loading">불러오는 중…</div></section>
 <section id="t-system" style="display:none"><div class="panel"><h3>비회원 구매 <span class="tag">기본: 차단 (회원만 구매)</span></h3>
   <div class="hint" style="margin-bottom:8px">차단하면 비회원은 결제 화면에 들어올 때 로그인 화면으로 이동하고, 로그인·가입을 마치면 결제 화면으로 돌아옵니다. 주문 생성 API도 비회원 주문을 거부합니다. 기존 비회원 주문의 조회·연결은 그대로 됩니다.</div>
-  <div id="cgbox" class="loading">불러오는 중…</div></div><div id="sys" class="loading">불러오는 중…</div></section>
+  <div id="cgbox" class="loading">불러오는 중…</div></div>
+  <div class="panel"><h3>결제 즉시 구매확정 <span class="tag">이세계아이돌 예약판매 한정</span></h3>
+  <div class="hint" style="margin-bottom:8px">켜면 상품명에 키워드가 들어간 주문은 배송과 무관하게 <b>결제완료 즉시</b> 고객 마이페이지에 [구매확정] 버튼이 열립니다. 구매확정 후에는 고객이 환불·취소·교환·배송지 변경을 할 수 없고, 관리자 취소도 OWNER 강제취소로만 가능합니다. 다른 상품은 종전대로 발송 후에만 구매확정할 수 있습니다.</div>
+  <div id="cebox" class="loading">불러오는 중…</div></div><div id="sys" class="loading">불러오는 중…</div></section>
 </main>
 <div class="modal-bg" id="mbg"><div class="modal" id="mbox"></div></div>
 <div id="toast"></div>
@@ -5803,8 +5862,11 @@ async function markPaid(oid){
 async function manualRefundDone(oid){
  if(prompt('이니시스 환불 API를 호출하지 않고 주문만 취소 상태로 정리합니다.\n상점관리자(또는 계좌이체)로 고객에게 이미 환불을 마친 경우에만 진행하세요.\n\n확인을 위해 "수동환불" 을 입력하세요')!=='수동환불')return;
  const reason=prompt('취소 사유 (감사로그·결제이력에 기록)','수동환불(외부 처리)')||'수동환불(외부 처리)';
- try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason,manual:true})});
+ try{const r=await cancelPost(oid,{reason,manual:true});
  toast('수동환불 완료처리 · 재고 복원');closeM();loadOrders(opage)}catch(e){alert(e.message)}}
+async function cancelPost(oid,b){try{return await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
+ catch(e){if(!/구매확정/.test(e.message||''))throw e;if(prompt(e.message+'\n\n그래도 취소하려면 "강제취소" 를 입력하세요 (OWNER 전용 · 감사로그 기록)')!=='강제취소')throw new Error('취소하지 않았습니다');
+  return await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},b,{force:true}))})}}
 async function cancelOrder(oid,refund,st){
  const msg=refund?'이니시스 결제취소(환불)를 실행합니다. 계속할까요?'
   :(st==='WAITING_DEPOSIT'
@@ -5812,7 +5874,7 @@ async function cancelOrder(oid,refund,st){
     :'이 주문을 취소로 표시할까요?');
  if(!confirm(msg))return;
  const reason=prompt('취소 사유','고객 요청')||'고객 요청';
- try{const r=await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});
+ try{const r=await cancelPost(oid,{reason});
  toast(r.refunded?'환불 완료 · 재고 복원':(st==='WAITING_DEPOSIT'?'입금대기 취소 완료 · 재고 복원':'취소 처리 완료'));closeM();loadOrders(opage)}catch(e){alert(e.message)}}
 async function linkMember(oid){const email=prompt('연결할 회원의 로그인 이메일\n([회원] 탭에서 확인 · 1:1 문의 등으로 본인확인 후 진행)');if(!email)return;
  if(!confirm('주문 '+oid+' 을(를) 회원 ['+email+'] 계정에 연결합니다.\n연결 즉시 고객 마이페이지 주문 내역에 표시됩니다. 계속할까요?'))return;
@@ -7318,7 +7380,11 @@ async function grantPoints(id,email){const v=prompt(email+' 님에게 지급(+) 
 async function loadCG(){try{const d=await api('/admin/api/checkout-guest');const row=(k,l)=>`<label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input type="checkbox" id="cg_${k}" ${d[k]?'checked':''} onchange="saveCG()"> ${l} 비회원 구매 허용 <span class="st ${d[k]?'PENDING':'PAID'}">${d[k]?'허용 중':'차단 중'}</span></label>`;
  $('#cgbox').innerHTML=row('domestic','국내(/checkout)')+row('intl','해외(/checkout-global)')}catch(e){$('#cgbox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 async function saveCG(){try{await api('/admin/api/checkout-guest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domestic:$('#cg_domestic').checked,intl:$('#cg_intl').checked})});toast('저장했습니다 — 즉시 반영');loadCG()}catch(e){toast(e.message);loadCG()}}
-async function loadSys(){loadCG();try{const s=await api('/admin/api/system');
+async function loadCE(){try{const d=await api('/admin/api/confirm-early');
+ $('#cebox').innerHTML=`<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="ce_on" ${d.on?'checked':''}> 사용 <span class="st ${d.on?'PAID':'CANCELLED'}">${d.on?'켜짐':'꺼짐'}</span></label>
+ <input id="ce_kw" value="${esc(d.kw)}" placeholder="상품명 키워드 — 예: Across Dimensions" style="width:260px"><span class="hint" style="display:inline">종료</span><input type="datetime-local" id="ce_until" value="${esc(d.until)}"><button class="btn sm" onclick="saveCE()">저장</button></div><div class="hint" style="margin-top:4px">종료 시각을 비우면 끌 때까지 계속 적용됩니다 (한국시간).</div>`}catch(e){$('#cebox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+async function saveCE(){try{await api('/admin/api/confirm-early',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:$('#ce_on').checked,kw:$('#ce_kw').value,until:$('#ce_until').value})});toast('저장했습니다 — 즉시 반영');loadCE()}catch(e){toast(e.message)}}
+async function loadSys(){loadCG();loadCE();try{const s=await api('/admin/api/system');
  $('#sys').innerHTML=`<div class="cards">
  <div class="card"><div class="k">데이터베이스</div><div class="v" style="font-size:16px">${esc(s.db)}</div><div class="s">${s.db_ok?'정상':'연결 오류'}</div></div>
  <div class="card"><div class="k">주문 / 상품 / 고객</div><div class="v" style="font-size:16px">${s.orders} / ${s.products.toLocaleString()} / ${s.customers}</div></div>
@@ -11026,8 +11092,8 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
   (o.vbank.holder?'<br>예금주 '+esc(o.vbank.holder):'')+(o.vbank.due?'<br>입금기한 '+esc(vbDue(o.vbank.due)):'')+
   '<br>입금액 <b>'+won(o.amount)+'</b> — 입금 확인 즉시 자동으로 결제완료 처리됩니다.</div>':'')+
  '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+'</div>'+
- (o.confirmed_at?'<div class="hint" style="color:#2e7d32"><b>구매확정</b> '+esc(o.confirmed_at)+' — 확정된 주문은 반품·교환 요청을 할 수 없습니다. 문의는 1:1 문의로 남겨 주세요.</div>'
-  :o.can_confirm?'<div class="hint">상품을 받으셨다면 <b>[구매확정]</b>을 눌러 주세요. 구매확정 후에는 반품·교환 요청을 할 수 없습니다.</div>':'')+
+ (o.confirmed_at?'<div class="hint" style="color:#2e7d32"><b>구매확정</b> '+esc(o.confirmed_at)+' — 확정된 주문은 환불·취소·교환·배송지 변경을 할 수 없습니다. 문의는 1:1 문의로 남겨 주세요.</div>'
+  :o.can_confirm?'<div class="hint"><b>[구매확정]</b>을 누르면 구매가 확정됩니다. 구매확정 후에는 환불·취소·교환·배송지 변경을 할 수 없습니다.</div>':'')+
  (o.open_request?'<div class="hint" style="color:var(--red)">'+({cancel:'취소',return:'반품',exchange:'교환'}[o.open_request.rtype]||'')+' 요청이 '+esc(o.open_request.status)+' 상태입니다.</div>':'')+
  '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
  (o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a>':'')+
@@ -11039,7 +11105,7 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
  (o.can_edit_addr?'<button class="b ghost" onclick="addrEditForm(\''+esc(oid)+'\')">배송지 변경</button>':'')+
  '</div><div id="addredit"></div></div>';$('#odetail').scrollIntoView({behavior:'smooth'});window._ODET=o}
 function vbDue(d){d=String(d||'');return d.length>=12?(d.slice(0,4)+'.'+d.slice(4,6)+'.'+d.slice(6,8)+' '+d.slice(8,10)+':'+d.slice(10,12)):d}
-async function confirmOrder(oid){if(!confirm('상품을 받으셨나요?\n구매확정 후에는 반품·교환 요청을 할 수 없습니다.'))return;
+async function confirmOrder(oid){if(!confirm('구매를 확정할까요?\n구매확정 후에는 환불·취소·교환·배송지 변경을 할 수 없습니다.'))return;
  try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/confirm',{});toast('구매확정되었습니다. 감사합니다!');orders();if($('#odetail').innerHTML)orderDetail(oid)}catch(e){alert(e.message)}}
 async function selfCancel(oid){if(!confirm('이 주문을 바로 취소할까요?\n입금 전 주문은 즉시 취소되며 되돌릴 수 없습니다.\n(수량·옵션 변경은 취소 후 다시 주문해 주세요)'))return;
  try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/self-cancel',{reason:'고객 직접 취소'});
@@ -17965,6 +18031,7 @@ def api_m_orders(request: Request):
         d = (kst_today() - datetime.timedelta(days=30 if rng == '1m' else 90)).isoformat()
         extra, eargs = ' AND created>=?', (d,)
     _cc = ', confirmed_at' if 'confirmed_at' in _state['ocols'] else ''
+    _cec = confirm_early_conf()
     rs = rows('SELECT order_id, created, status, fulfill, amount, items, tracking, courier, receipt_url' + _cc + ' FROM orders WHERE '
               + w + extra + ' ORDER BY created DESC LIMIT 100', args + eargs)
     out = []
@@ -17981,7 +18048,7 @@ def api_m_orders(request: Request):
                     'track_url': track_url(r.get('courier') or '', r.get('tracking') or ''),
                     'receipt': r.get('receipt_url') or '',
                     'paid': r.get('status') == 'PAID',
-                    'can_confirm': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at')})
+                    'can_confirm': can_confirm(r, _cec)})
     return {'linked': True, 'rows': out}
 
 @admin_router.get('/api/member/orders/{oid}')
@@ -18011,12 +18078,12 @@ def api_m_order_detail(oid: str, request: Request):
                        'price': num(it.get('p') or it.get('price') or 0)} for it in jload(r.get('items'), [])],
             'vbank': vbank,
             # WAITING_DEPOSIT(가상계좌 입금 전)은 돈이 움직이지 않아 취소 요청을 허용한다.
-            'can_cancel': (r.get('status') in ('PENDING', 'WAITING_DEPOSIT')) or (r.get('status') == 'PAID' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING')),
+            'can_cancel': ((r.get('status') in ('PENDING', 'WAITING_DEPOSIT')) or (r.get('status') == 'PAID' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING'))) and not r.get('confirmed_at'),
             # 돈이 움직이지 않은 주문(입금 전)은 요청·승인 왕복 없이 즉시 셀프취소를 허용한다.
             'can_self_cancel': r.get('status') in ('PENDING', 'WAITING_DEPOSIT'),
-            'can_edit_addr': (r.get('status') or '') != 'CANCELLED' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING'),
+            'can_edit_addr': (r.get('status') or '') != 'CANCELLED' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING') and not r.get('confirmed_at'),
             'can_return': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at'),
-            'can_confirm': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at'),
+            'can_confirm': can_confirm(r),
             'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
             'open_request': dict(open_req) if open_req else None}
 
@@ -18039,6 +18106,8 @@ def api_m_order_request(oid: str, request: Request, body: dict = Body(...)):
     if rtype not in ('cancel', 'return', 'exchange'): raise HTTPException(400, '요청 유형 오류')
     if not reason: raise HTTPException(400, '사유를 입력해 주세요')
     f = r.get('fulfill') or 'NEW'
+    if r.get('confirmed_at'):
+        raise HTTPException(400, '구매확정된 주문은 취소·반품·교환 요청을 할 수 없습니다 — 1:1 문의로 문의해 주세요')
     if rtype == 'cancel':
         if not ((r.get('status') in ('PENDING', 'WAITING_DEPOSIT')) or (r.get('status') == 'PAID' and f in ('NEW', 'PREPARING'))):
             raise HTTPException(400, '발송 전 주문만 취소 요청이 가능합니다')
@@ -18095,6 +18164,8 @@ def api_m_order_ship_addr(oid: str, request: Request, body: dict = Body(...)):
     r = _own_order(m, oid)
     if (r.get('status') or '') == 'CANCELLED':
         raise HTTPException(400, '취소된 주문은 배송지를 변경할 수 없습니다')
+    if r.get('confirmed_at'):
+        raise HTTPException(400, '구매확정된 주문은 배송지를 변경할 수 없습니다 — 1:1 문의로 문의해 주세요')
     if (r.get('fulfill') or 'NEW') not in ('NEW', 'PREPARING'):
         raise HTTPException(400, '이미 발송된 주문입니다 — 배송지 변경은 1:1 문의로 접수해 주세요')
     name = str(body.get('name') or '').strip()[:40]

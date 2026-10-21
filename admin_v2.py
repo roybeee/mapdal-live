@@ -1732,7 +1732,8 @@ def ensure_ready():
     if oc:
         for col, typ in (('fulfill', "TEXT DEFAULT 'NEW'"), ('tracking', 'TEXT'), ('admin_memo', 'TEXT'),
                          ('pay_log', 'TEXT'), ('courier', 'TEXT'), ('pay_detail', 'TEXT'),
-                         ('client_ip', 'TEXT'), ('country', 'TEXT'), ('geo', 'TEXT')):
+                         ('client_ip', 'TEXT'), ('country', 'TEXT'), ('geo', 'TEXT'),
+                         ('shipped_at', 'TEXT'), ('confirmed_at', 'TEXT')):
             if col not in oc:
                 try: run("ALTER TABLE orders ADD COLUMN %s %s" % (col, typ))
                 except Exception: pass
@@ -2254,10 +2255,8 @@ def _country_where(p):
     if re.fullmatch(r'[A-Z]{2}', v): return 'country = ?', [v]
     return '', []
 
-@admin_router.get('/admin/api/orders')
-def api_orders(request: Request):
-    a = get_actor(request); need(a, 0)
-    p = request.query_params
+def _orders_where(p):
+    """주문 목록·일괄 처리 공통 검색 조건 → (' WHERE …', args)."""
     where, args = [], []
     if p.get('query'):
         kw = '%' + p['query'].strip() + '%'; where.append('(order_id LIKE ? OR buyer LIKE ?)'); args += [kw, kw]
@@ -2266,15 +2265,25 @@ def api_orders(request: Request):
         where.append("COALESCE(fulfill,'NEW') = ?"); args.append(p['fulfill'])
     _cw, _ca = _country_where(p)
     if _cw: where.append(_cw); args += _ca
+    if p.get('item'):                       # 상품명 키워드 (일괄 발송완료 대상 고르기)
+        where.append('items LIKE ?'); args.append('%' + str(p['item']).strip() + '%')
     if p.get('from'): where.append('created >= ?'); args.append(p['from'])
     if p.get('to'):
         _hi = _day_after(p['to'])          # 상한: '<= 종료일~'(콜레이션 의존) → '< 익일'
         if _hi: where.append('created < ?'); args.append(_hi)
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
+    return w, tuple(args)
+
+
+@admin_router.get('/admin/api/orders')
+def api_orders(request: Request):
+    a = get_actor(request); need(a, 0)
+    p = request.query_params
+    w, args = _orders_where(p)
     page = max(1, int(p.get('page', 1) or 1)); size = 20
     total = num((one('SELECT COUNT(*) AS c FROM orders' + w, tuple(args)) or {}).get('c'))
     sel = ['order_id', 'created', 'status', 'amount', 'items', 'buyer', 'ship_method']
-    sel += [c for c in ('fulfill', 'tracking', 'courier', 'receipt_url', 'country', 'geo') if c in _state['ocols']]
+    sel += [c for c in ('fulfill', 'tracking', 'courier', 'receipt_url', 'country', 'geo', 'confirmed_at') if c in _state['ocols']]
     rs = rows('SELECT %s FROM orders%s ORDER BY created DESC LIMIT %d OFFSET %d' % (', '.join(sel), w, size, (page - 1) * size), tuple(args))
     out = []
     for r in rs:
@@ -2288,7 +2297,7 @@ def api_orders(request: Request):
                     'items_label': first[:24] + (' 외 %d' % (len(its) - 1) if len(its) > 1 else ''),
                     'buyer_name': b.get('name', ''), 'phone': b.get('phone', ''),
                     'ship': r.get('ship_method', ''), 'tracking': r.get('tracking') or '',
-                    'courier': r.get('courier') or ''})
+                    'courier': r.get('courier') or '', 'confirmed': bool(r.get('confirmed_at'))})
     return {'total': total, 'page': page, 'size': size, 'rows': out}
 
 _PAY_LOG_LABELS = {
@@ -2296,7 +2305,7 @@ _PAY_LOG_LABELS = {
     'WINDOW_CLOSE': '결제창 닫음', 'PAGE_EXIT': '페이지 이탈', 'AUTH_FAIL': '카드 인증 실패',
     'AUTH_BAD': '인증 응답 이상', 'APPROVE_ERR': '승인 통신 오류', 'APPROVE_FAIL': '승인 거절',
     'AMOUNT_MISMATCH': '금액 불일치', 'VBANK_ISSUED': '가상계좌 발급', 'PAID': '결제 완료',
-    'CANCELLED': '주문 취소', 'DEPOSIT_AFTER_CANCEL': '취소 후 입금(환불 필요)',
+    'CANCELLED': '주문 취소', 'DEPOSIT_AFTER_CANCEL': '취소 후 입금(환불 필요)', 'CONFIRMED': '구매확정',
 }
 
 def _pay_log_view(r):
@@ -2380,6 +2389,9 @@ def api_order_detail(oid: str, request: Request):
             'refund': (b.get('refund') if isinstance(b.get('refund'), dict) else {}) or {},
             # 입금대기 건은 관리자가 통장 확인 후 수동으로 입금완료 처리할 수 있다.
             'can_mark_paid': (r.get('status') == 'WAITING_DEPOSIT'),
+            'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
+            'shipped_at': (r.get('shipped_at') or '')[:16].replace('T', ' '),
+            'can_confirm': bool(r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at')),
             'can_restore': bool(r.get('status') == 'CANCELLED' and ('vbank' in str(r.get('pay_method') or '').lower()) and '수동환불' not in str(r.get('admin_memo') or '')),
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID'),
             # 결제 당시 MID(TID 판별) — MID 교체 시 어느 상점관리자 소속 거래인지 즉시 식별.
@@ -2607,9 +2619,110 @@ def api_fulfill(oid: str, request: Request, body: dict = Body(...)):
             (f, (body.get('tracking') or '').strip(), (body.get('memo') or '').strip()) + extra_a + (oid,))
     if not n: raise HTTPException(404, 'not found')
     if f == 'SHIPPED' and (not prev or (prev.get('fulfill') or '') != 'SHIPPED'):
+        if 'shipped_at' in _state['ocols']:
+            run("UPDATE orders SET shipped_at=? WHERE order_id=? AND COALESCE(shipped_at,'')=''", (now_iso(), oid))
         order_notify_async(oid, 'shipped')            # 배송시작 문자 — 최초 전환 시 1회
     audit(a, '주문처리변경', oid, '%s / %s송장 %s' % (f, (courier_name(co) + ' ') if co else '', body.get('tracking') or '-'))
     return {'ok': True}
+
+# ── 일괄 발송완료 + 구매확정 (2026-10-21 · 이주현 팀장 요청) ─────────────────────────
+#   관리자가 주문을 골라 [일괄 발송완료] → fulfill SHIPPED(배송중). 그때부터 고객 마이페이지에
+#   [구매확정] 버튼이 열린다. 구매확정 = 수령 확인 → 배송완료(DONE) + confirmed_at, 이후 반품·교환 요청 불가.
+_BULK_SHIP_MAX = 2000
+
+
+def _bulk_ship_check(r):
+    if not r: return False, '주문 없음'
+    if r.get('status') != 'PAID': return False, '결제완료 주문이 아님 (%s)' % (r.get('status') or '-')
+    f = r.get('fulfill') or 'NEW'
+    if f in ('SHIPPED', 'DONE'): return False, '이미 발송됨'
+    if f not in ('NEW', 'PREPARING'): return False, '처리상태 %s' % f
+    if str(r.get('order_id') or '').startswith('SF-'): return False, '추가 배송비 결제건'
+    return True, ''
+
+
+def _ids_from(raw):
+    if isinstance(raw, str): raw = re.split(r'[\s,]+', raw)
+    out = []
+    for x in raw or []:
+        x = str(x).strip().upper()
+        if re.fullmatch(r'MD-\d{8}-[0-9A-Z]{6}', x) and x not in out: out.append(x)
+    return out
+
+
+@admin_router.get('/admin/api/ship-candidates')
+def api_ship_candidates(request: Request):
+    """검색 조건에 맞는 발송 가능 주문번호 (결제완료 · 신규/상품준비중) — 일괄 발송완료 대상 불러오기."""
+    a = get_actor(request); need(a, 1)
+    w, args = _orders_where(request.query_params)
+    cond = "status='PAID' AND COALESCE(fulfill,'NEW') IN ('NEW','PREPARING') AND SUBSTR(order_id,1,3)<>'SF-'"
+    w = (w + ' AND ' + cond) if w else (' WHERE ' + cond)
+    rs = rows('SELECT order_id FROM orders%s ORDER BY created LIMIT %d' % (w, _BULK_SHIP_MAX + 1), args)
+    return {'ids': [r['order_id'] for r in rs[:_BULK_SHIP_MAX]], 'more': len(rs) > _BULK_SHIP_MAX}
+
+
+@admin_router.post('/admin/api/orders/bulk-ship')
+def api_orders_bulk_ship(request: Request, body: dict = Body(...)):
+    """body: {order_ids, dry_run, notify} — 결제완료·발송 전 주문을 발송완료(배송중)로 일괄 변경."""
+    a = get_actor(request); need(a, 1, '일괄 발송완료')
+    if 'fulfill' not in _state['ocols']: raise HTTPException(400, '컬럼 준비 중 — 새로고침 후 재시도')
+    ids = _ids_from(body.get('order_ids'))
+    if not ids: raise HTTPException(400, '주문을 선택하거나 주문번호를 입력하세요')
+    if len(ids) > _BULK_SHIP_MAX: raise HTTPException(400, '한 번에 %d건까지 처리할 수 있습니다' % _BULK_SHIP_MAX)
+    got = {}
+    for i in range(0, len(ids), 400):
+        part = ids[i:i + 400]
+        for r in rows('SELECT order_id, status, fulfill, buyer FROM orders WHERE order_id IN (%s)' % ','.join('?' * len(part)), tuple(part)):
+            got[r['order_id']] = r
+    res = []
+    for oid in ids:
+        r = got.get(oid); ok, why = _bulk_ship_check(r)
+        res.append({'order_id': oid, 'ok': ok, 'why': why, 'name': jload((r or {}).get('buyer'), {}).get('name') or ''})
+    okn = sum(1 for x in res if x['ok'])
+    if body.get('dry_run'):
+        return {'dry_run': True, 'rows': res, 'ok_count': okn}
+    done = 0; now = now_iso(); has_sa = 'shipped_at' in _state['ocols']
+    for x in res:
+        if not x['ok']: continue
+        n = run("UPDATE orders SET fulfill='SHIPPED'%s WHERE order_id=? AND status='PAID' AND COALESCE(fulfill,'NEW') IN ('NEW','PREPARING')"
+                % (", shipped_at=?" if has_sa else ''), ((now,) if has_sa else ()) + (x['order_id'],))
+        if not n:
+            x['ok'] = False; x['why'] = '그 사이 상태가 바뀜'; continue
+        done += 1; x['done'] = True
+        if body.get('notify'):
+            try: order_notify_async(x['order_id'], 'shipped')
+            except Exception: pass
+    audit(a, '일괄발송완료', '', '%d건%s' % (done, ' · 배송시작 알림' if body.get('notify') else ''))
+    return {'rows': res, 'ok_count': done}
+
+
+@admin_router.post('/admin/api/orders/{oid}/confirm')
+def api_order_confirm_admin(oid: str, request: Request):
+    """CS 대리 구매확정 (고객 요청·전화 확인 시)."""
+    a = get_actor(request); need(a, 2, '구매확정 처리')
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    _confirm_order(r, '관리자(%s)' % (a.get('name') or ''))
+    audit(a, '구매확정(대리)', oid, '')
+    return {'ok': True}
+
+
+def _confirm_order(r, by):
+    if not r: raise HTTPException(404, '주문을 찾을 수 없습니다')
+    if 'confirmed_at' not in _state['ocols']: raise HTTPException(400, '준비 중입니다 — 잠시 후 다시 시도해 주세요')
+    if r.get('confirmed_at'): raise HTTPException(400, '이미 구매확정된 주문입니다')
+    if r.get('status') != 'PAID' or (r.get('fulfill') or '') not in ('SHIPPED', 'DONE'):
+        raise HTTPException(400, '발송된 주문만 구매확정할 수 있습니다')
+    if one("SELECT id FROM member_requests WHERE order_id=? AND rtype IN ('return','exchange') AND status IN ('접수','처리중')", (r['order_id'],)):
+        raise HTTPException(400, '진행 중인 반품·교환 요청이 있어 구매확정할 수 없습니다')
+    n = run("UPDATE orders SET fulfill='DONE', confirmed_at=? WHERE order_id=? AND status='PAID' "
+            "AND fulfill IN ('SHIPPED','DONE') AND COALESCE(confirmed_at,'')=''", (now_iso(), r['order_id']))
+    if not n: raise HTTPException(409, '주문 상태가 바뀌었습니다 — 새로고침 후 다시 시도해 주세요')
+    try:
+        import app as _app
+        _app._pay_log(r['order_id'], 'CONFIRMED', '구매확정 — %s' % by)
+    except Exception:
+        pass
+
 
 @admin_router.post('/admin/api/orders/{oid}/ship-addr')
 def api_order_ship_addr(oid: str, request: Request, body: dict = Body(...)):
@@ -5037,6 +5150,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button>
   <a class="btn" href="/admin/shipfee" target="_blank" style="background:#E8332A;border-color:#E8332A;text-decoration:none" title="배송비 누락 주문 추가 결제 링크·결제 현황">추가 배송비 청구</a>
   <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button>
+  <button class="btn" onclick="bsOpen()" id="bsbtn" style="background:#141414;color:#fff" title="체크한 주문(또는 검색 조건 전체)을 발송완료로 바꿉니다 — 고객 마이페이지에 [구매확정] 버튼이 열립니다">일괄 발송완료</button>
   <button class="btn ghost" onclick="rsOpen('')" title="입금통보 누락으로 잘못 취소된 가상계좌 주문을 결제완료로 되돌립니다 (여러 건 한 번에)">입금확인 복구</button>
   <button class="btn ghost" onclick="vbSweep()" id="vbsweepbtn" title="입금기한 만료·결제 미완료 주문을 취소하고 재고를 정리합니다 (자동으로도 주기 실행)">미결제 정리</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
@@ -5368,11 +5482,11 @@ let opage=1;
 async function loadOrders(p){opage=p;const q=new URLSearchParams({page:p});
  ['oq|query','ost|status','off|fulfill','ofrom|from','oto|to','octry|country'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});
  try{const d=await api('/admin/api/orders?'+q);
- $('#olist').innerHTML=`<table><tr><th>주문번호</th><th>일시</th><th>결제</th><th>처리</th><th class="right">금액</th><th>품목</th><th>주문자</th><th>송장</th><th></th></tr>
- ${d.rows.map(o=>`<tr><td class="mono">${esc(o.order_id)}</td><td class="mono">${esc(o.created)}</td>
- <td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td><span class="ff ${esc(o.fulfill)}">${FF[o.fulfill]||esc(o.fulfill)}</span></td>
+ $('#olist').innerHTML=`<table><tr><th style="width:26px"><input type="checkbox" title="이 페이지 전체 선택" onchange="document.querySelectorAll('.osel').forEach(x=>x.checked=this.checked);bsCount()"></th><th>주문번호</th><th>일시</th><th>결제</th><th>처리</th><th class="right">금액</th><th>품목</th><th>주문자</th><th>송장</th><th></th></tr>
+ ${d.rows.map(o=>`<tr><td><input type="checkbox" class="osel" value="${esc(o.order_id)}" onchange="bsCount()" ${BSEL.has(o.order_id)?'checked':''}></td><td class="mono">${esc(o.order_id)}</td><td class="mono">${esc(o.created)}</td>
+ <td><span class="st ${esc(o.status)}">${esc(o.status)}</span></td><td><span class="ff ${esc(o.fulfill)}">${FF[o.fulfill]||esc(o.fulfill)}</span>${o.confirmed?'<br><span class="st PAID" style="font-size:10.5px">구매확정</span>':''}</td>
  <td class="right mono">${won(o.amount)}</td><td>${esc(o.items_label)}</td><td>${oFlag(o)}${esc(o.buyer_name)}</td><td class="mono" style="font-size:11.5px">${o.courier?'<span style="color:#888">'+esc(CO[o.courier]||o.courier)+'</span><br>':''}${esc(o.tracking)}</td>
- <td><button class="btn sm ghost" onclick="openOrder('${esc(o.order_id)}')">상세</button></td></tr>`).join('')||'<tr><td colspan=9 class="loading">없음</td></tr>'}</table>
+ <td><button class="btn sm ghost" onclick="openOrder('${esc(o.order_id)}')">상세</button></td></tr>`).join('')||'<tr><td colspan=10 class="loading">없음</td></tr>'}</table>
  ${pager(p,d,'loadOrders')}`;}catch(e){$('#olist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
 const pager=(p,d,fn)=>`<div class="pager"><button class="btn sm ghost" ${p<=1?'disabled':''} onclick="${fn}(${p-1})">이전</button><span>${p} / ${Math.max(1,Math.ceil(d.total/d.size))} · 총 ${d.total}</span><button class="btn sm ghost" ${p*d.size>=d.total?'disabled':''} onclick="${fn}(${p+1})">다음</button></div>`;
 function csv(){const q=new URLSearchParams();['ofrom|from','oto|to','ost|status','octry|country'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});location.href='/admin/api/orders.csv?'+q}
@@ -5443,7 +5557,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>알림 발송</b><span style="display:flex;gap:6px"><select id="mtpl" style="flex:1">${TPLCACHE.map(t=>`<option value="${t.id}">${esc(t.name)} (${t.kind==='alimtalk'?'알림톡':'SMS'})</option>`).join('')}</select>
  <button class="btn sm" onclick="sendNotify('${esc(o.order_id)}')">발송</button></span></div>`:''}
  <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
- ${o.can_mark_paid&&can(2)?`<button class="btn" style="background:#1565c0;color:#fff" onclick="markPaid('${esc(o.order_id)}')">입금 확인 → 결제완료</button>`:''}${o.can_restore&&can(2)?`<button class="btn" style="background:#2e7d32;color:#fff" onclick="rsOpen('${esc(o.order_id)}')" title="기한 내 입금했는데 입금통보 누락으로 취소된 주문 — 재고를 다시 차감하고 결제완료로 되돌립니다">입금 확인 복구</button>`:''}
+ ${o.confirmed_at?`<span class="st PAID" title="구매확정 ${esc(o.confirmed_at)}">구매확정 ${esc(o.confirmed_at)}</span>`:''}${o.can_confirm&&can(2)?`<button class="btn ghost" onclick="cfAdmin('${esc(o.order_id)}')" title="고객 요청·확인 시 대리 구매확정">구매확정 처리</button>`:''}${o.can_mark_paid&&can(2)?`<button class="btn" style="background:#1565c0;color:#fff" onclick="markPaid('${esc(o.order_id)}')">입금 확인 → 결제완료</button>`:''}${o.can_restore&&can(2)?`<button class="btn" style="background:#2e7d32;color:#fff" onclick="rsOpen('${esc(o.order_id)}')" title="기한 내 입금했는데 입금통보 누락으로 취소된 주문 — 재고를 다시 차감하고 결제완료로 되돌립니다">입금 확인 복구</button>`:''}
  ${can(2)&&o.status!=='CANCELLED'?(vbPaid
   ?`<button class="btn red" onclick="manualRefundDone('${esc(o.order_id)}')">수동환불 완료처리</button>`
   :`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund},'${esc(o.status)}')">${o.can_refund?'결제취소(환불)':(o.status==='WAITING_DEPOSIT'?'입금대기 취소':'주문취소 표시')}</button>${midStuck?`<button class="btn ghost" onclick="manualRefundDone('${esc(o.order_id)}')">수동환불 완료처리</button>`:''}`):''}
@@ -5510,6 +5624,26 @@ async function sendNotify(oid,auto){try{const tid=auto?(TPLCACHE.find(t=>t.name.
  const r=await api('/admin/api/notify/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:oid,template:tid})});
  toast(r.dry?'기록 모드: 발송사 미설정 (로그 저장됨)':'발송 완료');}catch(e){alert(e.message)}}
 /*mpRestorePaid — 잘못 취소된 가상계좌 주문 입금 확인 복구 (2026-10-21)*/
+const BSEL=new Set();
+function bsCount(){document.querySelectorAll('.osel').forEach(x=>{x.checked?BSEL.add(x.value):BSEL.delete(x.value)});const b=$('#bsbtn');if(b)b.textContent=BSEL.size?'일괄 발송완료 ('+BSEL.size+')':'일괄 발송완료'}
+function bsOpen(){bsCount();$('#mbox').innerHTML=`<h3>일괄 발송완료</h3>
+ <div class="hint" style="margin-bottom:8px">결제완료 · 신규/상품준비중 주문을 <b>발송완료(배송중)</b>로 바꿉니다. 바뀐 주문은 고객 마이페이지에 <b>[구매확정]</b> 버튼이 열리고, 고객이 누르면 배송완료·구매확정으로 바뀝니다(구매확정 후 반품·교환 요청 불가). 이미 발송됐거나 결제 전·취소 주문은 자동으로 제외됩니다.</div>
+ <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><input id="bs_item" placeholder="상품명 키워드 (선택) — 예: Across Dimensions" style="flex:1;min-width:200px"><button class="btn sm ghost" onclick="bsLoad()" title="주문 탭의 현재 검색 조건(기간·국가·검색어) + 상품명 키워드로 발송 가능 주문 전체를 불러옵니다">검색 조건 전체 불러오기</button></div>
+ <textarea id="bs_ids" rows="8" style="width:100%;font-family:'IBM Plex Mono';font-size:12px" placeholder="주문번호를 한 줄에 하나씩 (목록에서 체크하면 자동으로 들어옵니다)">${esc([...BSEL].join('\n'))}</textarea>
+ <label class="hint" style="display:inline-flex;gap:5px;align-items:center;margin-top:6px"><input type="checkbox" id="bs_notify"> 배송시작 알림톡 발송 (송장 미등록 주문은 송장번호 없이 발송됩니다)</label>
+ <div id="bs_res" style="margin-top:10px"></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn ghost" onclick="bsPreview()">대상 확인</button><button class="btn" id="bs_go" style="background:#141414;color:#fff" onclick="bsRun()" disabled>발송완료 처리</button><button class="btn ghost" onclick="closeM()">닫기</button></div>`;
+ $('#mbox').classList.add('wide');$('#mbg').style.display='flex';if(BSEL.size)bsPreview()}
+async function bsLoad(){const q=new URLSearchParams();['oq|query','ofrom|from','oto|to','octry|country'].forEach(x=>{const[i,k]=x.split('|');if($('#'+i).value)q.set(k,$('#'+i).value)});if($('#bs_item').value.trim())q.set('item',$('#bs_item').value.trim());
+ try{const d=await api('/admin/api/ship-candidates?'+q);$('#bs_ids').value=d.ids.join('\n');toast(d.ids.length+'건 불러옴'+(d.more?' (최대 2,000건 — 나머지는 처리 후 다시)':''));bsPreview()}catch(e){toast(e.message)}}
+async function bsPreview(){try{const d=await api('/admin/api/orders/bulk-ship',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_ids:$('#bs_ids').value,dry_run:true})});
+ const bad=d.rows.filter(r=>!r.ok);$('#bs_res').innerHTML=`<div style="margin-bottom:6px"><b>발송완료 가능 ${d.ok_count}건</b> / 입력 ${d.rows.length}건${bad.length?' · 제외 '+bad.length+'건':''}</div>`+(bad.length?`<div style="max-height:200px;overflow:auto"><table><tr><th>주문번호</th><th>고객</th><th>제외 사유</th></tr>${bad.slice(0,200).map(r=>`<tr><td class="mono" style="font-size:11px">${esc(r.order_id)}</td><td>${esc(r.name)}</td><td class="hint">${esc(r.why)}</td></tr>`).join('')}</table></div>`:'');
+ $('#bs_go').disabled=!d.ok_count;window._bsOk=d.ok_count}catch(e){toast(e.message)}}
+async function bsRun(){if(!confirm(window._bsOk+'건을 발송완료(배송중)로 바꿉니다.'+($('#bs_notify').checked?'\n배송시작 알림톡도 발송합니다.':'')+'\n진행할까요?'))return;
+ try{$('#bs_go').disabled=true;const d=await api('/admin/api/orders/bulk-ship',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_ids:$('#bs_ids').value,notify:$('#bs_notify').checked})});
+ toast('발송완료 '+d.ok_count+'건 처리');BSEL.clear();closeM();loadOrders(opage)}catch(e){toast(e.message);$('#bs_go').disabled=false}}
+async function cfAdmin(oid){if(!confirm('고객 대신 구매확정 처리할까요?\n구매확정 후에는 고객이 반품·교환 요청을 할 수 없습니다.'))return;
+ try{await api('/admin/api/orders/'+encodeURIComponent(oid)+'/confirm',{method:'POST'});toast('구매확정 처리했습니다');openOrder(oid)}catch(e){toast(e.message)}}
 function rsOpen(oid){$('#mbox').innerHTML=`<h3>입금 확인 복구</h3>
  <div class="hint" style="margin-bottom:8px">기한 내 입금했는데 입금통보 누락으로 '입금기한 만료' 자동취소된 가상계좌 주문을 결제완료로 되돌립니다. 취소 때 돌려놓은 재고(세트·랜덤 낱개 포함)를 같은 수량만큼 다시 차감하고, 쿠폰 사용·구매 적립도 원래대로 맞춥니다. <b>이니시스에서 입금을 확인한 주문만</b> 넣으세요.</div>
  <textarea id="rs_ids" rows="8" style="width:100%;font-family:'IBM Plex Mono';font-size:12px" placeholder="주문번호를 한 줄에 하나씩 (쉼표·공백 구분도 가능)">${esc(oid||'')}</textarea>
@@ -10739,7 +10873,7 @@ async function orders(rng){rng=rng||'3m';
  d.rows.map(o=>'<tr><td class="mono" style="font-size:11.5px">'+esc(o.order_id)+'<br><span style="color:#999">'+esc(o.created)+'</span></td>'+
  '<td>'+esc(o.label)+'</td><td class="r mono">'+won(o.amount)+'</td>'+
  '<td><span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span>'+(o.tracking?'<br><a class="mono" target="_blank" rel="noopener" style="font-size:11px;color:#1a5fb4;text-decoration:underline" href="'+esc(o.track_url||'#')+'">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+' ↗</a>':'')+'</td>'+
- '<td><button class="b ghost" onclick="orderDetail(\''+esc(o.order_id)+'\')">상세</button></td></tr>').join('')+'</table>':'<div class="empty">'+(rng==='all'?'연결된 주문이 없습니다':'이 기간에 주문이 없습니다 — 위에서 [전체 기간]을 선택해 보세요')+'</div>')+'</div>'+
+ '<td><button class="b ghost" onclick="orderDetail(\''+esc(o.order_id)+'\')">상세</button>'+(o.can_confirm?'<button class="b" style="margin-left:4px" onclick="confirmOrder(\''+esc(o.order_id)+'\')">구매확정</button>':'')+'</td></tr>').join('')+'</table>':'<div class="empty">'+(rng==='all'?'연결된 주문이 없습니다':'이 기간에 주문이 없습니다 — 위에서 [전체 기간]을 선택해 보세요')+'</div>')+'</div>'+
  '<div class="panel"><h3>기존·비회원 주문 연결</h3><div class="hint">주문번호와 주문 당시 휴대폰으로 받은 인증번호를 확인한 후에만 이 계정으로 연결됩니다.</div><div class="row2"><div><label>주문번호</label><input id="coid" placeholder="MD-2026..."></div><div><label>주문 당시 휴대폰</label><input id="cph" placeholder="010-0000-0000"></div></div><div style="margin-top:10px"><button class="b" onclick="claimSend()">인증번호 받기</button></div><div id="claimVerify" style="display:none"><label>인증번호 6자리</label><div style="display:flex;gap:8px"><input id="ccode" maxlength="6"><button class="b red" onclick="claimVerify()" style="white-space:nowrap">주문 연결</button></div></div></div><div id="odetail"></div>'}
 let CLAIM_ID='';async function claimSend(){try{const d=await post('/api/member/orders/claim/send',{order_id:$('#coid').value,phone:$('#cph').value});CLAIM_ID=d.claim_id;$('#claimVerify').style.display='block';toast(d.dry?'테스트 모드: 관리자 알림 로그에서 인증번호를 확인하세요':'인증번호를 발송했습니다')}catch(e){toast(e.message)}}
 async function claimVerify(){try{await post('/api/member/orders/claim/verify',{claim_id:CLAIM_ID,code:$('#ccode').value});toast('주문이 안전하게 연결되었습니다');orders()}catch(e){toast(e.message)}}
@@ -10756,16 +10890,21 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
   (o.vbank.holder?'<br>예금주 '+esc(o.vbank.holder):'')+(o.vbank.due?'<br>입금기한 '+esc(vbDue(o.vbank.due)):'')+
   '<br>입금액 <b>'+won(o.amount)+'</b> — 입금 확인 즉시 자동으로 결제완료 처리됩니다.</div>':'')+
  '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+'</div>'+
+ (o.confirmed_at?'<div class="hint" style="color:#2e7d32"><b>구매확정</b> '+esc(o.confirmed_at)+' — 확정된 주문은 반품·교환 요청을 할 수 없습니다. 문의는 1:1 문의로 남겨 주세요.</div>'
+  :o.can_confirm?'<div class="hint">상품을 받으셨다면 <b>[구매확정]</b>을 눌러 주세요. 구매확정 후에는 반품·교환 요청을 할 수 없습니다.</div>':'')+
  (o.open_request?'<div class="hint" style="color:var(--red)">'+({cancel:'취소',return:'반품',exchange:'교환'}[o.open_request.rtype]||'')+' 요청이 '+esc(o.open_request.status)+' 상태입니다.</div>':'')+
  '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
  (o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a>':'')+
  '<a class="b ghost" target="_blank" href="/api/member/receipt/'+encodeURIComponent(oid)+'">거래명세서</a>'+
  (o.can_self_cancel?'<button class="b red" onclick="selfCancel(\''+esc(oid)+'\')">주문 즉시취소</button>'
   :(!o.open_request&&o.can_cancel?'<button class="b red" onclick="reqOrder(\''+esc(oid)+'\',\'cancel\')">취소 요청</button>':''))+
+ (o.can_confirm&&!o.open_request?'<button class="b red" onclick="confirmOrder(\''+esc(oid)+'\')">구매확정</button>':'')+
  (!o.open_request&&o.can_return?'<button class="b" onclick="reqOrder(\''+esc(oid)+'\',\'return\')">반품 요청</button><button class="b ghost" onclick="reqOrder(\''+esc(oid)+'\',\'exchange\')">교환 요청</button>':'')+
  (o.can_edit_addr?'<button class="b ghost" onclick="addrEditForm(\''+esc(oid)+'\')">배송지 변경</button>':'')+
  '</div><div id="addredit"></div></div>';$('#odetail').scrollIntoView({behavior:'smooth'});window._ODET=o}
 function vbDue(d){d=String(d||'');return d.length>=12?(d.slice(0,4)+'.'+d.slice(4,6)+'.'+d.slice(6,8)+' '+d.slice(8,10)+':'+d.slice(10,12)):d}
+async function confirmOrder(oid){if(!confirm('상품을 받으셨나요?\n구매확정 후에는 반품·교환 요청을 할 수 없습니다.'))return;
+ try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/confirm',{});toast('구매확정되었습니다. 감사합니다!');orders();if($('#odetail').innerHTML)orderDetail(oid)}catch(e){alert(e.message)}}
 async function selfCancel(oid){if(!confirm('이 주문을 바로 취소할까요?\n입금 전 주문은 즉시 취소되며 되돌릴 수 없습니다.\n(수량·옵션 변경은 취소 후 다시 주문해 주세요)'))return;
  try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/self-cancel',{reason:'고객 직접 취소'});
  toast('주문이 취소되었습니다');orders()}catch(e){alert(e.message)}}
@@ -17689,13 +17828,15 @@ def api_m_orders(request: Request):
     if rng in ('1m', '3m'):
         d = (kst_today() - datetime.timedelta(days=30 if rng == '1m' else 90)).isoformat()
         extra, eargs = ' AND created>=?', (d,)
-    rs = rows('SELECT order_id, created, status, fulfill, amount, items, tracking, courier, receipt_url FROM orders WHERE '
+    _cc = ', confirmed_at' if 'confirmed_at' in _state['ocols'] else ''
+    rs = rows('SELECT order_id, created, status, fulfill, amount, items, tracking, courier, receipt_url' + _cc + ' FROM orders WHERE '
               + w + extra + ' ORDER BY created DESC LIMIT 100', args + eargs)
     out = []
     for r in rs:
         its = jload(r.get('items'), [])
         first = (its[0].get('n') or its[0].get('name') or '') if its else ''
         st, kr = order_step(r.get('status'), r.get('fulfill'))
+        if r.get('confirmed_at'): kr = '구매확정'
         out.append({'order_id': r['order_id'], 'created': (r.get('created') or '')[:16].replace('T', ' '),
                     'step': st, 'status_kr': kr, 'amount': num(r.get('amount')),
                     'label': first[:24] + (' 외 %d' % (len(its) - 1) if len(its) > 1 else ''),
@@ -17703,7 +17844,8 @@ def api_m_orders(request: Request):
                     'courier_kr': courier_name(r.get('courier') or '') if (r.get('courier') or '') else '',
                     'track_url': track_url(r.get('courier') or '', r.get('tracking') or ''),
                     'receipt': r.get('receipt_url') or '',
-                    'paid': r.get('status') == 'PAID'})
+                    'paid': r.get('status') == 'PAID',
+                    'can_confirm': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at')})
     return {'linked': True, 'rows': out}
 
 @admin_router.get('/api/member/orders/{oid}')
@@ -17712,6 +17854,7 @@ def api_m_order_detail(oid: str, request: Request):
     r = _own_order(m, oid)
     b = jload(r.get('buyer'), {})
     st, kr = order_step(r.get('status'), r.get('fulfill'))
+    if r.get('confirmed_at'): kr = '구매확정'
     open_req = one("SELECT rtype, status FROM member_requests WHERE order_id=? AND customer_id=? AND status IN ('접수','처리중')", (oid, m.get('customer_id') or ''))
     # 가상계좌 입금 전 주문은 계좌 안내가 이메일에만 남아 재확인 문의가 잦다 — 상세에 상시 노출
     vbank = None
@@ -17736,8 +17879,20 @@ def api_m_order_detail(oid: str, request: Request):
             # 돈이 움직이지 않은 주문(입금 전)은 요청·승인 왕복 없이 즉시 셀프취소를 허용한다.
             'can_self_cancel': r.get('status') in ('PENDING', 'WAITING_DEPOSIT'),
             'can_edit_addr': (r.get('status') or '') != 'CANCELLED' and (r.get('fulfill') or 'NEW') in ('NEW', 'PREPARING'),
-            'can_return': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE'),
+            'can_return': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at'),
+            'can_confirm': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at'),
+            'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
             'open_request': dict(open_req) if open_req else None}
+
+
+@admin_router.post('/api/member/orders/{oid}/confirm')
+def api_m_order_confirm(oid: str, request: Request):
+    """고객 구매확정 — 발송된 주문의 수령 확인. 확정 후에는 반품·교환 요청을 받을 수 없다."""
+    m = member_required(request)
+    r = _own_order(m, oid)
+    _confirm_order(r, '고객(%s)' % ((m.get('name') or '')[:12] or '회원'))
+    audit({'name': '고객셀프(%s)' % ((m.get('name') or '')[:12] or '회원'), 'role': 'SELF'}, '구매확정', oid, '')
+    return {'ok': True}
 
 @admin_router.post('/api/member/orders/{oid}/request')
 def api_m_order_request(oid: str, request: Request, body: dict = Body(...)):
@@ -17754,6 +17909,8 @@ def api_m_order_request(oid: str, request: Request, body: dict = Body(...)):
     else:
         if not (r.get('status') == 'PAID' and f in ('SHIPPED', 'DONE')):
             raise HTTPException(400, '배송된 주문만 반품/교환 요청이 가능합니다')
+        if r.get('confirmed_at'):
+            raise HTTPException(400, '구매확정된 주문은 반품/교환 요청을 할 수 없습니다 — 1:1 문의로 문의해 주세요')
     if one("SELECT id FROM member_requests WHERE order_id=? AND customer_id=? AND status IN ('접수','처리중')", (oid, m.get('customer_id') or '')):
         raise HTTPException(400, '이미 처리 중인 요청이 있습니다')
     run('INSERT INTO member_requests(id,member_id,order_id,rtype,reason,created,status,admin_memo,updated,customer_id) VALUES(?,?,?,?,?,?,?,?,?,?)',

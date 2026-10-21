@@ -101,3 +101,10 @@ def test_loader_injected_once():
     out = admin._inject_auth(html, "/home")
     assert out.count('id="mpPopupJs"') == 1
     assert admin._inject_auth(out, "/home").count('id="mpPopupJs"') == 1
+
+
+def test_loader_on_standalone_product_page(monkeypatch):
+    import types
+    monkeypatch.setitem(sys.modules, "growth", types.SimpleNamespace(html_apply=lambda h, p: h, body_snippet=lambda h: ""))
+    out = admin._track_apply("<html><body>x</body></html>", "/p/mp::isekai")
+    assert out.count('id="mpPopupJs"') == 1

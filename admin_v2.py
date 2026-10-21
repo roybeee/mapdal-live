@@ -16003,6 +16003,7 @@ def _track_apply(html, path=''):
         add += growth.body_snippet(html)
         if 'mpEcomJs' not in html: add += _ecom_snippet()
         if 'mpReviews' not in html and path.startswith('/p/'): add += _REVIEW_SNIPPET
+        if 'mpPopupJs' not in html and path.startswith('/p/'): add += POPUP_SNIPPET   # 판매 페이지 공지 팝업
         i = html.lower().rfind('</body>')
         return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
     except Exception:

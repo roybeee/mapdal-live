@@ -5007,6 +5007,14 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="editTpl()" id="tpladd">+ 템플릿 추가</button></div></div>
   <div class="panel"><h3>발송 기록 (최근 200)</h3><div id="nlog" class="loading">불러오는 중…</div></div></section>
 <section id="t-cs" style="display:none">
+  <div class="panel"><h3>문의 검색 <span class="tag">취소·반품·교환 요청 · 1:1 문의 · 상품 Q&amp;A 전체</span></h3>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+   <input id="csq" placeholder="예) 어제 배송비 때문에 취소한 사람 · 김민서 · MD-20261019-E23291 · 포카 안 왔다는 문의 · 미답변 입금" style="flex:1;min-width:260px;padding:9px 10px" onkeydown="if(event.key==='Enter'&&!event.isComposing)csSearch()">
+   <select id="csqk" style="padding:8px"><option value="">전체</option><option value="req">취소·반품·교환</option><option value="inq">1:1 문의</option><option value="pqna">상품 Q&amp;A</option></select>
+   <button class="btn" onclick="csSearch()">검색</button><button class="btn ghost" onclick="csSearchClear()">지우기</button></div>
+  <div class="hint" style="margin-top:6px">문장으로 물어봐도 됩니다 — 기간(오늘·어제·이번 주·최근 7일·10월 19일), 상태(미처리·완료), 유형(취소 요청·1:1·Q&amp;A), 고객 이름, 주문번호(끝 6자리도 가능), 연락처(뒤 4자리), 내용 키워드를 알아서 나눠 찾습니다. 비슷한 말(배송비=택배비·배송료, 포카=포토카드)과 오타 1글자도 잡습니다.</div>
+  <div id="csqsug" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+  <div id="csqres"></div></div>
   <div class="panel"><h3>취소/반품/교환 요청</h3><div id="csreq" class="loading">불러오는 중…</div>
   <div class="hint">취소 요청 승인 시: [완료]로 바꾼 뒤 [주문 관리]에서 해당 주문의 결제취소(환불)를 실행하세요. 재고는 자동 복원됩니다.</div></div>
   <div class="panel"><h3>1:1 문의</h3><div class="hint">문의를 클릭하면 회원번호·구매내역·CS 이력을 바로 확인할 수 있습니다. 카테고리를 누르면 해당 유형만 모아봅니다.</div>
@@ -6653,7 +6661,7 @@ async function saveSeo(){try{
   body:JSON.stringify({naver:$('#seonaver').value,google:$('#seogoogle').value,desc:$('#seodesc').value})});
  toast('저장 완료 — 소유확인 메타가 전 페이지에 반영되었습니다');loadSeo()}catch(e){toast(e.message)}}
 
-async function loadCS(){try{const d=await api('/admin/api/cs');
+async function loadCS(){try{csqSugDraw();const d=await api('/admin/api/cs');
  window._CSINQ={};(d.inq||[]).forEach(q=>{_CSINQ[q.id]=q});/*mpShipAddrEdit — 배송지 변경 모달의 원문 참조·자동 입력용*/
  const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':(v==='거절'||v==='고객삭제')?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
  $('#csreq').innerHTML=d.reqs.length?`<table><tr><th>일시</th><th>유형</th><th>주문번호</th><th>회원</th><th>사유</th><th>상태</th><th></th></tr>
@@ -6671,6 +6679,32 @@ async function loadCS(){try{const d=await api('/admin/api/cs');
  <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)&&!(kind==='inq'&&q.status==='고객삭제')?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${kind==='inq'&&(q.edits||q.deleted_at)?`<button class="btn sm ghost" onclick="csInqHist('${esc(q.id)}')" title="고객이 수정·삭제하기 전 원문">이력</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}${kind==='inq'&&q.order_id&&can(1)?`<button class="btn sm ghost" onclick="shipAddrEdit('${esc(q.order_id)}','${esc(q.id)}')" title="이 화면에서 주문 배송지를 바로 변경 — 저장 시 답변 종결·안내 문자까지 한 번에">배송지 변경</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
  window._CSD=d;window._CSCATS=d.inq_cats||[];csInqDraw();$('#cspq').innerHTML=block(d.pqna,'pqna');
 }catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+/*mpCsSearch — CS 통합·자연어 검색 (2026-10-21)*/
+const CSQ_SUG=['오늘 들어온 문의','미답변 1:1','입금했는데 취소됐다는 고객','배송비 때문에 취소','포카 하자','주소 변경','중복결제 환불','미처리 취소 요청'];
+function csqSugDraw(){const el=$('#csqsug');if(el&&!el.innerHTML)el.innerHTML=CSQ_SUG.map(t=>`<button class="btn sm ghost" onclick="$('#csq').value=this.textContent;csSearch()">${esc(t)}</button>`).join('')}
+function csHL(text,terms){let h=esc(text||'');(terms||[]).filter(t=>t&&t.length>=1&&!/[<>&"']/.test(t)).forEach(t=>{const pat=[...t].map(c=>c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('\\s*');try{h=h.replace(new RegExp('('+pat+')(?![^<]*>)','gi'),'<mark style="background:#FFE58F;padding:0 1px">$1</mark>')}catch(_){}});return h}
+let _csqSeq=0;
+async function csSearch(){const q=($('#csq').value||'').trim();if(!q){toast('검색어를 입력하세요');return}
+ const seq=++_csqSeq;$('#csqres').innerHTML='<div class="loading">검색 중…</div>';
+ try{const d=await api('/admin/api/cs/search?q='+encodeURIComponent(q)+'&kind='+encodeURIComponent($('#csqk').value||''));if(seq!==_csqSeq)return;
+  const kb={req:['요청','#E8332A'],inq:['1:1','#141414'],pqna:['Q&A','#6b5bd2']};
+  const st=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':(v==='거절'||v==='고객삭제'||v==='철회')?'CANCELLED':'PENDING')+'">'+esc(v||'-')+'</span>';
+  const chips=d.labels.length?d.labels.map(l=>`<span style="display:inline-block;border:1px solid #ddd;border-radius:12px;padding:2px 8px;margin:2px 4px 2px 0;font-size:11.5px"><b>${esc(l.k)}</b> ${esc(l.v)}</span>`).join(''):'<span class="hint" style="display:inline">해석된 조건 없음</span>';
+  const rows=d.rows.map(r=>{const k=kb[r.kind]||['',''];return `<div style="border-bottom:1px solid var(--line);padding:10px 4px">
+   <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="background:${k[1]};color:#fff;font-size:10.5px;font-weight:700;padding:2px 6px;border-radius:3px">${k[0]}${r.kind==='req'?' · '+esc(r.type):''}</span>
+   <b>${csHL(r.kind==='req'?r.type+' 요청':r.title,d.terms)}</b> ${st(r.status)}${r.category?` <span class="hint" style="display:inline">${esc(r.category)}</span>`:''}
+   <span class="hint" style="display:inline">${esc(r.created)} · ${esc(r.name||'-')}${r.phone?' · '+esc(r.phone):''}${r.order_id?' · <span class="mono">'+esc(r.order_id)+'</span>':''}</span></div>
+   <div style="margin-top:5px;font-size:12.5px;white-space:pre-wrap">${csHL(r.body,d.terms)}</div>
+   ${r.extra?`<div style="margin-top:5px;background:#faf9f5;padding:6px 8px;font-size:12px;white-space:pre-wrap"><b>${r.kind==='req'?'메모':'답변'}</b> ${csHL(r.extra,d.terms)}</div>`:''}
+   <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">
+   ${r.kind==='req'&&can(1)?`<button class="btn sm" onclick="csReq('${esc(r.id)}',csSearch)">처리</button>`:''}
+   ${r.kind!=='req'&&can(1)&&r.status!=='고객삭제'?`<button class="btn sm" onclick="csAnswer('${r.kind}','${esc(r.id)}')">${r.extra?'답변 수정':'답변하기'}</button>`:''}
+   ${r.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(r.cid)}')">회원·구매정보</button>`:''}
+   ${r.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(r.order_id)}')">주문 상세</button>`:''}</div></div>`}).join('');
+  $('#csqres').innerHTML=`<div style="margin:12px 0 6px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><div>${chips}</div><b>${d.total}건${d.total>d.rows.length?' (상위 '+d.rows.length+'건 표시)':''}</b></div>`
+   +(rows||'<div class="loading">조건에 맞는 문의가 없습니다 — 키워드를 줄이거나 기간을 빼 보세요</div>');
+ }catch(e){if(seq===_csqSeq)$('#csqres').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function csSearchClear(){$('#csq').value='';$('#csqres').innerHTML='';_csqSeq++}
 /*mpInqHist — 고객 수정·삭제 전 원문 확인 (2026-10-20)*/
 async function csInqHist(id){try{const d=await api('/admin/api/cs/inq-history/'+encodeURIComponent(id));const c=d.current;
  const card=(lbl,t,b,o,ph,meta)=>`<div style="border:1px solid var(--line);padding:10px;margin-bottom:8px"><div class="hint" style="margin-bottom:4px"><b>${esc(lbl)}</b> · ${esc(meta)}</div>
@@ -16103,6 +16137,348 @@ def api_cs(request: Request):
                       'reason': r['reason'], 'mname': r.get('mname') or '', 'mphone': r.get('mphone') or '',
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
                       'memo': r.get('admin_memo') or ''} for r in rq]}
+
+# ── CS 통합 검색 (2026-10-21) — 취소·반품·교환 요청 · 1:1 문의 · 상품 Q&A ─────────────
+#   자연어 질의를 규칙으로 해석한다(외부 AI 호출 없음 · 응답 즉시 · 비용 0).
+#     "어제 배송비 때문에 취소한 사람" → 기간=어제 · 유형=취소요청 · 키워드=배송비(택배비·배송료…)
+#     "김민서 미처리" / "MD-20261019-E23291" / "4344" / "포카 안 왔다는 문의 이번주"
+#   해석 결과(기간·유형·상태·키워드 확장)를 함께 돌려줘 화면에 칩으로 보여준다.
+import datetime as _csdt
+
+_CS_SYNONYMS = [
+    ['배송비', '택배비', '배송료', '운임', '추가배송비', '추가 배송비', '배송비추가', '3000원', '3,000원', '삼천원'],
+    ['환불', '환급', '돈돌려', '결제취소', '돌려받', '돌려주'],
+    ['취소', '철회', '캔슬', 'cancel'],
+    ['입금', '가상계좌', '무통장', '계좌이체', '이체', '송금', '입금했', '입금완료'],
+    ['결제', '결재', '카드', '승인', '페이', '간편결제'],
+    ['배송', '택배', '출고', '발송', '도착', '배달', '송장', '운송장', '언제와', '언제 오', '안와', '안 와', '안왔', '안 왔'],
+    ['주소', '배송지', '주소지', '주소변경', '배송지변경'],
+    ['변경', '수정', '바꾸', '바꿔', '바꿀', '교체'],
+    ['교환', '바꿔주', '다른걸로'],
+    ['반품', '반송', '돌려보내'],
+    ['불량', '파손', '하자', '찢어', '깨져', '훼손', '구겨', '오배송', '잘못왔', '잘못 왔', '누락', '빠져'],
+    ['포카', '포토카드', '포토 카드', 'pc'],
+    ['특전', '사은품', '증정', '미공포', '럭키드로우', '럭드', '응모'],
+    ['사인회', '팬싸', '팬사인', '영통', '영상통화'],
+    ['쿠폰', '할인', '적립금', '포인트'],
+    ['중복', '두번', '두 번', '이중', '중복결제', '두개', '두건', '두 건'],
+    ['재주문', '다시주문', '다시 주문', '새로주문', '새로 주문', '재구매'],
+    ['오류', '에러', '버그', '안됨', '안돼', '안되', '안됐', '안된', '먹통', '이상해', '문제', '실패'],
+    ['재고', '품절', '솔드아웃', 'soldout'],
+    ['세트', 'set', '구성'],
+    ['랜덤', 'random'],
+    ['연락처', '전화번호', '핸드폰', '휴대폰', '번호변경'],
+    ['영수증', '현금영수증', '세금계산서', '증빙'],
+    ['해외', '국제', 'overseas', 'international', 'paypal', '페이팔'],
+    ['픽업', '매장수령', '현장수령', '방문수령'],
+]
+_CS_SYN_INDEX = {}
+for _g in _CS_SYNONYMS:
+    for _w in _g:
+        _CS_SYN_INDEX.setdefault(_w.replace(' ', '').lower(), _g)
+
+# 질의에서 걸러낼 말(검색어가 아닌 지시·조사·일반어)
+_CS_STOP = set('''고객 고객님 손님 회원 사람 사람들 분 분들 건 건들 것 거 내역 목록 리스트 관련 관한 대한 대해 대해서 때문 때문에 문제로 이유 이유로
+찾아 찾아줘 찾아줘요 찾기 검색 검색해 검색해줘 보여 보여줘 보여줘요 알려 알려줘 조회 확인 해줘 해주세요 좀 주세요 있는 있던 있었던 했던 했는 한 하는 하고 해서 했다고
+했는데 라고 이라고 다고 는데 그리고 또는 및 등 중 중에 중에서 모든 전체 전부 다 모두 요청 요청한 요청건 문의 문의한 문의건 문의글 글 질문 남긴 남겼던 들어온 접수된
+나와요 나오나요 나오나 되나요 되요 돼요 인가요 하나요 있나요 없나요 왔다 했다 됐다 됐다는 했다는 라는 이라는 다는
+'''.split())
+_CS_JOSA = ('으로부터', '에게서', '께서', '에서는', '으로는', '이라고', '라고', '에서', '으로', '에게', '한테', '부터', '까지', '처럼', '보다',
+            '이랑', '하고', '이나', '나', '랑', '와', '과', '은', '는', '이', '가', '을', '를', '의', '에', '로', '도', '만')
+
+
+def _cs_norm(s):
+    return re.sub(r'\s+', '', str(s or '')).lower()
+
+
+def _cs_strip_josa(t):
+    for j in _CS_JOSA:
+        if len(t) > len(j) + 1 and t.endswith(j):
+            return t[:-len(j)]
+    return t
+
+
+def _cs_parse_dates(q, now):
+    """질의 속 기간 표현 → (from_date, to_date, 표시문구, 남은 질의)"""
+    today = now.date()
+    spans = []
+
+    def take(rx, fn):
+        nonlocal q
+        m = re.search(rx, q)
+        if m:
+            r = fn(m)
+            if r:
+                spans.append(r)
+                q = q[:m.start()] + ' ' + q[m.end():]
+            return True
+        return False
+
+    take(r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})', lambda m: (_csdt.date(int(m[1]), int(m[2]), int(m[3])),) * 2 + ('%s-%02d-%02d' % (m[1], int(m[2]), int(m[3])),))
+    take(r'(\d{1,2})\s*월\s*(\d{1,2})\s*일', lambda m: (_csdt.date(today.year, int(m[1]), int(m[2])),) * 2 + ('%d월 %d일' % (int(m[1]), int(m[2])),))
+    take(r'(?<![\d-])(\d{1,2})/(\d{1,2})(?![\d/])', lambda m: (_csdt.date(today.year, int(m[1]), int(m[2])),) * 2 + ('%d/%d' % (int(m[1]), int(m[2])),))
+    take(r'(?:최근|지난)\s*(\d{1,3})\s*일', lambda m: (today - _csdt.timedelta(days=int(m[1]) - 1), today, '최근 %s일' % m[1]))
+    take(r'(\d{1,3})\s*일\s*전', lambda m: (today - _csdt.timedelta(days=int(m[1])),) * 2 + ('%s일 전' % m[1],))
+    take(r'그저께|그제', lambda m: (today - _csdt.timedelta(days=2),) * 2 + ('그제',))
+    take(r'어제', lambda m: (today - _csdt.timedelta(days=1),) * 2 + ('어제',))
+    take(r'오늘|금일', lambda m: (today, today, '오늘'))
+    take(r'이번\s*주|금주', lambda m: (today - _csdt.timedelta(days=today.weekday()), today, '이번 주'))
+    take(r'지난\s*주|저번\s*주', lambda m: (today - _csdt.timedelta(days=today.weekday() + 7), today - _csdt.timedelta(days=today.weekday() + 1), '지난 주'))
+    take(r'이번\s*달|이달|금월', lambda m: (today.replace(day=1), today, '이번 달'))
+    take(r'최근|요즘', lambda m: (today - _csdt.timedelta(days=6), today, '최근 7일'))
+    if not spans:
+        return None, None, '', q
+    lo = min(s[0] for s in spans); hi = max(s[1] for s in spans)
+    return lo, hi, ' · '.join(s[2] for s in spans), q
+
+
+def cs_parse_query(q, now=None):
+    """자연어 질의 → 필터 dict. 화면 칩과 테스트가 같은 결과를 본다."""
+    now = now or kst_now()
+    raw = str(q or '').strip()[:200]
+    f = {'raw': raw, 'kinds': set(), 'status': '', 'from': None, 'to': None, 'date_label': '',
+         'order': '', 'phone': '', 'groups': [], 'labels': []}
+    s = raw
+    # 주문번호 (전체 또는 끝 6자리 hex)
+    m = re.search(r'(MD|SF)-\d{8}-[0-9A-Za-z]{6}', s, re.I)
+    if m:
+        f['order'] = m.group(0).upper(); s = s.replace(m.group(0), ' ')
+    else:
+        m = re.search(r'(?<![0-9A-Za-z])([0-9A-Fa-f]{6})(?![0-9A-Za-z])', s)
+        if m and re.search(r'[A-Fa-f]', m.group(1)):
+            f['order'] = m.group(1).upper(); s = s.replace(m.group(0), ' ')
+    # 전화번호 (010-1234-5678 · 01012345678 · 뒤 4자리 "4344")
+    m = re.search(r'01[016789][- ]?\d{3,4}[- ]?\d{4}', s)
+    if m:
+        f['phone'] = re.sub(r'\D', '', m.group(0)); s = s.replace(m.group(0), ' ')
+    else:
+        m = re.search(r'(?:뒷자리|끝자리|번호)?\s*(?<![\d,])(\d{4})(?![\d,원일월])', s)
+        if m and not re.search(r'20\d\d', m.group(1)):
+            f['phone'] = m.group(1); s = s[:m.start()] + ' ' + s[m.end():]
+    # 기간
+    lo, hi, lbl, s = _cs_parse_dates(s, now)
+    if lo:
+        f['from'], f['to'], f['date_label'] = lo, hi, lbl
+    # 상태
+    for rx, st, lab in ((r'미처리|미답변|답변\s*안|처리\s*안|대기\s*중|대기|접수\s*상태|안\s*된|못\s*받은', 'open', '미처리'),
+                        (r'처리\s*완료|답변\s*완료|완료된|처리된|답변한|완료', 'done', '처리완료'),
+                        (r'철회', 'withdrawn', '철회'),
+                        (r'고객\s*삭제|삭제한|삭제된', 'deleted', '고객삭제')):
+        if re.search(rx, s):
+            f['status'] = st; f['labels'].append(('상태', lab)); s = re.sub(rx, ' ', s); break
+    # 유형 — '요청'이 붙거나 명시적일 때만 (단독 '취소'는 내용 키워드로 쓴다)
+    kind_rx = [(r'취소\s*요청|취소\s*신청|주문\s*취소\s*건', 'req', '취소요청'),
+               (r'반품\s*요청|반품\s*신청', 'req', '반품요청'),
+               (r'교환\s*요청|교환\s*신청', 'req', '교환요청'),
+               (r'1\s*:\s*1|일대일|1대1', 'inq', '1:1 문의'),
+               (r'q\s*&\s*a|큐앤에이|상품\s*문의|상품\s*q', 'pqna', '상품 Q&A')]
+    f['req_type'] = ''
+    for rx, k, lab in kind_rx:
+        if re.search(rx, s, re.I):
+            f['kinds'].add(k); f['labels'].append(('유형', lab))
+            if k == 'req':
+                f['req_type'] = lab[:2]
+            s = re.sub(rx, ' ', s, flags=re.I)
+    if f['date_label']:
+        f['labels'].insert(0, ('기간', f['date_label']))
+    if f['order']:
+        f['labels'].append(('주문번호', f['order']))
+    if f['phone']:
+        f['labels'].append(('연락처', f['phone']))
+    # 키워드 → 동의어 그룹 (그룹 하나가 AND 단위, 그룹 안은 OR)
+    s = re.sub(r'(?<![가-힣])(안|못)\s+([가-힣])', r'\1\2', s)   # '안 왔다' → '안왔다'
+    toks = []
+    for t in re.split(r'[\s,./?!~·"\'()\[\]]+', s):
+        t = t.strip().lower()
+        if not t:
+            continue
+        t = _cs_strip_josa(t)
+        for suf in ('했어요', '했는데', '했다고', '했다는', '했던', '하는', '했음', '해요', '했어', '했다', '한다', '하신', '하려', '하고', '해서',
+                    '는데', '는지', '나요', '어요', '아요', '네요', '다는', '다고', '한', '했', '하'):
+            if len(t) > len(suf) + 1 and t.endswith(suf):
+                t = t[:-len(suf)]; break
+        if not t or t in _CS_STOP or len(t) < 2 and not re.match(r'[a-z0-9]', t):
+            continue
+        toks.append(t)
+    seen = set()
+    for t in toks:
+        g = _CS_SYN_INDEX.get(t)
+        if not g:  # '배송비때문에' 처럼 붙은 말: 사전 단어가 포함되면 그 그룹
+            for k, gg in _CS_SYN_INDEX.items():
+                if len(k) >= 2 and (k in t):
+                    g = gg; break
+        fixed = ''
+        if not g and len(t) >= 3:
+            for k, gg in _CS_SYN_INDEX.items():
+                if len(k) >= 3 and abs(len(k) - len(t)) <= 1 and _cs_edit1(k, t):
+                    g, fixed = gg, k; break
+        terms = sorted({w.replace(' ', '').lower() for w in g}, key=len, reverse=True) if g else [t]
+        key = tuple(terms)
+        if key in seen:
+            continue
+        seen.add(key)
+        f['groups'].append({'word': t, 'terms': terms})
+        f['labels'].append(('키워드', (t + '→' + fixed if fixed else t) + (' (+%d)' % (len(terms) - 1) if len(terms) > 1 else '')))
+    return f
+
+
+def _cs_edit1(a, b):
+    """편집거리 ≤ 1 (오타 1글자)"""
+    if a == b: return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1: return False
+    i = 0
+    while i < min(la, lb) and a[i] == b[i]: i += 1
+    if la == lb: return a[i + 1:] == b[i + 1:]
+    return a[i + 1:] == b[i:] if la > lb else a[i:] == b[i + 1:]
+
+
+def _cs_bigrams(s):
+    s = _cs_norm(s)
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _cs_fuzzy_hit(term, text_n):
+    """오타·띄어쓰기 차이 허용 — 3글자 이상 단어의 2-gram 이 70% 이상 겹치는 구간이 있으면 일치."""
+    if len(term) < 4 or re.search(r'\d', term):
+        return False
+    n0 = len(term)
+    for i in range(0, max(1, len(text_n) - n0 + 2)):
+        for L in (n0 - 1, n0, n0 + 1):
+            if L >= 2 and _cs_edit1(term, text_n[i:i + L]):
+                return True
+    tb = _cs_bigrams(term)
+    if not tb:
+        return False
+    n = len(term)
+    for i in range(0, max(1, len(text_n) - n + 2)):
+        win = text_n[i:i + n + 1]
+        wb = {win[j:j + 2] for j in range(len(win) - 1)}
+        if len(tb & wb) / len(tb) >= 0.7:
+            return True
+    return False
+
+
+def _cs_docs():
+    """검색 대상 문서 — 요청·1:1·Q&A 를 같은 모양으로 펼친다(소량이라 전부 메모리에서 채점)."""
+    nm = _state['pname'] or 'id'
+    reqs = rows('SELECT r.*, m.name AS mname, m.phone AS mphone, COALESCE(r.customer_id, m.customer_id) AS cid '
+                'FROM member_requests r LEFT JOIN members m ON m.id=r.member_id')
+    inqs = rows('SELECT q.*, m.name AS mname, m.phone AS mphone, COALESCE(q.customer_id, m.customer_id) AS cid '
+                'FROM member_inquiries q LEFT JOIN members m ON m.id=q.member_id')
+    pqs = rows('SELECT q.*, m.name AS mname, m.phone AS mphone, p.%s AS pname, COALESCE(q.customer_id, m.customer_id) AS cid '
+               'FROM member_pqna q LEFT JOIN members m ON m.id=q.member_id LEFT JOIN products p ON p.id=q.product_id' % nm)
+    oids = sorted({str(r.get('order_id') or '') for r in reqs + inqs if r.get('order_id')})
+    obuy = {}
+    for i in range(0, len(oids), 200):
+        chunk = oids[i:i + 200]
+        for o in rows('SELECT order_id, buyer, contact_phone_norm FROM orders WHERE order_id IN (%s)' % ','.join('?' * len(chunk)), tuple(chunk)):
+            b = jload(o.get('buyer'), {})
+            obuy[o['order_id']] = (str(b.get('name') or ''), re.sub(r'\D', '', str(b.get('phone') or o.get('contact_phone_norm') or '')))
+    krt = {'cancel': '취소', 'return': '반품', 'exchange': '교환'}
+    docs = []
+    for r in reqs:
+        bn, bp = obuy.get(r.get('order_id') or '', ('', ''))
+        docs.append({'kind': 'req', 'id': r['id'], 'created': r.get('created') or '', 'status': r.get('status') or '',
+                     'type': krt.get(r.get('rtype'), r.get('rtype') or ''), 'title': '%s 요청' % krt.get(r.get('rtype'), r.get('rtype') or ''),
+                     'body': r.get('reason') or '', 'extra': r.get('admin_memo') or '', 'order_id': r.get('order_id') or '',
+                     'name': r.get('mname') or bn, 'names': {r.get('mname') or '', bn},
+                     'phones': {re.sub(r'\D', '', str(r.get('mphone') or '')), bp}, 'cid': r.get('cid') or '', 'category': ''})
+    for r in inqs:
+        bn, bp = obuy.get(r.get('order_id') or '', ('', ''))
+        docs.append({'kind': 'inq', 'id': r['id'], 'created': r.get('created') or '', 'status': r.get('status') or '',
+                     'type': '1:1 문의', 'title': r.get('title') or '', 'body': r.get('body') or '', 'extra': r.get('answer') or '',
+                     'order_id': r.get('order_id') or '', 'name': r.get('mname') or bn, 'names': {r.get('mname') or '', bn},
+                     'phones': {re.sub(r'\D', '', str(r.get('mphone') or '')), bp}, 'cid': r.get('cid') or '',
+                     'category': inq_category(r)[0]})
+    for r in pqs:
+        docs.append({'kind': 'pqna', 'id': r['id'], 'created': r.get('created') or '', 'status': r.get('status') or '',
+                     'type': '상품 Q&A', 'title': r.get('pname') or r.get('product_id') or '', 'body': r.get('question') or '',
+                     'extra': r.get('answer') or '', 'order_id': '', 'name': r.get('mname') or '', 'names': {r.get('mname') or ''},
+                     'phones': {re.sub(r'\D', '', str(r.get('mphone') or ''))}, 'cid': r.get('cid') or '', 'category': ''})
+    return docs
+
+
+_CS_OPEN = {'접수', '처리중', '대기', ''}
+_CS_DONE = {'완료', '답변완료', '거절'}
+
+
+def cs_search(q, kind='', limit=200, now=None, docs=None):
+    f = cs_parse_query(q, now)
+    if kind in ('req', 'inq', 'pqna'):
+        f['kinds'] = {kind}
+    docs = _cs_docs() if docs is None else docs
+    # 이름 후보: 남은 키워드가 고객 이름과 정확히 같으면 이름 조건으로 쓴다
+    allnames = {n for d in docs for n in d['names'] if n}
+    name_groups = [g for g in f['groups'] if g['word'] in allnames]
+    for g in name_groups:
+        f['labels'] = [l for l in f['labels'] if not (l[0] == '키워드' and l[1].startswith(g['word']))] + [('고객', g['word'])]
+    word_groups = [g for g in f['groups'] if g not in name_groups]
+    out = []
+    for d in docs:
+        if f['kinds'] and d['kind'] not in f['kinds']:
+            continue
+        if d['kind'] == 'req' and f.get('req_type') and d['type'] != f['req_type']:
+            continue
+        st = d['status']
+        if f['status'] == 'open' and not (st in _CS_OPEN or st == '처리중'):
+            continue
+        if f['status'] == 'done' and st not in _CS_DONE:
+            continue
+        if f['status'] == 'withdrawn' and st != '철회':
+            continue
+        if f['status'] == 'deleted' and st != '고객삭제':
+            continue
+        if f['from']:
+            dd = (d['created'] or '')[:10]
+            if not dd or dd < f['from'].isoformat() or dd > f['to'].isoformat():
+                continue
+        if f['order'] and f['order'] not in (d['order_id'] or '').upper():
+            continue
+        if f['phone'] and not any(p and p.endswith(f['phone']) or (len(f['phone']) > 4 and p == f['phone']) for p in d['phones']):
+            continue
+        if name_groups and not all(any(g['word'] == n for n in d['names']) for g in name_groups):
+            continue
+        score, hits, matched = 0.0, [], 0
+        t_title, t_body, t_extra = _cs_norm(d['title']), _cs_norm(d['body'] + ' ' + d['category']), _cs_norm(d['extra'])
+        for g in word_groups:
+            best = 0.0; hit = ''
+            for term in g['terms']:
+                if term in t_title: w = 3.0
+                elif term in t_body: w = 2.0
+                elif term in t_extra: w = 1.0
+                elif term in _cs_norm(d['order_id'] + ' ' + d['name']): w = 2.5
+                else: continue
+                if w > best: best, hit = w, term
+            if not best and (_cs_fuzzy_hit(g['word'], t_title + ' ' + t_body)):
+                best, hit = 0.8, g['word']
+            if best:
+                matched += 1; score += best; hits.append(hit)
+        if word_groups:
+            need_n = len(word_groups) if len(word_groups) <= 2 else len(word_groups) - 1  # 긴 문장은 1개 빠져도 허용
+            if matched < need_n:
+                continue
+        out.append((matched, score, d['created'], d, hits))
+    out.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    res = []
+    for matched, score, _, d, hits in out[:limit]:
+        res.append({'kind': d['kind'], 'id': d['id'], 'type': d['type'], 'created': (d['created'] or '')[:16].replace('T', ' '),
+                    'status': d['status'], 'title': d['title'], 'body': d['body'][:600], 'extra': d['extra'][:300],
+                    'order_id': d['order_id'], 'name': d['name'], 'phone': next((p for p in d['phones'] if p), ''),
+                    'cid': d['cid'], 'category': d['category'], 'score': round(score, 1), 'hits': hits})
+    return {'query': f['raw'], 'labels': [{'k': k, 'v': v} for k, v in f['labels']], 'total': len(out),
+            'terms': sorted({t for g in word_groups for t in g['terms']} | {g['word'] for g in word_groups}, key=len, reverse=True),
+            'rows': res}
+
+
+@admin_router.get('/admin/api/cs/search')
+def api_cs_search(request: Request):
+    a = get_actor(request); need(a, 0)
+    q = request.query_params.get('q', '')
+    kind = request.query_params.get('kind', '')
+    if not q.strip():
+        raise HTTPException(400, '검색어를 입력하세요')
+    return cs_search(q, kind)
 
 @admin_router.post('/admin/api/cs/answer')
 def api_cs_answer(request: Request, body: dict = Body(...)):

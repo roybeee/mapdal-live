@@ -2229,5 +2229,17 @@
 "예약판매 중": "Pre-order Open",
 "예약판매 예정": "Pre-order Coming Soon",
 "예약 구매하기": "Pre-order Now",
-"예약판매중": "Pre-order open"
+"예약판매중": "Pre-order open",
+"30,000원 이상 무료배송 (이벤트 상품 제외)": "Free shipping on orders of ₩30,000+ (event items excluded)",
+"교환 신청: 수령 후 5영업일 이내": "Exchange requests: within 5 business days of delivery",
+"교환 (공통)": "Exchanges (all items)",
+"상품 수령 후 5영업일 이내 신청": "Request within 5 business days of delivery",
+"— 교환 왕복 배송비 6,000원(반송비 3,000원 + 재발송비 3,000원). 제주 지역 3,000원, 도서·산간 지역 5,000원 추가. 하자·오배송은 판매자 부담.": "— Round-trip exchange shipping is ₩6,000 (₩3,000 return + ₩3,000 reshipment). Add ₩3,000 for Jeju and ₩5,000 for islands/remote areas. Defects and wrong items are covered by us.",
+"검수 완료 후 환불 처리. 결제 수단으로 반환되기까지 영업일 기준 5~7일이 소요될 수 있습니다. 포인트 사용분은 포인트로 복원.": "Refund is processed after inspection; it may take 5–7 business days to reach your original payment method. Points used are restored as points.",
+"3,000원 · 30,000원 이상 무료 (이벤트 상품 제외)": "₩3,000 · Free on orders of ₩30,000+ (event items excluded)",
+"— 오후 2시 이전 결제 시 당일 출고, 평균 2일 이내 도착. 제주 지역 추가 배송비 3,000원, 도서·산간 지역 추가 배송비 5,000원.": "— Same-day dispatch for payments before 2 PM; arrives in 2 days on average. Additional ₩3,000 for Jeju and ₩5,000 for islands/remote areas.",
+"교환/환불": "Exchanges / Refunds",
+"교환 신청은 상품 수령 후 5영업일 이내에 가능합니다. 교환 시 왕복 배송비는 6,000원(반송비 3,000원 + 재발송비 3,000원)이며, 제주 지역은 3,000원, 도서·산간 지역은 5,000원의 추가 배송비가 발생합니다.": "Exchanges can be requested within 5 business days of delivery. Round-trip exchange shipping is ₩6,000 (₩3,000 return + ₩3,000 reshipment), with an additional ₩3,000 for Jeju and ₩5,000 for islands/remote areas.",
+"— 환불 처리 후 실제 환불 금액이 결제 수단으로 반환되기까지는 영업일 기준 5~7일이 소요될 수 있습니다.": "— After the refund is processed, it may take 5–7 business days for the amount to reach your original payment method.",
+"해외 배송은 지원하지 않습니다.": "International shipping is not available."
 }

@@ -4947,6 +4947,9 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   </div>
   <div id="artistList" class="loading">불러오는 중…</div></div></section>
 <section id="t-pages" style="display:none">
+  <div class="panel"><h3>안내 페이지 편집 <span class="tag">배송·교환/반품·고객지원 — HTML 없이 항목별 수정</span></h3>
+  <div class="hint" style="margin-bottom:6px">배송비·무료배송 기준·교환 기간 같은 안내 문구를 표 형태로 고칩니다. 저장 즉시 사이트에 반영되고, 아래 [페이지 콘텐츠 관리]의 이력·원본 복원도 그대로 쓸 수 있습니다.</div>
+  <div id="gxlist" class="loading">불러오는 중…</div><div id="gxedit" style="display:none"></div></div>
   <div class="panel"><h3>페이지 콘텐츠 관리 <span class="tag">저장 즉시 사이트 반영 · 재배포에도 유지</span></h3>
   <div class="hint" style="margin-bottom:10px">편집 내용은 데이터베이스에 저장되어 원본 파일과 별도로 보존됩니다. [원본 복원]으로 언제든 되돌릴 수 있고, 저장할 때마다 직전 버전이 이력(최근 10개)에 남습니다.</div>
   <div id="pglist" class="loading">불러오는 중…</div></div></section>
@@ -5052,7 +5055,7 @@ async function loadReviews(pg){pg=pg||1;try{const d=await api('/admin/api/review
  catch(e){$('#t-reviews').innerHTML='<div class="hint">'+esc(e.message)+'</div>'}}
 async function rvStatus(id,st){if(st==='숨김'&&!confirm('이 리뷰를 화면에서 숨길까요?'))return;
  try{await api('/admin/api/reviews/'+encodeURIComponent(id)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})});toast('처리되었습니다');loadReviews(1)}catch(e){toast(e.message)}}
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:loadPages,ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,reviews:()=>loadReviews(1),admins:loadAdmins,system:loadSys};
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:()=>{loadGuides();loadPages()},ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,reviews:()=>loadReviews(1),admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -5708,6 +5711,58 @@ async function histPage(path){try{const d=await api('/admin/api/pages/history?pa
  $('#mbg').style.display='flex'}catch(e){toast(e.message)}}
 async function restorePage(id){try{await api('/admin/api/pages/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
  toast('해당 버전으로 복원되었습니다');closeM();loadPages()}catch(e){toast(e.message)}}
+// ── 안내 페이지 편집 (배송·교환/반품·고객지원) ─────────────────────────────
+let GX=null;
+const GX_SPEC={
+ hero:{f:[['kicker','작은 제목'],['title','큰 제목'],['lead','소개 문구',1]]},
+ head:{f:[['kicker','작은 제목(영문)'],['title','섹션 제목']]},
+ table:{rows:[['th','항목',0,'22%'],['b','강조(굵게)',0,'30%'],['t','설명',1]],add:'행 추가'},
+ flow:{rows:[['n','번호·단계',0,'16%'],['h','제목',0,'26%'],['p','설명',1]],add:'단계 추가'},
+ card:{f:[['pn','라벨'],['h','제목'],['p','설명',1]],rows:[['t','요약 항목']],add:'요약 항목 추가'},
+ note:{f:[['t','안내 문구',1]]},
+ trust:{rows:[['b','제목',0,'28%'],['t','내용']],add:'항목 추가'}};
+async function loadGuides(){try{const d=await api('/admin/api/guide-pages');
+ $('#gxlist').innerHTML=d.rows.map(p=>`<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #eee;flex-wrap:wrap">
+ <b style="min-width:200px">${esc(p.title)}</b>
+ <span class="hint" style="flex:1">${p.edited?'최근 수정 '+esc((p.updated||'').slice(0,16).replace('T',' '))+' · '+esc(p.by):'배포 원본'}</span>
+ <button class="btn sm" onclick="gxOpen('${esc(p.path)}')">편집</button>
+ <a class="btn sm ghost" style="text-decoration:none" href="${esc(p.url)}" target="_blank">사이트에서 보기</a></div>`).join('');
+ }catch(e){$('#gxlist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+async function gxOpen(path){try{const d=await api('/admin/api/guide-pages/get?path='+encodeURIComponent(path));
+ GX=d;gxRender();const el=document.getElementById('gxedit');el.style.display='block';el.scrollIntoView({behavior:'smooth',block:'start'})}catch(e){toast(e.message)}}
+function gxInput(bi,ri,k,lab,multi,val,w){const a=`data-b="${bi}" data-r="${ri}" data-k="${k}"`;
+ const st='width:100%;box-sizing:border-box';
+ const box=multi?`<textarea ${a} rows="3" style="${st};line-height:1.5;resize:vertical">${esc(val||'')}</textarea>`
+  :`<input ${a} value="${esc(val||'')}" style="${st}">`;
+ return `<label style="display:block;flex:${w?'0 0 '+w:'1'};min-width:120px"><span class="hint" style="display:block;font-size:11px;margin-bottom:2px">${esc(lab)}</span>${box}</label>`}
+function gxRender(){if(!GX)return;
+ const html=GX.blocks.map((b,bi)=>{const sp=GX_SPEC[b.type]||{};let h='';
+  if(sp.f)h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">${sp.f.map(f=>gxInput(bi,'',f[0],f[1],f[2],b.data[f[0]],f[2]?'':'')).join('')}</div>`;
+  if(sp.rows){const rs=b.data.rows||[];
+   h+=rs.map((r,ri)=>`<div style="display:flex;gap:6px;align-items:flex-end;margin-top:8px;padding:8px;background:#fafafa;border:1px solid #eee;border-radius:6px;flex-wrap:wrap">
+    ${sp.rows.map(f=>gxInput(bi,ri,f[0],f[1],f[2],r[f[0]],f[3])).join('')}
+    <span style="display:flex;gap:4px"><button class="btn sm ghost" type="button" title="위로" onclick="gxMove(${bi},${ri},-1)">↑</button><button class="btn sm ghost" type="button" title="아래로" onclick="gxMove(${bi},${ri},1)">↓</button><button class="btn sm ghost" type="button" onclick="gxDel(${bi},${ri})">삭제</button></span></div>`).join('');
+   h+=`<button class="btn sm ghost" type="button" style="margin-top:8px" onclick="gxAdd(${bi})">+ ${esc(sp.add||'추가')}</button>`}
+  return `<div style="border:1px solid #e5e5e5;border-radius:8px;padding:12px;margin-bottom:12px"><div style="font-weight:700;margin-bottom:8px">${esc(b.label)}</div>${h}</div>`}).join('');
+ const t=(GX_PAGES_T[GX.path]||GX.path);
+ document.getElementById('gxedit').innerHTML=`<div style="display:flex;align-items:center;gap:8px;margin:14px 0 10px;flex-wrap:wrap"><h3 style="margin:0;flex:1">편집 중 — ${esc(t)}</h3>
+ <button class="btn" onclick="gxSave()">저장 (사이트 즉시 반영)</button><button class="btn ghost" onclick="gxClose()">닫기</button></div>
+ <div class="hint" style="margin-bottom:10px">쓰는 법: <b>**굵게**</b> · 링크는 <span class="mono">[문구](/주소)</span> · 칸 안에서 줄바꿈 가능 · 빈 행은 저장 시 자동 삭제.<br>
+ 저장하면 직전 버전이 [페이지] 목록의 <b>이력</b>에 남아 언제든 되돌릴 수 있습니다. 바뀐 문구는 영어·일본어·중국어 화면에서 한국어로 보일 수 있습니다(번역 별도 반영).</div>
+ <div id="gxbody">${html}</div>
+ <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" onclick="gxSave()">저장 (사이트 즉시 반영)</button><button class="btn ghost" onclick="gxClose()">닫기</button></div>`;
+ document.getElementById('gxbody').addEventListener('input',gxOnInput)}
+const GX_PAGES_T={'support.html':'고객지원 메인 (/support)','shipping.html':'배송 안내 (/shipping)','returns.html':'교환/반품 (/returns)'};
+function gxOnInput(e){const t=e.target,ds=t.dataset;if(!GX||ds.b===undefined)return;const b=GX.blocks[+ds.b];
+ if(ds.r===''){b.data[ds.k]=t.value}else{b.data.rows[+ds.r][ds.k]=t.value}GX.dirty=1}
+function gxAdd(bi){const b=GX.blocks[bi],sp=GX_SPEC[b.type];const r={};sp.rows.forEach(f=>r[f[0]]='');(b.data.rows=b.data.rows||[]).push(r);GX.dirty=1;gxRender()}
+function gxDel(bi,ri){const b=GX.blocks[bi];if(!confirm('이 행을 삭제할까요? (저장해야 사이트에 반영)'))return;b.data.rows.splice(ri,1);GX.dirty=1;gxRender()}
+function gxMove(bi,ri,dv){const rs=GX.blocks[bi].data.rows,j=ri+dv;if(j<0||j>=rs.length)return;const x=rs[ri];rs[ri]=rs[j];rs[j]=x;GX.dirty=1;gxRender()}
+function gxClose(){if(GX&&GX.dirty&&!confirm('저장하지 않은 수정이 있습니다. 닫을까요?'))return;GX=null;const el=document.getElementById('gxedit');el.innerHTML='';el.style.display='none'}
+async function gxSave(){if(!GX)return;try{const d=await api('/admin/api/guide-pages/save',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({path:GX.path,ver:GX.ver,blocks:GX.blocks.map(b=>({id:b.id,data:b.data}))})});
+ toast(d.changed?'저장 완료 — 사이트에 반영되었습니다':'바뀐 내용이 없습니다');
+ const p=GX.path;GX.dirty=0;await gxOpen(p);loadGuides();if(typeof loadPages==='function')loadPages()}catch(e){toast(e.message)}}
 
 // ── 메인배너 ─────────────────────────────────────────────
 const BN_COLORS=[['purple','#7C3AED','보라'],['gold','linear-gradient(135deg,#B98A2F,#E7C873)','골드'],['red','#E8332A','레드'],['amber','#FFB000','앰버'],['ink','#141414','잉크'],['blue','#2563EB','블루'],['green','#0E9F6E','그린']];
@@ -6829,6 +6884,261 @@ def api_page_restore(request: Request, body: dict = Body(...)):
     run('INSERT INTO page_edits VALUES(?,?,?,?)', (h['path'], h['html'], now_iso(), a['name']))
     audit(a, '페이지이력복원', h['path'], h['saved'])
     return {'ok': True}
+
+# ── 안내 페이지 편집기 (배송·교환/반품·고객지원) — 2026-10-21 ───────────────────
+#   HTML 편집기 없이 담당자가 항목·문구를 폼으로 고친다. 저장은 기존 CMS와 같은
+#   page_edits(+page_history 이력·원본 복원)로 들어가므로 되돌리기 경로가 하나로 유지된다.
+#   페이지에서 아래 블록만 인식해 바꾸고, 나머지 마크업은 한 글자도 건드리지 않는다.
+import html as _gx_html_mod
+
+GUIDE_PAGES = [('support.html', '고객지원 메인 (/support)'),
+               ('shipping.html', '배송 안내 (/shipping)'),
+               ('returns.html', '교환/반품 (/returns)')]
+_GX_PATHS = {p for p, _ in GUIDE_PAGES}
+_GX_S = re.S
+_GX_RE = {
+    'hero': re.compile(r'(<div class="page-hero"><div class="ph-inner">\s*<div class="kicker">)(.*?)(</div>\s*<h1>)(.*?)(</h1>\s*<p>)(.*?)(</p>)', _GX_S),
+    'head': re.compile(r'(<div class="sec-head"><div><div class="kicker">)(.*?)(</div><h2>)(.*?)(</h2>)', _GX_S),
+    'table': re.compile(r'(<table class="info-table">)((?:\s*<tr><th>.*?</th><td>.*?</td></tr>)*)', _GX_S),
+    'flow': re.compile(r'(<div class="flow">)((?:\s*<div class="fs"><span class="n">.*?</span><h4>.*?</h4><p>.*?</p></div>)+)', _GX_S),
+    'card': re.compile(r'(<span class="pn">)(.*?)(</span><h3>)(.*?)(</h3>)((?:\s*<p>.*?</p>)?)(\s*<ul[^>]*>)((?:\s*<li>.*?</li>)*)(\s*</ul>)', _GX_S),
+    'note': re.compile(r'(<div class="kf-note"[^>]*>)(.*?)(</div>)', _GX_S),
+    'trust': re.compile(r'(<div class="trust-inner">)((?:\s*<div class="trust-item"><b>.*?</b><span>.*?</span></div>)+)', _GX_S),
+}
+_GX_ROW = {
+    'table': (re.compile(r'<tr><th>(.*?)</th><td>(.*?)</td></tr>', _GX_S), ('th', 'td')),
+    'flow': (re.compile(r'<div class="fs"><span class="n">(.*?)</span><h4>(.*?)</h4><p>(.*?)</p></div>', _GX_S), ('n', 'h', 'p')),
+    'card': (re.compile(r'<li>(.*?)</li>', _GX_S), ('t',)),
+    'trust': (re.compile(r'<div class="trust-item"><b>(.*?)</b><span>(.*?)</span></div>', _GX_S), ('b', 't')),
+}
+_GX_LIMIT = 3000          # 한 칸 최대 글자수
+_GX_ROWS = 60             # 블록당 최대 행 수
+
+
+def gx_text(h):
+    """HTML 조각 → 편집용 텍스트 (**굵게** · [문구](주소) · 줄바꿈)."""
+    h = h or ''
+    h = re.sub(r'<br\s*/?>\s*', '\n', h, flags=re.I)
+    h = re.sub(r'<(b|strong)(?:\s[^>]*)?>(.*?)</\1>', lambda m: '**' + m.group(2) + '**' if m.group(2).strip() else m.group(2), h, flags=re.S | re.I)
+    h = re.sub(r'<a\s[^>]*?href="([^"]*)"[^>]*>(.*?)</a>',
+               lambda m: '[%s](%s)' % (re.sub(r'<[^>]+>', '', m.group(2)), m.group(1)), h, flags=re.S | re.I)
+    h = re.sub(r'<[^>]+>', '', h)
+    h = _gx_html_mod.unescape(h)
+    h = re.sub(r'[ \t]*\n[ \t]*', '\n', h)
+    h = re.sub(r'[ \t]{2,}', ' ', h)
+    return h.strip()
+
+
+def _gx_link(m):
+    label, url = m.group(1), m.group(2)
+    raw = _gx_html_mod.unescape(url)
+    if not re.match(r'^(https?://|/|mailto:|tel:|#)', raw, re.I):
+        return m.group(0)
+    return '<a href="%s">%s</a>' % (url.replace('"', '&quot;'), label)
+
+
+def gx_html(t):
+    """편집용 텍스트 → 안전한 HTML 조각 (태그 직접 입력은 문자로 표시)."""
+    t = (t or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+    s = _gx_html_mod.escape(t, quote=False)
+    s = re.sub(r'\[([^\]\n]+)\]\(([^)\s]+)\)', _gx_link, s)
+    s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
+    return s.replace('\n', '<br>')
+
+
+def _gx_td_split(td):
+    """<td> 내용 → (강조, 설명). 앞머리 <b>…</b> 를 강조로, 뒤 ' — ' 이하를 설명으로."""
+    m = re.match(r'\s*<b>(.*?)</b>\s*(?:—\s*)?(.*)$', td or '', re.S)
+    if m:
+        return gx_text(m.group(1)), gx_text(m.group(2))
+    return '', gx_text(td)
+
+
+def _gx_matches(html):
+    """페이지 → 문서 순서의 편집 블록 [(start, type, k, match)]."""
+    found = []
+    for typ, rx in _GX_RE.items():
+        for k, m in enumerate(rx.finditer(html)):
+            found.append((m.start(), typ, k, m))
+    found.sort(key=lambda x: x[0])
+    return found
+
+
+def gx_parse(html):
+    blocks, cur_head = [], ''
+    for _, typ, k, m in _gx_matches(html):
+        bid = '%s:%d' % (typ, k)
+        if typ == 'hero':
+            d = {'kicker': gx_text(m.group(2)), 'title': gx_text(m.group(4)), 'lead': gx_text(m.group(6))}
+            label = '상단 소개'
+        elif typ == 'head':
+            d = {'kicker': gx_text(m.group(2)), 'title': gx_text(m.group(4))}
+            cur_head = d['title']
+            label = '섹션 제목 — ' + (d['title'] or '(제목 없음)')
+        elif typ == 'table':
+            rx, _ = _GX_ROW['table']
+            rws = []
+            for r in rx.finditer(m.group(2)):
+                b, t = _gx_td_split(r.group(2))
+                rws.append({'th': gx_text(r.group(1)), 'b': b, 't': t})
+            d = {'rows': rws}
+            label = '표 — ' + (cur_head or '항목')
+        elif typ == 'flow':
+            rx, _ = _GX_ROW['flow']
+            d = {'rows': [{'n': gx_text(r.group(1)), 'h': gx_text(r.group(2)), 'p': gx_text(r.group(3))}
+                          for r in rx.finditer(m.group(2))]}
+            label = '단계 카드 — ' + (cur_head or '절차')
+        elif typ == 'card':
+            rx, _ = _GX_ROW['card']
+            pm = re.search(r'<p>(.*?)</p>', m.group(6) or '', re.S)
+            d = {'pn': gx_text(m.group(2)), 'h': gx_text(m.group(4)), 'p': gx_text(pm.group(1)) if pm else '',
+                 'rows': [{'t': gx_text(r.group(1))} for r in rx.finditer(m.group(8))]}
+            label = '안내 카드 — ' + ' · '.join(x for x in (d['pn'], d['h']) if x)
+        elif typ == 'note':
+            d = {'t': gx_text(m.group(2))}
+            label = '하단 안내 문구'
+        else:  # trust
+            rx, _ = _GX_ROW['trust']
+            d = {'rows': [{'b': gx_text(r.group(1)), 't': gx_text(r.group(2))} for r in rx.finditer(m.group(2))]}
+            label = '고객센터 정보 띠'
+        blocks.append({'id': bid, 'type': typ, 'label': label, 'data': d})
+    return blocks
+
+
+def _gx_clean(v):
+    v = str(v if v is not None else '')
+    if len(v) > _GX_LIMIT:
+        raise HTTPException(400, '한 칸에 %d자를 넘을 수 없습니다' % _GX_LIMIT)
+    return v
+
+
+def _gx_rows(d, keys):
+    rs = d.get('rows') or []
+    if not isinstance(rs, list) or len(rs) > _GX_ROWS:
+        raise HTTPException(400, '행 수가 올바르지 않습니다 (최대 %d)' % _GX_ROWS)
+    out = []
+    for r in rs:
+        r = r if isinstance(r, dict) else {}
+        row = {k: _gx_clean(r.get(k)) for k in keys}
+        if any(x.strip() for x in row.values()):      # 완전히 빈 행은 버린다
+            out.append(row)
+    return out
+
+
+def _gx_render(typ, m, d):
+    """블록 하나를 새 데이터로 다시 그린 문자열 (매치 구간 전체 대체용)."""
+    g = m.group
+    if typ == 'hero':
+        return g(1) + gx_html(_gx_clean(d.get('kicker'))) + g(3) + gx_html(_gx_clean(d.get('title'))) + g(5) + gx_html(_gx_clean(d.get('lead'))) + g(7)
+    if typ == 'head':
+        return g(1) + gx_html(_gx_clean(d.get('kicker'))) + g(3) + gx_html(_gx_clean(d.get('title'))) + g(5)
+    if typ == 'table':
+        parts = []
+        for r in _gx_rows(d, ('th', 'b', 't')):
+            b, t = gx_html(r['b']), gx_html(r['t'])
+            td = ('<b>%s</b>' % b + (' — ' + t if t else '')) if b else t
+            parts.append('\n    <tr><th>%s</th><td>%s</td></tr>' % (gx_html(r['th']), td))
+        return g(1) + ''.join(parts)
+    if typ == 'flow':
+        rs = _gx_rows(d, ('n', 'h', 'p'))
+        if not rs:
+            raise HTTPException(400, '단계 카드는 최소 1개가 필요합니다')
+        return g(1) + ''.join('\n    <div class="fs"><span class="n">%s</span><h4>%s</h4><p>%s</p></div>'
+                              % (gx_html(r['n']), gx_html(r['h']), gx_html(r['p'])) for r in rs)
+    if typ == 'card':
+        p = _gx_clean(d.get('p')).strip()
+        ptag = ('\n      <p>%s</p>' % gx_html(p)) if p else ''
+        rs = _gx_rows(d, ('t',))
+        multi = '\n' in (g(8) or '')
+        if multi:
+            lis = ''.join('\n      <li>%s</li>' % gx_html(r['t']) for r in rs)
+            close = '\n    </ul>'
+        else:
+            lis = ''.join('<li>%s</li>' % gx_html(r['t']) for r in rs)
+            close = '</ul>'
+        return g(1) + gx_html(_gx_clean(d.get('pn'))) + g(3) + gx_html(_gx_clean(d.get('h'))) + g(5) + ptag + g(7) + lis + close
+    if typ == 'note':
+        return g(1) + gx_html(_gx_clean(d.get('t'))) + g(3)
+    # trust
+    rs = _gx_rows(d, ('b', 't'))
+    if not rs:
+        raise HTTPException(400, '고객센터 정보는 최소 1개가 필요합니다')
+    return g(1) + ''.join('\n    <div class="trust-item"><b>%s</b><span>%s</span></div>'
+                          % (gx_html(r['b']), gx_html(r['t'])) for r in rs)
+
+
+def gx_apply(html, blocks):
+    """편집 데이터 → 새 페이지 HTML. 블록 구조가 달라졌으면 409."""
+    want = {}
+    for b in blocks or []:
+        if isinstance(b, dict) and isinstance(b.get('data'), dict):
+            want[str(b.get('id'))] = b['data']
+    cur = _gx_matches(html)
+    ids = {'%s:%d' % (t, k) for _, t, k, _m in cur}
+    if not want or not set(want) <= ids:
+        raise HTTPException(409, '페이지 구조가 바뀌었습니다 — 새로 불러온 뒤 다시 편집해 주세요')
+    out, pos = [], 0
+    for _, typ, k, m in cur:          # 매치는 서로 겹치지 않는다(블록 종류별 마크업이 다름)
+        if m.start() < pos:
+            continue
+        bid = '%s:%d' % (typ, k)
+        out.append(html[pos:m.start()])
+        out.append(_gx_render(typ, m, want[bid]) if bid in want else m.group(0))
+        pos = m.end()
+    out.append(html[pos:])
+    return ''.join(out)
+
+
+def _gx_ver(html):
+    return hashlib.md5((html or '').encode('utf-8')).hexdigest()[:12]
+
+
+def _page_store(path, html, a, action, detail=''):
+    """page_edits 저장 — 직전 버전은 page_history 에 (페이지당 최근 10개)."""
+    cur, _, _ = _page_effective(path)
+    if cur is not None:
+        run('INSERT INTO page_history VALUES(?,?,?,?,?)',
+            (uid(), path, cur, kst_naive().isoformat(), a['name']))
+        old = rows('SELECT id FROM page_history WHERE path=? ORDER BY saved DESC', (path,))[10:]
+        for r in old: run('DELETE FROM page_history WHERE id=?', (r['id'],))
+    run('DELETE FROM page_edits WHERE path=?', (path,))
+    run('INSERT INTO page_edits VALUES(?,?,?,?)', (path, html, now_iso(), a['name']))
+    audit(a, action, path, detail)
+
+
+@admin_router.get('/admin/api/guide-pages')
+def api_guide_pages(request: Request):
+    a = get_actor(request); need(a, 0)
+    edits = {r['path']: r for r in rows('SELECT path, updated, by_admin FROM page_edits')}
+    return {'rows': [{'path': p, 'title': t, 'url': '/' + p[:-5], 'edited': p in edits,
+                      'updated': (edits.get(p) or {}).get('updated', ''), 'by': (edits.get(p) or {}).get('by_admin', '')}
+                     for p, t in GUIDE_PAGES]}
+
+
+@admin_router.get('/admin/api/guide-pages/get')
+def api_guide_page_get(request: Request):
+    a = get_actor(request); need(a, 0)
+    path = request.query_params.get('path', '')
+    if path not in _GX_PATHS: raise HTTPException(400, '편집할 수 없는 페이지입니다')
+    html, edited, updated = _page_effective(path)
+    if html is None: raise HTTPException(404, '페이지 없음')
+    return {'path': path, 'ver': _gx_ver(html), 'edited': edited, 'updated': updated, 'blocks': gx_parse(html)}
+
+
+@admin_router.post('/admin/api/guide-pages/save')
+def api_guide_page_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '페이지 편집')
+    path = body.get('path', '')
+    if path not in _GX_PATHS: raise HTTPException(400, '편집할 수 없는 페이지입니다')
+    html, _, _ = _page_effective(path)
+    if html is None: raise HTTPException(404, '페이지 없음')
+    if body.get('ver') != _gx_ver(html):
+        raise HTTPException(409, '그 사이 다른 관리자가 이 페이지를 저장했습니다 — 새로 불러온 뒤 다시 편집해 주세요')
+    new = gx_apply(html, body.get('blocks'))
+    if new == html:
+        return {'ok': True, 'changed': False, 'ver': _gx_ver(html)}
+    _page_store(path, new, a, '안내페이지수정', '%d자' % len(new))
+    return {'ok': True, 'changed': True, 'ver': _gx_ver(new)}
 
 # ═══════════════════ ⑤ 신규 상품 등록 + 자동 상품페이지(/p/ID) ═══════════
 # shop.html 필터 탭과 1:1로 매칭되는 카테고리 (value → 표기 라벨)

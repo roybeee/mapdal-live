@@ -2380,6 +2380,7 @@ def api_order_detail(oid: str, request: Request):
             'refund': (b.get('refund') if isinstance(b.get('refund'), dict) else {}) or {},
             # 입금대기 건은 관리자가 통장 확인 후 수동으로 입금완료 처리할 수 있다.
             'can_mark_paid': (r.get('status') == 'WAITING_DEPOSIT'),
+            'can_restore': bool(r.get('status') == 'CANCELLED' and ('vbank' in str(r.get('pay_method') or '').lower()) and '수동환불' not in str(r.get('admin_memo') or '')),
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID'),
             # 결제 당시 MID(TID 판별) — MID 교체 시 어느 상점관리자 소속 거래인지 즉시 식별.
             'pay_mid': _inicis_mid_of_tid(r.get(_state['paykey']) if _state['paykey'] else ''),
@@ -2437,6 +2438,145 @@ def api_order_mark_paid(oid: str, request: Request):
     order_notify_async(oid, 'paid')                       # 결제완료 문자 (이중 가드 내장)
     audit(a, '입금확인(수동)', oid, '%s → PAID' % (r.get('status') or ''))
     return {'ok': True, 'order_id': oid, 'status': 'PAID'}
+
+# ── 입금 확인 복구 (2026-10-21) ─────────────────────────────────────────────
+#   가상계좌로 기한 내 입금했는데 입금통보 누락(이니시스 통보 URL 오설정)으로 '입금기한 만료'
+#   자동취소된 주문을 결제완료로 되돌린다. 취소 때 복원했던 재고(라인·세트 낱개 parts)를
+#   같은 수량만큼 다시 차감하고, 쿠폰 사용·구매 적립을 원상태로 돌린다.
+#   대상: 상태 CANCELLED + 가상계좌 발급 이력이 있는 주문만. 재고가 모자라면 그 주문은 건너뛴다.
+_RESTORE_MAX = 100
+
+
+def _restore_check(oid):
+    """(ok, 사유, 주문행) — 미리보기와 실행이 같은 판정을 쓴다."""
+    r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
+    if not r:
+        return False, '주문 없음', None
+    if r.get('status') != 'CANCELLED':
+        return False, '취소 상태가 아님 (%s)' % (r.get('status') or '-'), r
+    pm = str(r.get('pay_method') or '').lower()
+    if 'vbank' not in pm and 'VBANK_ISSUED' not in str(r.get('pay_log') or ''):
+        return False, '가상계좌 주문이 아님', r
+    if '수동환불' in str(r.get('admin_memo') or '') or '이전상태 PAID' in str(r.get('pay_log') or ''):
+        return False, '이미 환불 처리된 주문', r
+    return True, '', r
+
+
+def _restore_quantities(items):
+    q = {}
+    for item in jload(items, []):
+        for t in [item] + (item.get('parts') or []):
+            if isinstance(t, dict) and t.get('id'):
+                n = num(t.get('q') or 1)
+                if n > 0:
+                    q[t['id']] = q.get(t['id'], 0) + n
+    return q
+
+
+def _restore_one(oid, actor_name, note):
+    ok, why, r = _restore_check(oid)
+    if not ok:
+        raise HTTPException(400, why)
+    taken = []
+    with _conn() as c:
+        if not IS_PG: c.execute('BEGIN IMMEDIATE')
+        row = c.execute(_q('SELECT status, items FROM orders WHERE order_id=?' + (' FOR UPDATE' if IS_PG else '')), (oid,)).fetchone()
+        cur = dict(row)
+        if cur['status'] != 'CANCELLED':
+            raise HTTPException(409, '그 사이 주문 상태가 바뀌었습니다 (%s)' % cur['status'])
+        qty = _restore_quantities(cur.get('items'))
+        stocks = {}
+        for pid, n in sorted(qty.items()):           # 전부 확인한 뒤에 차감 — 하나라도 모자라면 통째로 중단
+            pr = c.execute(_q('SELECT id, stock FROM products WHERE id=?' + (' FOR UPDATE' if IS_PG else '')), (pid,)).fetchone()
+            if not pr:
+                continue
+            st = dict(pr).get('stock')
+            if st is not None and int(st) < n:
+                raise HTTPException(409, '재고 부족: %s (필요 %d · 남음 %d)' % (pid, n, int(st)))
+            stocks[pid] = st
+        for pid, n in sorted(qty.items()):
+            if stocks.get(pid) is None:
+                continue
+            c.execute(_q('UPDATE products SET stock=stock-? WHERE id=? AND stock IS NOT NULL'), (n, pid))
+            if int(stocks[pid]) - n <= 0:
+                c.execute(_q('UPDATE products SET soldout=1 WHERE id=?'), (pid,))
+            taken.append(pid)
+        sets, args = ["status='PAID'"], []
+        if 'fulfill' in _state['ocols']: sets.append("fulfill='NEW'")
+        if 'paid_at' in _state['ocols']: sets.append('paid_at=?'); args.append(now_iso())
+        if 'admin_memo' in _state['ocols']:
+            sets.append('admin_memo=?'); args.append(('[복구] 시스템 오류 취소 → 입금 확인 복구' + (' · ' + note if note else ''))[:300])
+        c.execute(_q('UPDATE orders SET %s WHERE order_id=?' % ', '.join(sets)), tuple(args + [oid]))
+        c.commit()
+    for pid in taken:
+        try: catalog_inventory_from_legacy(pid)
+        except Exception: pass
+    coupon = ''
+    try:                                               # 취소 때 풀린 쿠폰 사용을 되돌린다 (멱등)
+        cu = one("SELECT code FROM mp_coupon_uses WHERE order_id=? AND status='RELEASED'", (oid,))
+        if cu and run("UPDATE mp_coupon_uses SET status='USED' WHERE order_id=? AND status='RELEASED'", (oid,)):
+            run('UPDATE mp_coupons SET uses_left=uses_left-1 WHERE code=? AND uses_left IS NOT NULL AND uses_left>0', (cu['code'],))
+            coupon = cu['code']
+    except Exception:
+        pass
+    try:
+        import app as _app
+        _app._pay_log(oid, 'PAID', '입금 확인 복구 — 입금통보 누락으로 잘못 취소된 주문 (%s)%s' % (actor_name, (' · ' + note) if note else ''))
+        _app._award_purchase_points(oid)
+        _app._ga4_mp_purchase(oid)
+    except Exception:
+        pass
+    return {'order_id': oid, 'ok': True, 'restocked': len(taken), 'coupon': coupon}
+
+
+@admin_router.post('/admin/api/orders/restore-paid')
+def api_orders_restore_paid(request: Request, body: dict = Body(...)):
+    """body: {order_ids:[...]|"줄바꿈 목록", dry_run:bool, confirm:'복구', note, notify:bool}"""
+    a = get_actor(request); need(a, 2, '입금 확인 복구')
+    raw = body.get('order_ids') or []
+    if isinstance(raw, str):
+        raw = re.split(r'[\s,]+', raw)
+    ids = []
+    for x in raw:
+        x = str(x).strip().upper()
+        if re.fullmatch(r'(MD|SF)-\d{8}-[0-9A-Z]{6}', x) and x not in ids:
+            ids.append(x)
+    if not ids:
+        raise HTTPException(400, '주문번호를 입력하세요 (예: MD-20261019-D3F666)')
+    if len(ids) > _RESTORE_MAX:
+        raise HTTPException(400, '한 번에 %d건까지 처리할 수 있습니다' % _RESTORE_MAX)
+    note = str(body.get('note') or '').strip()[:120]
+    if body.get('dry_run'):
+        out = []
+        for oid in ids:
+            ok, why, r = _restore_check(oid)
+            b = jload((r or {}).get('buyer'), {})
+            need_q = _restore_quantities((r or {}).get('items')) if r else {}
+            short = []
+            for pid, n in need_q.items():
+                pr = one('SELECT stock FROM products WHERE id=?', (pid,))
+                if pr and pr.get('stock') is not None and num(pr['stock']) < n:
+                    short.append('%s(필요 %d·남음 %d)' % (pid[-6:], n, num(pr['stock'])))
+            if ok and short:
+                ok, why = False, '재고 부족: ' + ', '.join(short)
+            out.append({'order_id': oid, 'ok': ok, 'why': why, 'name': b.get('name') or '', 'amount': num((r or {}).get('amount')),
+                        'status': (r or {}).get('status') or '', 'memo': (r or {}).get('admin_memo') or ''})
+        return {'dry_run': True, 'rows': out, 'ok_count': sum(1 for x in out if x['ok'])}
+    if str(body.get('confirm') or '').strip() != '복구':
+        raise HTTPException(400, "확인 문구 '복구'를 입력하세요")
+    out = []
+    for oid in ids:
+        try:
+            res = _restore_one(oid, a.get('name') or '', note)
+            audit(a, '입금확인복구', oid, ('쿠폰 ' + res['coupon']) if res['coupon'] else '')
+            if body.get('notify'):
+                order_notify_async(oid, 'paid')
+            out.append(res)
+        except HTTPException as e:
+            out.append({'order_id': oid, 'ok': False, 'why': e.detail})
+        except Exception as e:
+            out.append({'order_id': oid, 'ok': False, 'why': '오류: %s' % str(e)[:80]})
+    return {'rows': out, 'ok_count': sum(1 for x in out if x.get('ok'))}
 
 @admin_router.get('/admin/api/orders/{oid}/receipt', response_class=HTMLResponse)
 def api_admin_order_receipt(oid: str, request: Request):
@@ -4895,6 +5035,7 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <button class="btn ghost" onclick="csv()" id="csvbtn">CSV</button>
   <a class="btn" href="/admin/shipfee" target="_blank" style="background:#E8332A;border-color:#E8332A;text-decoration:none" title="배송비 누락 주문 추가 결제 링크·결제 현황">추가 배송비 청구</a>
   <button class="btn ghost" onclick="optcsv()" id="optcsvbtn" title="NEW/DROPS 응모옵션 라인별 명단 — 당첨자 발표용">응모 CSV</button>
+  <button class="btn ghost" onclick="rsOpen('')" title="입금통보 누락으로 잘못 취소된 가상계좌 주문을 결제완료로 되돌립니다 (여러 건 한 번에)">입금확인 복구</button>
   <button class="btn ghost" onclick="vbSweep()" id="vbsweepbtn" title="입금기한 만료·결제 미완료 주문을 취소하고 재고를 정리합니다 (자동으로도 주기 실행)">미결제 정리</button></div>
   <div id="olist" class="loading">불러오는 중…</div></section>
 <section id="t-products" style="display:none">
@@ -5295,7 +5436,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  <b>알림 발송</b><span style="display:flex;gap:6px"><select id="mtpl" style="flex:1">${TPLCACHE.map(t=>`<option value="${t.id}">${esc(t.name)} (${t.kind==='alimtalk'?'알림톡':'SMS'})</option>`).join('')}</select>
  <button class="btn sm" onclick="sendNotify('${esc(o.order_id)}')">발송</button></span></div>`:''}
  <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
- ${o.can_mark_paid&&can(2)?`<button class="btn" style="background:#1565c0;color:#fff" onclick="markPaid('${esc(o.order_id)}')">입금 확인 → 결제완료</button>`:''}
+ ${o.can_mark_paid&&can(2)?`<button class="btn" style="background:#1565c0;color:#fff" onclick="markPaid('${esc(o.order_id)}')">입금 확인 → 결제완료</button>`:''}${o.can_restore&&can(2)?`<button class="btn" style="background:#2e7d32;color:#fff" onclick="rsOpen('${esc(o.order_id)}')" title="기한 내 입금했는데 입금통보 누락으로 취소된 주문 — 재고를 다시 차감하고 결제완료로 되돌립니다">입금 확인 복구</button>`:''}
  ${can(2)&&o.status!=='CANCELLED'?(vbPaid
   ?`<button class="btn red" onclick="manualRefundDone('${esc(o.order_id)}')">수동환불 완료처리</button>`
   :`<button class="btn red" onclick="cancelOrder('${esc(o.order_id)}',${o.can_refund},'${esc(o.status)}')">${o.can_refund?'결제취소(환불)':(o.status==='WAITING_DEPOSIT'?'입금대기 취소':'주문취소 표시')}</button>${midStuck?`<button class="btn ghost" onclick="manualRefundDone('${esc(o.order_id)}')">수동환불 완료처리</button>`:''}`):''}
@@ -5361,6 +5502,23 @@ async function saveFulfill(oid){try{const f=$('#mff').value;
 async function sendNotify(oid,auto){try{const tid=auto?(TPLCACHE.find(t=>t.name.includes('발송'))||TPLCACHE[0]).id:$('#mtpl').value;
  const r=await api('/admin/api/notify/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:oid,template:tid})});
  toast(r.dry?'기록 모드: 발송사 미설정 (로그 저장됨)':'발송 완료');}catch(e){alert(e.message)}}
+/*mpRestorePaid — 잘못 취소된 가상계좌 주문 입금 확인 복구 (2026-10-21)*/
+function rsOpen(oid){$('#mbox').innerHTML=`<h3>입금 확인 복구</h3>
+ <div class="hint" style="margin-bottom:8px">기한 내 입금했는데 입금통보 누락으로 '입금기한 만료' 자동취소된 가상계좌 주문을 결제완료로 되돌립니다. 취소 때 돌려놓은 재고(세트·랜덤 낱개 포함)를 같은 수량만큼 다시 차감하고, 쿠폰 사용·구매 적립도 원래대로 맞춥니다. <b>이니시스에서 입금을 확인한 주문만</b> 넣으세요.</div>
+ <textarea id="rs_ids" rows="8" style="width:100%;font-family:'IBM Plex Mono';font-size:12px" placeholder="주문번호를 한 줄에 하나씩 (쉼표·공백 구분도 가능)">${esc(oid||'')}</textarea>
+ <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><input id="rs_note" placeholder="메모 (선택) — 예: CS 확인 10/21" style="flex:1;min-width:200px">
+ <label class="hint" style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="rs_notify"> 결제완료 알림톡 발송</label></div>
+ <div id="rs_res" style="margin-top:10px"></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn ghost" onclick="rsPreview()">대상 확인</button><button class="btn" id="rs_go" style="background:#2e7d32;color:#fff" onclick="rsRun()" disabled>복구 실행</button><button class="btn ghost" onclick="closeM()">닫기</button></div>`;
+ $('#mbg').style.display='flex';if(oid)rsPreview()}
+function rsTable(rows){return `<table><tr><th>주문번호</th><th>고객</th><th class="right">금액</th><th>결과</th></tr>${rows.map(r=>`<tr><td class="mono" style="font-size:11px">${esc(r.order_id)}</td><td>${esc(r.name||'')}</td><td class="right mono">${r.amount!=null?won(r.amount):''}</td>
+ <td>${r.ok?'<span class="st PAID">'+(r.restocked!=null?'복구 완료'+(r.coupon?' · 쿠폰 '+esc(r.coupon):''):'복구 가능')+'</span>':'<span class="st CANCELLED">제외</span> <span class="hint" style="display:inline">'+esc(r.why||'')+'</span>'}</td></tr>`).join('')}</table>`}
+async function rsPreview(){try{const d=await api('/admin/api/orders/restore-paid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_ids:$('#rs_ids').value,dry_run:true})});
+ $('#rs_res').innerHTML=`<div style="margin-bottom:6px"><b>복구 가능 ${d.ok_count}건</b> / 입력 ${d.rows.length}건</div>`+rsTable(d.rows);$('#rs_go').disabled=!d.ok_count;window._rsOk=d.ok_count}catch(e){toast(e.message)}}
+async function rsRun(){const v=prompt(window._rsOk+'건을 결제완료로 복구합니다. 재고가 다시 차감됩니다.\n진행하려면 복구 라고 입력하세요');if(v!=='복구')return;
+ try{$('#rs_go').disabled=true;const d=await api('/admin/api/orders/restore-paid',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({order_ids:$('#rs_ids').value,confirm:'복구',note:$('#rs_note').value,notify:$('#rs_notify').checked})});
+  $('#rs_res').innerHTML=`<div style="margin-bottom:6px"><b>복구 완료 ${d.ok_count}건</b> / 처리 ${d.rows.length}건</div>`+rsTable(d.rows);toast('복구 완료 '+d.ok_count+'건');if(typeof loadOrders==='function')loadOrders(opage||1)}catch(e){toast(e.message);$('#rs_go').disabled=false}}
 async function markPaid(oid){
  if(!confirm('통장에 입금이 확인되었습니까?\n\n결제완료로 변경하면 구매 적립이 지급되고 발송 가능 상태가 됩니다.'))return;
  try{await api('/admin/api/orders/'+encodeURIComponent(oid)+'/mark-paid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});

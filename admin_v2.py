@@ -3143,6 +3143,8 @@ def vbank_sweep_start():
         while True:
             try: vbank_expire_sweep()
             except Exception as e: print('[vbank-sweep] 실패:', e, flush=True)
+            try: comp_isekai_tick()          # 이세계아이돌 보상 적립 — 11/9 09:00 이후 1회
+            except Exception as e: print('[comp-isekai] 실패:', e, flush=True)
             time.sleep(max(60, VBANK_EXPIRE_SWEEP * 60))
     threading.Thread(target=_loop, daemon=True, name='vbank-sweep').start()
     print('[vbank-sweep] 자동정리 시작 — 주기 %d분 · 유예 %d분'
@@ -5153,7 +5155,10 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="panel"><h3>사이트 공지 팝업 <span class="tag">홈 · NEW/DROPS 목록·상세 · 판매 페이지 · KPOP · SHOP</span></h3>
   <div class="hint" style="margin-bottom:10px">노출 위치와 기간을 정해 고객 화면에 공지 팝업을 띄웁니다. 저장 즉시 반영되며, 결제·장바구니·마이페이지에는 표시되지 않습니다. 고객이 '오늘 하루 보지 않기'를 누르면 그날은 다시 뜨지 않습니다.</div>
   <div style="margin-bottom:10px"><button class="btn" onclick="puEdit('')">+ 새 팝업</button></div>
-  <div id="puedit"></div><div id="pulist" class="loading">불러오는 중…</div></div></section>
+  <div id="puedit"></div><div id="pulist" class="loading">불러오는 중…</div></div>
+  <div class="panel"><h3>이세계아이돌 예약판매 보상 적립 1% <span class="tag">기존 구매 적립과 별개 · 일괄 지급</span></h3>
+  <div class="hint" style="margin-bottom:10px">2026-11-09 09:00(한국시간) 기준 결제완료 상태인 이세계아이돌 [Across Dimensions] 주문에 1%를 일괄 적립합니다. 그 시각이 지나면 시스템이 10분 안에 자동으로 1회 지급하며, 기존 구매 적립과는 별개로 추가 지급됩니다. 대상금액 = 이세계아이돌 상품 금액 − 쿠폰 할인 안분(배송비 제외), 원 단위 절사. 비회원 주문은 고객 프로필에 적립되어 회원 연결 시 함께 옮겨집니다. 지급 후 취소·반품되면 보상 적립도 회수됩니다.</div>
+  <div id="compbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-cs" style="display:none">
   <div class="panel"><h3>문의 검색 <span class="tag">취소·반품·교환 요청 · 1:1 문의 · 상품 Q&amp;A 전체</span></h3>
   <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -6848,7 +6853,14 @@ async function loadCS(){try{csqSugDraw();const d=await api('/admin/api/cs');
 let PU=null;
 const PU_DISMISS=[['today','오늘 하루 보지 않기'],['week','7일간 보지 않기'],['forever','다시 보지 않기'],['none','닫기만 표시']];
 function puState(p,now){if(!p.on)return['꺼짐','CANCELLED'];if(p.start&&now<p.start)return['예약','PENDING'];if(p.end&&now>p.end)return['종료','CANCELLED'];return['노출 중','PAID']}
-async function loadPopups(){try{const d=await api('/admin/api/popups');PU=d;
+async function loadComp(){try{const d=await api('/admin/api/comp/isekai');const f=n=>Number(n||0).toLocaleString('ko-KR');const p=d.preview,r=d.result,done=!!r,after=d.now>=d.cutoff;
+ $('#compbox').innerHTML=`<div class="kv"><b>기준 시각</b><span>${esc(d.cutoff.replace('T',' '))} (KST) · ${done?'<span class="st PAID">지급 완료</span>':after?'<span class="st PENDING">자동 지급 대기</span>':'<span class="st PENDING">예약됨</span>'}</span>
+ <b>${done?'지급 대상':'현재 기준 예상'}</b><span>${f(p.orders)}건 · 고객 ${f(p.customers)}명 (비회원 주문 ${f(p.guests)}건) · 대상금액 ₩${f(p.base)} · <b>${f(p.points)}P</b>${done?'':' <span class="hint" style="display:inline">— 지금 시점 결제완료 기준, 11/9 09:00에 확정</span>'}</span>
+ ${done?`<b>지급 결과</b><span>${esc(r.at.replace('T',' '))} · ${esc(r.by)} · 지급 ${f(r.granted)}건 · ${f(r.points)}P · 제외 ${f(r.skipped)} · 실패 ${f(r.failed)}${r.errors&&r.errors.length?'<br><span class="hint" style="display:inline">'+r.errors.map(esc).join('<br>')+'</span>':''}</span>`:''}</div>
+ <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><a class="btn ghost" href="/admin/api/comp/isekai.csv">대상 명단 CSV</a>${after?'<button class="btn" onclick="compRun()">'+(done?'누락분 재실행':'지금 지급')+'</button>':''}</div>`}catch(e){$('#compbox').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+async function compRun(){const v=prompt("보상 적립을 지급합니다. 이미 지급된 주문은 건너뜁니다.\n확인 문구 '지급'을 입력하세요");if(v!=='지급')return;
+ try{const r=await api('/admin/api/comp/isekai/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'지급'})});toast('지급 '+r.granted+'건 · '+Number(r.points).toLocaleString('ko-KR')+'P');loadComp()}catch(e){toast(e.message)}}
+async function loadPopups(){loadComp();try{const d=await api('/admin/api/popups');PU=d;
  const tl=k=>(d.targets.find(t=>t.k===k)||{}).v||k;
  $('#pulist').innerHTML=(d.rows.length?d.rows.slice().sort((a,b)=>(a.order||0)-(b.order||0)).map(p=>{const st=puState(p,d.now);
   return `<div style="border:1px solid var(--line);padding:12px;margin-bottom:10px;background:#fff">
@@ -9726,6 +9738,15 @@ def point_revoke_purchase(order_id, by_admin=''):
     cid = o.get('customer_id') or ''
     if not cid:
         return 0
+    try:                                     # 보상 적립(COMPENSATION)도 주문 유지 전제 — 함께 회수 (멱등)
+        cg = one("SELECT COALESCE(SUM(amount),0) AS s FROM point_ledger "
+                 "WHERE order_id=? AND event_type='COMPENSATION'", (oid,))
+        if num((cg or {}).get('s')) > 0:
+            point_apply(cid, o.get('member_id') or '', 'COMPENSATION_REVOKE', -num(cg['s']),
+                        'comp_revoke:%s' % oid, '주문 취소·반품에 따른 보상 적립 회수',
+                        order_id=oid, by_admin=by_admin or 'SYSTEM')
+    except Exception:
+        pass
     g = one("SELECT COALESCE(SUM(amount),0) AS s FROM point_ledger "
             "WHERE order_id=? AND event_type='PURCHASE_REWARD'", (oid,))
     granted = num((g or {}).get('s'))
@@ -9735,6 +9756,124 @@ def point_revoke_purchase(order_id, by_admin=''):
                 'purchase_revoke:%s' % oid, '주문 취소·반품에 따른 적립 회수',
                 order_id=oid, by_admin=by_admin or 'SYSTEM')
     return granted
+
+# ── 이세계아이돌 예약판매 보상 적립 1% (2026-10-21 대표 지시) ───────────────────────
+#   기준: 2026-11-09 09:00(KST) 시점에 결제완료(PAID)인 이세계아이돌 [Across Dimensions] 주문.
+#   그 시각이 지나면 백그라운드 스윕(10분 주기)이 1회 자동 지급하고, 결과를 site_settings 에 남긴다.
+#   · 금액: 주문 내 이세계아이돌 라인 금액 − 쿠폰 할인 안분액, 배송비 제외, 1% 원 단위 절사
+#   · 기존 구매 적립(PURCHASE_REWARD)과 별개 건(COMPENSATION) — 이미 받은 적립과 무관하게 추가 지급, 주문당 1회(event_key 멱등)
+#   · 지급 후 그 주문이 취소·반품되면 보상 적립도 함께 회수(point_revoke_purchase)
+#   · 비회원(GUEST) 주문도 고객 프로필에 적립 — 회원 병합 시 포인트 원장이 함께 옮겨진다
+COMP_ISEKAI = {'key': 'isekai-2611', 'cutoff': '2026-11-09T09:00:00', 'rate_bp': 100,
+               'match': 'Across Dimensions', 'marker': 'COMP_ISEKAI_2611_RESULT',
+               'label': '이세계아이돌 예약판매 보상 적립 1%'}
+
+
+def _comp_line_hit(line):
+    return COMP_ISEKAI['match'] in str((line or {}).get('n') or '')
+
+
+def comp_isekai_targets(cutoff=None):
+    """기준 시각까지 결제완료된 대상 주문과 적립액 — 미리보기·실행이 같은 계산을 쓴다."""
+    cutoff = cutoff or COMP_ISEKAI['cutoff']
+    out = []
+    for o in rows("SELECT order_id, status, items, discount, paid_at, created, customer_id, member_id, buyer, amount "
+                  "FROM orders WHERE status='PAID' AND items LIKE ?", ('%Across Dimensions%',)):
+        oid = o['order_id']
+        if oid.startswith('SF-'):
+            continue
+        paid = str(o.get('paid_at') or o.get('created') or '')[:19]
+        if not paid or paid > cutoff:                 # 문자열 비교는 파이썬에서 (PG 콜레이션 영향 없음)
+            continue
+        lines = jload(o.get('items'), [])
+        sub_all = sum(num(l.get('p')) * num(l.get('q') or 1) for l in lines if isinstance(l, dict))
+        hit = sum(num(l.get('p')) * num(l.get('q') or 1) for l in lines if isinstance(l, dict) and _comp_line_hit(l))
+        if hit <= 0:
+            continue
+        disc = num(o.get('discount'))
+        base = hit - ((disc * hit // sub_all) if (disc and sub_all) else 0)
+        pts = max(0, base) * COMP_ISEKAI['rate_bp'] // 10000
+        b = jload(o.get('buyer'), {})
+        out.append({'order_id': oid, 'customer_id': o.get('customer_id') or '', 'member_id': o.get('member_id') or '',
+                    'guest': not (o.get('member_id') or ''), 'name': b.get('name') or '', 'phone': b.get('phone') or '',
+                    'paid_at': paid, 'base': base, 'points': pts})
+    return out
+
+
+def comp_isekai_run(by='SYSTEM', force=False):
+    """지급 실행 (멱등). force=False 면 기준 시각 이전엔 아무것도 하지 않는다."""
+    now = kst_now().strftime('%Y-%m-%dT%H:%M:%S')
+    if not force and now < COMP_ISEKAI['cutoff']:
+        return None
+    tg = comp_isekai_targets()
+    ok = skip = fail = 0; total = 0; errs = []
+    for t in tg:
+        if t['points'] <= 0 or not t['customer_id']:
+            skip += 1; continue
+        try:
+            point_apply(t['customer_id'], t['member_id'], 'COMPENSATION', t['points'],
+                        'comp:%s:%s' % (COMP_ISEKAI['key'], t['order_id']),
+                        '%s(대상금액 %s원)' % (COMP_ISEKAI['label'], format(t['base'], ',')),
+                        order_id=t['order_id'], by_admin=by)
+            ok += 1; total += t['points']
+        except Exception as e:
+            fail += 1; errs.append('%s: %s' % (t['order_id'], str(e)[:60]))
+    res = {'at': now, 'by': by, 'cutoff': COMP_ISEKAI['cutoff'], 'orders': len(tg), 'granted': ok, 'skipped': skip,
+           'failed': fail, 'points': total, 'guests': sum(1 for t in tg if t['guest']), 'errors': errs[:20]}
+    _setting_put(COMP_ISEKAI['marker'], res, by)
+    print('[comp-isekai] 지급 %d건 · %s포인트 · 실패 %d' % (ok, format(total, ','), fail), flush=True)
+    return res
+
+
+def comp_isekai_tick():
+    """스윕 루프에서 호출 — 기준 시각 이후 결과 기록이 없으면 1회 실행."""
+    if kst_now().strftime('%Y-%m-%dT%H:%M:%S') < COMP_ISEKAI['cutoff']:
+        return
+    if one('SELECT key FROM site_settings WHERE key=?', (COMP_ISEKAI['marker'],)):
+        return
+    comp_isekai_run('SYSTEM(자동)')
+
+
+@admin_router.get('/admin/api/comp/isekai')
+def api_comp_isekai(request: Request):
+    a = get_actor(request); need(a, 0)
+    r = one('SELECT value FROM site_settings WHERE key=?', (COMP_ISEKAI['marker'],))
+    tg = comp_isekai_targets(min(kst_now().strftime('%Y-%m-%dT%H:%M:%S'), COMP_ISEKAI['cutoff']))
+    return {'cutoff': COMP_ISEKAI['cutoff'], 'now': kst_now().strftime('%Y-%m-%dT%H:%M:%S'),
+            'result': jload((r or {}).get('value'), None),
+            'preview': {'orders': len(tg), 'points': sum(t['points'] for t in tg), 'guests': sum(1 for t in tg if t['guest']),
+                        'customers': len({t['customer_id'] for t in tg}), 'base': sum(t['base'] for t in tg)}}
+
+
+@admin_router.post('/admin/api/comp/isekai/run')
+def api_comp_isekai_run(request: Request, body: dict = Body(...)):
+    """기준 시각 이후 수동 재실행(누락분 보충) — 이미 지급된 주문은 건너뛴다."""
+    a = get_actor(request); need(a, 3, '보상 적립 실행')
+    if kst_now().strftime('%Y-%m-%dT%H:%M:%S') < COMP_ISEKAI['cutoff']:
+        raise HTTPException(400, '기준 시각(2026-11-09 09:00) 이후에만 실행할 수 있습니다')
+    if str(body.get('confirm') or '') != '지급':
+        raise HTTPException(400, "확인 문구 '지급'을 입력하세요")
+    res = comp_isekai_run(a.get('name') or 'ADMIN', force=True)
+    audit(a, '보상적립실행', COMP_ISEKAI['key'], '%d건 %s포인트' % (res['granted'], res['points']))
+    return res
+
+
+@admin_router.get('/admin/api/comp/isekai.csv')
+def api_comp_isekai_csv(request: Request):
+    a = get_actor(request); need(a, 1)
+    done = {r['order_id']: num(r['amount']) for r in rows("SELECT order_id, amount FROM point_ledger WHERE event_key LIKE ?",
+                                                         ('comp:%s:%%' % COMP_ISEKAI['key'],))}
+    tg = comp_isekai_targets(min(kst_now().strftime('%Y-%m-%dT%H:%M:%S'), COMP_ISEKAI['cutoff']))
+    import csv, io
+    buf = io.StringIO(); w = csv.writer(buf)
+    w.writerow(['주문번호', '결제일시', '고객명', '연락처', '회원구분', '대상금액', '적립예정', '지급완료'])
+    for t in tg:
+        w.writerow([t['order_id'], t['paid_at'].replace('T', ' '), t['name'], t['phone'], '비회원' if t['guest'] else '회원',
+                    t['base'], t['points'], done.get(t['order_id'], '')])
+    audit(a, '보상적립명단', COMP_ISEKAI['key'], '%d건' % len(tg))
+    return Response('﻿' + buf.getvalue(), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="isekai_comp_1pct.csv"'})
+
 
 def consent_record(customer_id, member_id, consent_type, granted, version, source, request=None):
     run('INSERT INTO consent_history VALUES(?,?,?,?,?,?,?,?,?)',
@@ -17394,7 +17533,8 @@ def api_m_points(request: Request):
     cp = one('SELECT points_balance FROM customer_profiles WHERE id=?', (cid,)) or {}
     rs = rows('SELECT event_type,amount,balance_after,reason,expires_at,created_at FROM point_ledger WHERE customer_id=? ORDER BY created_at DESC LIMIT 200', (cid,))
     names = {'SIGNUP_BONUS':'최초 가입 혜택','LEGACY_BALANCE':'기존 포인트 이관','ADMIN_ADJUST':'관리자 조정',
-             'PURCHASE_REWARD':'구매 적립 (1%)','PURCHASE_REVOKE':'구매 적립 회수 (취소·반품)'}
+             'PURCHASE_REWARD':'구매 적립 (1%)','PURCHASE_REVOKE':'구매 적립 회수 (취소·반품)',
+             'COMPENSATION':'이세계아이돌 예약판매 보상 적립 (1%)','COMPENSATION_REVOKE':'보상 적립 회수 (취소·반품)'}
     return {'balance': num(cp.get('points_balance')), 'rows': [
         {'type': names.get(r['event_type'], r['event_type']), 'amount': num(r['amount']),
          'balance': num(r['balance_after']), 'reason': r.get('reason') or '',

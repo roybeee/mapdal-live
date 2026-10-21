@@ -2005,6 +2005,8 @@ def ensure_ready():
     except Exception: pass
     try: _migrate_home_page_edits() # 홈 편집본을 배포 정적본과 동기화 — 백업 후 교체 (멱등)
     except Exception: pass
+    try: _migrate_popup_seed() # 이세계아이돌 보상 포인트 안내 팝업 1회 등록 (2026-10-21, 마커)
+    except Exception as e: print('popup seed skipped:', e)
     try: _repair_drops_mail_escape() # 2026-09-17 사고 복구 — drops JSON 의 깨진 이스케이프(\\cx@) 원복 (멱등)
     except Exception as e: print('drops repair skipped:', e)
     try: _migrate_contact_mail_db() # 대표 문의 이메일 단일화 — DB 편집본·설정값 멱등 치환
@@ -5006,6 +5008,11 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div id="tpls" class="loading">불러오는 중…</div>
   <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="editTpl()" id="tpladd">+ 템플릿 추가</button></div></div>
   <div class="panel"><h3>발송 기록 (최근 200)</h3><div id="nlog" class="loading">불러오는 중…</div></div></section>
+<section id="t-popup" style="display:none">
+  <div class="panel"><h3>사이트 공지 팝업 <span class="tag">홈 · NEW/DROPS 목록·상세 · 판매 페이지 · KPOP · SHOP</span></h3>
+  <div class="hint" style="margin-bottom:10px">노출 위치와 기간을 정해 고객 화면에 공지 팝업을 띄웁니다. 저장 즉시 반영되며, 결제·장바구니·마이페이지에는 표시되지 않습니다. 고객이 '오늘 하루 보지 않기'를 누르면 그날은 다시 뜨지 않습니다.</div>
+  <div style="margin-bottom:10px"><button class="btn" onclick="puEdit('')">+ 새 팝업</button></div>
+  <div id="puedit"></div><div id="pulist" class="loading">불러오는 중…</div></div></section>
 <section id="t-cs" style="display:none">
   <div class="panel"><h3>문의 검색 <span class="tag">취소·반품·교환 요청 · 1:1 문의 · 상품 Q&amp;A 전체</span></h3>
   <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -5049,7 +5056,7 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';se
 async function api(p,opt){const r=await fetch(p,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
 $('#who').textContent=ACTOR.name+' · '+RN[ACTOR.role];
 if(ACTOR.master){const b=$('#pwbtn');if(b)b.style.display='none'}
-const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['artists','아티스트',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['reviews','리뷰',0],['admins','관리자',3],['system','시스템',0]];
+const TABS=[['dash','대시보드',0],['orders','주문',0],['products','상품·재고',0],['artists','아티스트',0],['pages','페이지',2],['ticker','티커',2],['drops','NEW/DROPS',2],['seo','SEO·검색',2],['banner','메인배너',2],['popup','팝업',2],['home','홈 화면',2],['cust','고객',0],['notify','알림',0],['cs','문의·요청',0],['reviews','리뷰',0],['admins','관리자',3],['system','시스템',0]];
 async function loadReviews(pg){pg=pg||1;try{const d=await api('/admin/api/reviews?page='+pg);
  $('#t-reviews').innerHTML='<div class="panel"><h3>상품 리뷰 <span class="tag">'+d.total+'건</span></h3>'+
  (d.rows.length? d.rows.map(r=>'<div style="border-bottom:1px solid #eee;padding:10px 4px">'+
@@ -5063,7 +5070,7 @@ async function loadReviews(pg){pg=pg||1;try{const d=await api('/admin/api/review
  catch(e){$('#t-reviews').innerHTML='<div class="hint">'+esc(e.message)+'</div>'}}
 async function rvStatus(id,st){if(st==='숨김'&&!confirm('이 리뷰를 화면에서 숨길까요?'))return;
  try{await api('/admin/api/reviews/'+encodeURIComponent(id)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})});toast('처리되었습니다');loadReviews(1)}catch(e){toast(e.message)}}
-const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:()=>{loadGuides();loadPages()},ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,reviews:()=>loadReviews(1),admins:loadAdmins,system:loadSys};
+const LOAD={dash:loadDash,orders:()=>loadOrders(1),products:()=>productMode('catalog'),artists:loadArtists,pages:()=>{loadGuides();loadPages()},ticker:loadTicker,drops:loadDrops,seo:loadSeo,banner:loadBanner,popup:loadPopups,home:loadHomeBlocks,cust:()=>{loadAccounts(1);if(!window._oaLoaded){window._oaLoaded=1;loadOAuthStatus()}},notify:loadNotify,cs:loadCS,reviews:()=>loadReviews(1),admins:loadAdmins,system:loadSys};
 TABS.filter(t=>can(t[2])).forEach(([k,label],i)=>{const b=document.createElement('button');b.textContent=label;if(i===0)b.className='on';
  b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  TABS.forEach(([t])=>{const s=$('#t-'+t);if(s)s.style.display=(t===k?'':'none')});LOAD[k]()};$('#nav').appendChild(b)});
@@ -6679,6 +6686,51 @@ async function loadCS(){try{csqSugDraw();const d=await api('/admin/api/cs');
  <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${can(1)&&!(kind==='inq'&&q.status==='고객삭제')?`<button class="btn sm" onclick="csAnswer('${kind}','${q.id}')">${q.answer?'답변 수정':'답변하기'}</button>`:''}${kind==='inq'&&(q.edits||q.deleted_at)?`<button class="btn sm ghost" onclick="csInqHist('${esc(q.id)}')" title="고객이 수정·삭제하기 전 원문">이력</button>`:''}${q.cid?`<button class="btn sm ghost" onclick="openAccount('${esc(q.cid)}')" title="회원번호·주문·포인트·배송지·CS 이력">회원·구매정보</button>`:''}${kind==='inq'&&q.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(q.order_id)}')" title="주문 상세 — 결제·배송 상태">주문 상세</button>`:''}${kind==='inq'&&q.order_id&&can(1)?`<button class="btn sm ghost" onclick="shipAddrEdit('${esc(q.order_id)}','${esc(q.id)}')" title="이 화면에서 주문 배송지를 바로 변경 — 저장 시 답변 종결·안내 문자까지 한 번에">배송지 변경</button>`:''}</div></div>`).join(''):'<div class="loading">없음</div>';/*mpCsAcctLink*/
  window._CSD=d;window._CSCATS=d.inq_cats||[];csInqDraw();$('#cspq').innerHTML=block(d.pqna,'pqna');
 }catch(e){$('#csreq').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+/*mpPopupAdmin — 사이트 공지 팝업 관리 (2026-10-21)*/
+let PU=null;
+const PU_DISMISS=[['today','오늘 하루 보지 않기'],['week','7일간 보지 않기'],['forever','다시 보지 않기'],['none','닫기만 표시']];
+function puState(p,now){if(!p.on)return['꺼짐','CANCELLED'];if(p.start&&now<p.start)return['예약','PENDING'];if(p.end&&now>p.end)return['종료','CANCELLED'];return['노출 중','PAID']}
+async function loadPopups(){try{const d=await api('/admin/api/popups');PU=d;
+ const tl=k=>(d.targets.find(t=>t.k===k)||{}).v||k;
+ $('#pulist').innerHTML=(d.rows.length?d.rows.slice().sort((a,b)=>(a.order||0)-(b.order||0)).map(p=>{const st=puState(p,d.now);
+  return `<div style="border:1px solid var(--line);padding:12px;margin-bottom:10px;background:#fff">
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="st ${st[1]}">${st[0]}</span><b style="flex:1;min-width:180px">${esc(p.title||'(제목 없음)')}</b>
+  <button class="btn sm" onclick="puEdit('${esc(p.id)}')">편집</button><button class="btn sm ghost" onclick="puToggle('${esc(p.id)}')">${p.on?'끄기':'켜기'}</button><button class="btn sm ghost" onclick="puDel('${esc(p.id)}')">삭제</button></div>
+  <div class="hint" style="margin-top:6px">위치: ${p.targets.map(tl).join(' · ')}${p.targets.includes('drops_detail')&&p.drop_ids&&p.drop_ids.length?' (이벤트 '+p.drop_ids.length+'개)':''}${p.targets.includes('product')&&p.product_kw?' (상품명 "'+esc(p.product_kw)+'")':''}
+   · 기간: ${esc((p.start||'즉시').replace('T',' '))} ~ ${esc((p.end||'계속').replace('T',' '))} · ${esc((PU_DISMISS.find(x=>x[0]===p.dismiss)||['',''])[1])}</div>
+  <div style="margin-top:6px;font-size:12.5px;white-space:pre-wrap;max-height:4.8em;overflow:hidden;color:#555">${esc(p.body)}</div></div>`}).join(''):'<div class="loading">등록된 팝업이 없습니다</div>');
+ }catch(e){$('#pulist').innerHTML='<div class="loading">'+esc(e.message)+'</div>'}}
+function puEdit(id){const p=id?Object.assign({},PU.rows.find(x=>x.id===id)):{id:'',on:true,title:'',body:'',image:'',link_url:'',link_label:'',targets:['home'],drop_ids:[],product_kw:'',start:'',end:'',dismiss:'today',order:0};
+ const chk=(k,v)=>`<label style="display:inline-flex;gap:5px;align-items:center;margin:0 12px 6px 0;cursor:pointer"><input type="checkbox" class="pu-tg" value="${k}" ${p.targets.includes(k)?'checked':''} onchange="puTgSync()"> ${esc(v)}</label>`;
+ $('#puedit').innerHTML=`<div style="border:2px solid #141414;padding:14px;background:#fff;margin-bottom:14px">
+ <h3 style="margin:0 0 10px">${id?'팝업 편집':'새 팝업'}</h3>
+ <div class="kv"><b>노출</b><span><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="pu_on" ${p.on?'checked':''}> 켜기</label></span>
+ <b>제목</b><span><input id="pu_title" value="${esc(p.title)}" maxlength="120" style="width:100%"></span>
+ <b>내용</b><span><textarea id="pu_body" rows="12" style="width:100%;line-height:1.6">${esc(p.body)}</textarea><div class="hint">입력한 줄바꿈 그대로 표시됩니다.</div></span>
+ <b>이미지</b><span><input id="pu_img" value="${esc(p.image||'')}" placeholder="(선택) https://… 이미지 주소 — 내용 위에 표시" style="width:100%"></span>
+ <b>버튼</b><span style="display:flex;gap:6px;flex-wrap:wrap"><input id="pu_ll" value="${esc(p.link_label||'')}" placeholder="(선택) 버튼 문구" style="flex:0 0 160px"><input id="pu_lu" value="${esc(p.link_url||'')}" placeholder="/new-drops?id=6 또는 https://…" style="flex:1;min-width:200px"></span>
+ <b>노출 위치</b><span>${PU.targets.map(t=>chk(t.k,t.v)).join('')}
+  <div id="pu_dropbox" style="margin-top:6px;${p.targets.includes('drops_detail')?'':'display:none'}"><div class="hint">NEW/DROPS 상세 — 고르지 않으면 모든 이벤트</div>${PU.drops.map(d=>`<label style="display:block;font-size:12.5px;cursor:pointer"><input type="checkbox" class="pu-drop" value="${esc(d.id)}" ${(p.drop_ids||[]).includes(d.id)?'checked':''}> #${esc(d.id)} ${esc(d.title)}</label>`).join('')}</div>
+  <div id="pu_prodbox" style="margin-top:6px;${p.targets.includes('product')?'':'display:none'}"><span class="hint" style="display:inline">상품 상세 — 상품명에 이 단어가 들어간 페이지만 (비우면 모든 상품, 쉼표로 여러 개)</span><br><input id="pu_kw" value="${esc(p.product_kw||'')}" placeholder="예) 이세계아이돌" style="width:260px;margin-top:4px"></div></span>
+ <b>기간</b><span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input type="datetime-local" id="pu_start" value="${esc(p.start||'')}"> ~ <input type="datetime-local" id="pu_end" value="${esc(p.end||'')}"><span class="hint" style="display:inline">비우면 즉시 / 계속 (한국시간)</span></span>
+ <b>닫기 옵션</b><span><select id="pu_dis">${PU_DISMISS.map(x=>`<option value="${x[0]}" ${p.dismiss===x[0]?'selected':''}>${x[1]}</option>`).join('')}</select> <span class="hint" style="display:inline">내용을 고치면 이미 닫은 고객에게도 다시 보입니다</span></span>
+ <b>순서</b><span><input type="number" id="pu_ord" value="${+p.order||0}" style="width:80px"> <span class="hint" style="display:inline">한 페이지에 여러 개면 작은 숫자부터 차례로</span></span></div>
+ <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn ghost" onclick="puPreview()">미리보기</button><button class="btn" onclick="puSave('${esc(p.id)}')">저장 (사이트 즉시 반영)</button><button class="btn ghost" onclick="$('#puedit').innerHTML=''">닫기</button></div></div>`;
+ $('#puedit').scrollIntoView({behavior:'smooth',block:'start'})}
+function puTgSync(){const t=[...document.querySelectorAll('.pu-tg:checked')].map(x=>x.value);$('#pu_dropbox').style.display=t.includes('drops_detail')?'':'none';$('#pu_prodbox').style.display=t.includes('product')?'':'none'}
+function puForm(id){return{id,on:$('#pu_on').checked,title:$('#pu_title').value,body:$('#pu_body').value,image:$('#pu_img').value,link_label:$('#pu_ll').value,link_url:$('#pu_lu').value,
+ targets:[...document.querySelectorAll('.pu-tg:checked')].map(x=>x.value),drop_ids:[...document.querySelectorAll('.pu-drop:checked')].map(x=>x.value),
+ product_kw:$('#pu_kw').value,start:$('#pu_start').value,end:$('#pu_end').value,dismiss:$('#pu_dis').value,order:+$('#pu_ord').value||0}}
+async function puSave(id){try{await api('/admin/api/popups/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(puForm(id))});
+ toast('저장 완료 — 사이트에 반영되었습니다');$('#puedit').innerHTML='';loadPopups()}catch(e){toast(e.message)}}
+async function puToggle(id){const p=Object.assign({},PU.rows.find(x=>x.id===id));p.on=!p.on;try{await api('/admin/api/popups/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});toast(p.on?'켰습니다':'껐습니다');loadPopups()}catch(e){toast(e.message)}}
+async function puDel(id){if(!confirm('이 팝업을 삭제할까요?'))return;try{await api('/admin/api/popups/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});toast('삭제했습니다');loadPopups()}catch(e){toast(e.message)}}
+function puPreview(){const f=puForm('');const b=document.createElement('div');b.style.cssText='position:fixed;inset:0;background:rgba(20,20,20,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+ b.innerHTML=`<div style="background:#F7F6F2;max-width:440px;width:100%;max-height:84vh;display:flex;flex-direction:column;border-top:4px solid #E8332A;font-family:'IBM Plex Sans KR',sans-serif">
+ <div style="padding:18px 20px 10px;font-weight:700;font-size:17px">${esc(f.title)}</div><div style="padding:0 20px 16px;overflow:auto;font-size:14px;line-height:1.7;white-space:pre-wrap">${f.image?`<img src="${esc(f.image)}" style="width:100%;margin-bottom:12px">`:''}${esc(f.body)}</div>
+ ${f.link_url?`<div style="margin:0 20px 14px;padding:12px;background:#141414;color:#fff;text-align:center;font-weight:700">${esc(f.link_label||'자세히 보기')}</div>`:''}
+ <div style="display:flex;border-top:1px solid #ddd8cc">${f.dismiss!=='none'?`<div style="flex:1;padding:14px;text-align:center;font-size:13.5px">${esc((PU_DISMISS.find(x=>x[0]===f.dismiss)||['',''])[1])}</div>`:''}<div style="flex:1;padding:14px;text-align:center;font-weight:700;border-left:1px solid #ddd8cc;font-size:13.5px">닫기</div></div></div>`;
+ b.onclick=()=>b.remove();document.body.appendChild(b)}
 /*mpCsSearch — CS 통합·자연어 검색 (2026-10-21)*/
 const CSQ_SUG=['오늘 들어온 문의','미답변 1:1','입금했는데 취소됐다는 고객','배송비 때문에 취소','포카 하자','주소 변경','중복결제 환불','미처리 취소 요청'];
 function csqSugDraw(){const el=$('#csqsug');if(el&&!el.innerHTML)el.innerHTML=CSQ_SUG.map(t=>`<button class="btn sm ghost" onclick="$('#csq').value=this.textContent;csSearch()">${esc(t)}</button>`).join('')}
@@ -11433,7 +11485,7 @@ TICKER_DEFAULT = {
 # ── site_settings 안전장치 (2026-07-29 NEW/DROPS 소실 사고 대응) ──────
 #   drops 는 전 이벤트가 site_settings 단일 행 JSON 이라 쓰기 1회로 전량이
 #   바뀐다. 덮어쓰기 직전 원문을 '__bak::{key}::{ts}' 로 남겨 되돌릴 수 있게 한다.
-_SETTING_BAK_KEYS = ('drops',)
+_SETTING_BAK_KEYS = ('drops', 'popups')
 _SETTING_BAK_KEEP = 10
 _SETTING_BAK_KEEP_BIG = 3          # 500KB 초과 블롭은 3개만 (스토리지 상한 방어)
 _SETTING_BAK_BIG = 500000
@@ -16029,6 +16081,242 @@ def _own_stock_apply(html, path=''):
     return _own_stock_detail(html, stock.get(detail, {})) if detail else html
 
 
+# ── 사이트 공지 팝업 (2026-10-21) ─────────────────────────────────────────────
+#   관리자 [팝업] 탭에서 만들고, 노출 위치(홈 · NEW/DROPS 목록 · NEW/DROPS 상세(전체/선택) ·
+#   상품 상세(전체/상품명 키워드) · KPOP · SHOP · 전체 페이지)와 기간을 지정한다.
+#   페이지에는 작은 로더(mpPopupJs)만 주입되고, 띄울 팝업은 /api/popups 가 현재 페이지 기준으로 고른다.
+#   저장: site_settings 'popups' (JSON 목록, 덮어쓰기 직전 백업).
+POPUP_TARGETS = [('home', '홈'), ('drops_list', 'NEW/DROPS 목록'), ('drops_detail', 'NEW/DROPS 상세'),
+                 ('product', '상품 상세(판매 페이지)'), ('kpop', 'KPOP(음반) 목록'), ('shop', 'SHOP 목록'),
+                 ('all', '전체 페이지')]
+_POPUP_TKEYS = {k for k, _ in POPUP_TARGETS}
+_POPUP_MAX = 30
+
+
+def popups_all():
+    try:
+        r = one("SELECT value FROM site_settings WHERE key='popups'")
+        d = jload((r or {}).get('value'), [])
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _popup_clean(p, by=''):
+    p = p if isinstance(p, dict) else {}
+    title = str(p.get('title') or '').strip()[:120]
+    body = str(p.get('body') or '').replace('\r\n', '\n').strip()[:4000]
+    if not title and not body:
+        raise HTTPException(400, '제목이나 내용을 입력하세요')
+    tg = [t for t in (p.get('targets') or []) if t in _POPUP_TKEYS]
+    if not tg:
+        raise HTTPException(400, '노출 위치를 하나 이상 고르세요')
+
+    def _dt(v):
+        v = str(v or '').strip().replace(' ', 'T')[:16]
+        if not v: return ''
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}', v):
+            raise HTTPException(400, '기간 형식이 올바르지 않습니다 (YYYY-MM-DD HH:MM)')
+        return v
+    start, end = _dt(p.get('start')), _dt(p.get('end'))
+    if start and end and end <= start:
+        raise HTTPException(400, '종료 시각이 시작 시각보다 빨라요')
+    link = str(p.get('link_url') or '').strip()[:500]
+    if link and not re.match(r'^(https?://|/)', link):
+        raise HTTPException(400, '버튼 링크는 / 또는 https:// 로 시작해야 합니다')
+    img = str(p.get('image') or '').strip()[:500]
+    if img and not re.match(r'^(https?://|/)', img):
+        raise HTTPException(400, '이미지 주소는 / 또는 https:// 로 시작해야 합니다')
+    dismiss = p.get('dismiss') if p.get('dismiss') in ('today', 'week', 'forever', 'none') else 'today'
+    pid = str(p.get('id') or '') or secrets.token_hex(4)
+    return {'id': pid, 'on': bool(p.get('on')), 'title': title, 'body': body, 'image': img,
+            'link_url': link, 'link_label': str(p.get('link_label') or '').strip()[:30],
+            'targets': tg, 'drop_ids': [str(x) for x in (p.get('drop_ids') or []) if str(x).strip()][:50],
+            'product_kw': str(p.get('product_kw') or '').strip()[:60],
+            'start': start, 'end': end, 'dismiss': dismiss,
+            'order': int(p.get('order') or 0) if str(p.get('order') or '0').lstrip('-').isdigit() else 0,
+            'ver': str(p.get('ver') or ''), 'updated': now_iso(), 'by': by}
+
+
+def _popup_page(path, q):
+    """요청 경로 → (페이지 종류, 부가 키)"""
+    path = '/' + str(path or '').strip('/')
+    path = re.sub(r'^/(en|ja|zh)(?=/|$)', '', path) or '/'
+    if path in ('/', '/home', '/index', '/mapdal_home_mockup_v1'):
+        return 'home', ''
+    if path == '/new-drops':
+        return ('drops_detail', str(q.get('id') or '')) if q.get('id') else ('drops_list', '')
+    if path.startswith('/p/'):
+        return 'product', urllib.parse.unquote(path[3:])
+    if path == '/album-detail':
+        return 'product', 'k2g:' + str(q.get('uid') or '')
+    if path in ('/cart', '/checkout', '/checkout-global', '/order-complete', '/account', '/shipfee') or path.startswith('/shipfee/'):
+        return 'checkout', ''        # 결제·회원 흐름에는 어떤 팝업도 띄우지 않는다
+    if path == '/kpop':
+        return 'kpop', ''
+    if path == '/shop':
+        return 'shop', ''
+    return 'other', ''
+
+
+def popups_for(path, q, now=None):
+    now = (now or kst_now()).strftime('%Y-%m-%dT%H:%M')
+    kind, key = _popup_page(path, q)
+    pname = None
+    out = []
+    for p in popups_all():
+        if not p.get('on'):
+            continue
+        if p.get('start') and now < p['start']:
+            continue
+        if p.get('end') and now > p['end']:
+            continue
+        if kind == 'checkout':
+            continue
+        tg = set(p.get('targets') or [])
+        ok = 'all' in tg or kind in tg
+        if ok and kind == 'drops_detail' and 'all' not in tg and p.get('drop_ids'):
+            ok = key in p['drop_ids']
+        if ok and kind == 'product' and 'all' not in tg and p.get('product_kw'):
+            if pname is None:
+                pname = ''
+                try:
+                    if key.startswith('k2g:'):
+                        pname = ''            # 파트너 카탈로그 앨범은 상품명 키워드 대상 아님(전체 지정 시에만)
+                    else:
+                        r = one('SELECT %s AS name FROM products WHERE id=?' % (_state['pname'] or 'id'), (key,))
+                        pname = (r or {}).get('name') or ''
+                except Exception:
+                    pname = ''
+            kws = [k for k in re.split(r'[,\s]+', p['product_kw']) if k]
+            ok = any(k.lower() in pname.lower() for k in kws)
+        if ok:
+            out.append({k: p.get(k) for k in ('id', 'title', 'body', 'image', 'link_url', 'link_label', 'dismiss', 'order')}
+                       | {'ver': p.get('ver') or p.get('updated') or ''})
+    out.sort(key=lambda x: (x.get('order') or 0))
+    return out
+
+
+@admin_router.get('/api/popups')
+def api_popups_public(request: Request):
+    path = request.query_params.get('path', '/')
+    q = {k: request.query_params.get(k) for k in ('id', 'uid')}
+    return JSONResponse({'popups': popups_for(path, q)}, headers={'Cache-Control': 'no-store'})
+
+
+@admin_router.get('/admin/api/popups')
+def api_popups_list(request: Request):
+    a = get_actor(request); need(a, 0)
+    drops = [{'id': str(d.get('id')), 'title': d.get('title') or ''} for d in _drops_all() if isinstance(d, dict)]
+    return {'rows': popups_all(), 'targets': [{'k': k, 'v': v} for k, v in POPUP_TARGETS], 'drops': drops,
+            'now': kst_now().strftime('%Y-%m-%dT%H:%M')}
+
+
+@admin_router.post('/admin/api/popups/save')
+def api_popups_save(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '팝업 관리')
+    p = _popup_clean(body, a.get('name') or '')
+    cur = popups_all()
+    old = next((x for x in cur if x.get('id') == p['id']), None)
+    # 내용이 바뀌면 버전을 올려 '오늘 하루 보지 않기' 한 고객에게도 새 공지로 다시 보이게 한다
+    sig = json.dumps([p['title'], p['body'], p['image'], p['link_url']], ensure_ascii=False)
+    oldsig = json.dumps([(old or {}).get(k, '') for k in ('title', 'body', 'image', 'link_url')], ensure_ascii=False)
+    p['ver'] = (old or {}).get('ver') if old and sig == oldsig and (old or {}).get('ver') else secrets.token_hex(3)
+    if old:
+        cur = [p if x.get('id') == p['id'] else x for x in cur]
+    else:
+        if len(cur) >= _POPUP_MAX:
+            raise HTTPException(400, '팝업은 최대 %d개까지 만들 수 있습니다' % _POPUP_MAX)
+        cur.append(p)
+    _setting_put('popups', cur, a.get('name') or '')
+    audit(a, '팝업저장', p['id'], '%s · %s' % (p['title'][:40], 'ON' if p['on'] else 'OFF'))
+    return {'ok': True, 'row': p}
+
+
+@admin_router.post('/admin/api/popups/delete')
+def api_popups_delete(request: Request, body: dict = Body(...)):
+    a = get_actor(request); need(a, 2, '팝업 관리')
+    pid = str(body.get('id') or '')
+    cur = popups_all()
+    if not any(x.get('id') == pid for x in cur):
+        raise HTTPException(404, '팝업을 찾을 수 없습니다')
+    _setting_put('popups', [x for x in cur if x.get('id') != pid], a.get('name') or '')
+    audit(a, '팝업삭제', pid, '')
+    return {'ok': True}
+
+
+# 이세계아이돌 예약판매 보상 포인트 안내 — CS팀 확정 문안 그대로 (2026-10-21 대표 지시)
+_POPUP_SEED_ISEKAI = {
+    'id': 'isekai-point-1021', 'on': True,
+    'title': '[이세계아이돌 예약판매] 포인트 적립 안내',
+    'body': ('안녕하세요, 맵달SEOUL입니다.\n\n'
+             '이세계아이돌 음반 예약판매 이용 과정에서 불편을 겪으신 고객님들께 진심으로 사과드립니다.\n\n'
+             '고객님들께서 겪으신 불편에 대해 죄송한 마음을 담아,\n'
+             '아래와 같이 보상 포인트를 지급해 드릴 예정입니다.\n\n'
+             '■ 포인트 적립 안내\n'
+             '• 적립 대상: 예약판매 최종 결제 완료 고객 (2026년 11월 8일 기준)\n'
+             '• 적립 예정일: 2026년 11월 9일(월)\n'
+             '• 적립 혜택: 최종 구매 금액의 1% 포인트 적립\n'
+             '• 포인트 사용처: 적립된 포인트는 향후 진행되는 프로모션 응모 및 상품 구매 시에도 자유롭게 사용하실 수 있습니다.\n\n'
+             '앞으로 더 나은 서비스와 안정적인 구매 환경을 제공할 수 있도록 최선을 다하겠습니다.\n\n'
+             '감사합니다.\n'
+             '맵달SEOUL 드림'),
+    'image': '', 'link_url': '', 'link_label': '',
+    'targets': ['home', 'drops_list', 'drops_detail', 'product', 'kpop'],
+    'drop_ids': ['6'], 'product_kw': '이세계아이돌',
+    'start': '2026-10-21T00:00', 'end': '2026-11-09T23:59', 'dismiss': 'today', 'order': 0, 'ver': 'v1',
+    'updated': '2026-10-21T18:30:00', 'by': 'SYSTEM_SEED'}
+
+
+def _migrate_popup_seed():
+    """최초 1회만 — 이후 관리자가 수정·삭제해도 다시 만들지 않는다(마커)."""
+    if one("SELECT value FROM site_settings WHERE key='POPUP_SEED_ISEKAI_POINT_V1'"):
+        return
+    cur = popups_all()
+    if not any(x.get('id') == _POPUP_SEED_ISEKAI['id'] for x in cur):
+        cur.append(dict(_POPUP_SEED_ISEKAI))
+        _setting_put('popups', cur, 'SYSTEM_SEED')
+    run('INSERT INTO site_settings VALUES(?,?,?,?)', ('POPUP_SEED_ISEKAI_POINT_V1', '1', now_iso(), 'SYSTEM'))
+
+
+POPUP_SNIPPET = r'''<script id="mpPopupJs">(function(){
+if(window.__mpPop)return;window.__mpPop=1;
+var KEY='mp_pop_',now=Date.now();
+function hid(p){try{var v=localStorage.getItem(KEY+p.id+'_'+p.ver);if(!v)return false;if(v==='forever')return true;return +v>now}catch(e){return false}}
+function hide(p,mode){try{var t=new Date(),u;if(mode==='forever'){localStorage.setItem(KEY+p.id+'_'+p.ver,'forever');return}
+ if(mode==='week'){u=now+7*864e5}else{t.setHours(23,59,59,999);u=t.getTime()}localStorage.setItem(KEY+p.id+'_'+p.ver,String(u))}catch(e){}}
+function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function css(){if(document.getElementById('mpPopCss'))return;var s=document.createElement('style');s.id='mpPopCss';s.textContent=
+'.mp-pop-dim{position:fixed;inset:0;background:rgba(20,20,20,.55);z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:16px;animation:mpPopIn .18s ease-out}'+
+'.mp-pop{background:#F7F6F2;color:#141414;width:100%;max-width:440px;max-height:min(84vh,720px);display:flex;flex-direction:column;border-top:4px solid #E8332A;box-shadow:0 18px 50px rgba(0,0,0,.35);font-family:"IBM Plex Sans KR",system-ui,sans-serif}'+
+'.mp-pop-hd{padding:18px 20px 10px;font-weight:700;font-size:17px;line-height:1.4;letter-spacing:-.01em}'+
+'.mp-pop-bd{padding:0 20px 16px;overflow:auto;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:keep-all}'+
+'.mp-pop-bd img{display:block;width:100%;height:auto;margin:0 0 12px}'+
+'.mp-pop-cta{display:block;margin:0 20px 14px;padding:12px;background:#141414;color:#fff;text-align:center;font-weight:700;text-decoration:none;font-size:14px}'+
+'.mp-pop-ft{display:flex;border-top:1px solid #ddd8cc}.mp-pop-ft button{flex:1;padding:14px 10px;border:0;background:transparent;font:inherit;font-size:13.5px;cursor:pointer;color:#141414}'+
+'.mp-pop-ft button+button{border-left:1px solid #ddd8cc;font-weight:700}'+
+'.mp-pop-n{font-size:11px;color:#8a8577;font-weight:500;margin-left:6px}'+
+'@media(max-width:600px){.mp-pop-dim{align-items:flex-end;padding:0}.mp-pop{max-width:none;max-height:86vh}}'+
+'@keyframes mpPopIn{from{opacity:0}to{opacity:1}}';document.head.appendChild(s)}
+function show(list,i){if(i>=list.length)return;var p=list[i];css();
+ var d=document.createElement('div');d.className='mp-pop-dim';d.setAttribute('role','dialog');d.setAttribute('aria-modal','true');d.setAttribute('aria-label',p.title||'공지');
+ var lbl={today:'오늘 하루 보지 않기',week:'7일간 보지 않기',forever:'다시 보지 않기'}[p.dismiss];
+ d.innerHTML='<div class="mp-pop"><div class="mp-pop-hd">'+esc(p.title)+(list.length>1?'<span class="mp-pop-n">'+(i+1)+'/'+list.length+'</span>':'')+'</div>'+
+  '<div class="mp-pop-bd">'+(p.image?'<img src="'+esc(p.image)+'" alt="">':'')+esc(p.body)+'</div>'+
+  (p.link_url?'<a class="mp-pop-cta" href="'+esc(p.link_url)+'">'+esc(p.link_label||'자세히 보기')+'</a>':'')+
+  '<div class="mp-pop-ft">'+(lbl?'<button type="button" data-a="hide">'+lbl+'</button>':'')+'<button type="button" data-a="close">닫기</button></div></div>';
+ var prev=document.body.style.overflow;document.body.style.overflow='hidden';
+ function done(mode){if(mode)hide(p,mode);document.removeEventListener('keydown',kd);d.remove();document.body.style.overflow=prev;show(list,i+1)}
+ function kd(e){if(e.key==='Escape')done('')}
+ d.addEventListener('click',function(e){if(e.target===d)return done('');var a=e.target.getAttribute&&e.target.getAttribute('data-a');if(a==='hide')done(p.dismiss);else if(a==='close')done('')});
+ document.addEventListener('keydown',kd);document.body.appendChild(d);var c=d.querySelector('[data-a=close]');if(c)try{c.focus({preventScroll:true})}catch(e){}}
+function go(){var q=new URLSearchParams(location.search),u='/api/popups?path='+encodeURIComponent(location.pathname);
+ ['id','uid'].forEach(function(k){if(q.get(k))u+='&'+k+'='+encodeURIComponent(q.get(k))});
+ fetch(u,{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){var l=(d.popups||[]).filter(function(p){return !hid(p)});if(l.length)setTimeout(function(){show(l,0)},400)}).catch(function(){})}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();
+})();</script>'''
+
+
 def _inject_auth(html, path='', uid=None):
     html = _serve_k2g_from_db(html, path)
     html = _serve_det_emb(html, uid)
@@ -16087,6 +16375,7 @@ def _inject_auth(html, path='', uid=None):
     if 'mpDropInput' not in html: add += DROPINPUT_SNIPPET
     if 'mpDropRecover' not in html: add += ENTRYRECOVER_SNIPPET
     if 'mpFooter' not in html: add += footer_snippet()
+    if 'mpPopupJs' not in html: add += POPUP_SNIPPET            # 사이트 공지 팝업 (노출 판단은 /api/popups)
     if 'mpAnalytics' not in html: add += _analytics_snippet()
     if growth is not None:
         try: add += growth.body_snippet(html)     # 이벤트 버스(Meta·TikTok·카카오·Google Ads·자사 원장) + 동의 배너

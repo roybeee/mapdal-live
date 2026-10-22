@@ -1099,6 +1099,42 @@ def admin_page(request: Request):
 
 
 # ─────────────────────────── 원주문 취소 ↔ 배송비 결제 연동 ───────────────────────────
+def links_for_order(oid):
+    """원주문 ↔ 추가 배송비 결제 연결 (2026-10-22) — 주문 상세(관리자·마이페이지)에서 함께 보여준다.
+    원주문이면 그 주문이 묶인 청구와 배송비 결제(SF-)를, SF- 결제면 원주문 목록을 돌려준다. 없으면 None."""
+    oid = str(oid or '')
+    if not oid:
+        return None
+    av = _av()
+    try:
+        ensure()
+        if oid.startswith(SF_PREFIX):
+            r = av.one('SELECT items FROM orders WHERE order_id=?', (oid,))
+            cid = next((str(it.get('id'))[len(SF_ITEM):] for it in (av.jload((r or {}).get('items'), []) or [])
+                        if str((it or {}).get('id') or '').startswith(SF_ITEM)), '')
+            ch = av.one('SELECT * FROM ship_charges WHERE id=?', (cid,)) if cid else None
+        else:
+            ch = av.one('SELECT * FROM ship_charges WHERE order_ids LIKE ?', ('%"' + oid + '"%',))
+    except Exception:
+        return None
+    if not ch:
+        return None
+    pays = []
+    for r in av.rows("SELECT order_id, status, amount, paid_at, created, pay_method, receipt_url FROM orders "
+                     "WHERE order_id LIKE ? AND items LIKE ? ORDER BY created", (SF_PREFIX + '%', '%' + SF_ITEM + ch['id'] + '%')):
+        if r.get('status') not in ('PAID', 'CANCELLED'):
+            continue                                   # 결제창만 열고 끝낸 시도(PENDING·FAILED)는 표시하지 않음
+        pays.append({'order_id': r['order_id'], 'status': r.get('status'), 'amount': av.num(r.get('amount')),
+                     'paid_at': str(r.get('paid_at') or r.get('created') or '')[:16].replace('T', ' '),
+                     'method': r.get('pay_method') or '', 'receipt': r.get('receipt_url') or ''})
+    paid = [p for p in pays if p['status'] == 'PAID']
+    st = 'PAID' if paid else (ch.get('status') or 'OPEN')
+    label = {'PAID': '결제완료', 'OPEN': '미결제', 'UNPAID': '미결제', 'WAIVED': '청구 면제', 'CANCELLED': '청구 취소'}.get(st, st)
+    return {'charge_id': ch['id'], 'state': st, 'state_kr': label, 'charge_amount': av.num(ch.get('amount')),
+            'orders': _orders_of(ch), 'payments': pays, 'paid_amount': sum(p['amount'] for p in paid),
+            'created': str(ch.get('created') or '')[:16].replace('T', ' ')}
+
+
 def on_order_cancelled(actor, oid):
     """원주문이 취소(환불)된 직후 admin_v2._order_cancel_core 가 호출한다 — 실패해도 원주문 취소에는 영향 없음.
     · 미결제 청구: 청구액이 실시간으로 줄어든다(due_of) — 여기서 할 일 없음.

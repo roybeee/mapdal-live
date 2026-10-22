@@ -2341,6 +2341,14 @@ def _pay_log_view(r):
         return log, '주문 생성 후 결제창이 열리지 않았습니다 (모듈 로딩 실패·즉시 이탈 추정)'
     return log, '기록 없음 — 결제이력 기능 배포 이전 주문 (결제창 이탈 추정)'
 
+def _shipfee_links(oid):
+    try:
+        import shipfee as _sf
+        return _sf.links_for_order(oid)
+    except Exception:
+        return None
+
+
 @admin_router.get('/admin/api/orders/{oid}')
 def api_order_detail(oid: str, request: Request):
     a = get_actor(request); need(a, 0)
@@ -2392,6 +2400,7 @@ def api_order_detail(oid: str, request: Request):
             'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
             'shipped_at': (r.get('shipped_at') or '')[:16].replace('T', ' '),
             'can_confirm': can_confirm(r),
+            'shipfee': _shipfee_links(r['order_id']),
             'can_restore': bool(r.get('status') == 'CANCELLED' and ('vbank' in str(r.get('pay_method') or '').lower()) and '수동환불' not in str(r.get('admin_memo') or '')),
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID'),
             # 결제 당시 MID(TID 판별) — MID 교체 시 어느 상점관리자 소속 거래인지 즉시 식별.
@@ -5710,6 +5719,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
    ${o.pay_log.map(e=>`<tr><td class="mono">${esc(e.t)}</td><td><b>${esc(e.label)}</b></td><td>${esc(e.m||'')}</td></tr>`).join('')}</table></details>`:''}
  <table style="margin-bottom:12px"><tr><th>품목</th><th class="right">단가</th><th class="right">수량</th></tr>
  ${o.items.map(i=>`<tr><td>${esc(i.name)}${i.parts?`<div class="hint" style="margin-top:2px">└ 낱개 차감: ${esc(i.parts)}</div>`:''}</td><td class="right mono">${i.price?won(i.price):'-'}</td><td class="right mono">${i.qty}</td></tr>`).join('')}</table>
+ ${sfBlock(o)}
  ${can(1)?`<div class="kv"><b>처리상태</b><span><select id="mff">${Object.entries(FF).map(([k,v])=>`<option value="${k}" ${o.fulfill===k?'selected':''}>${v}</option>`).join('')}</select></span>
  <b>택배사</b><span><select id="mco" style="width:100%"><option value="">— 선택 —</option>${Object.entries(CO).map(([k,v])=>`<option value="${k}" ${o.courier===k?'selected':''}>${v}</option>`).join('')}</select></span>
  <b>송장번호</b><span><input id="mtr" value="${esc(o.tracking)}" style="width:100%"></span>
@@ -5864,6 +5874,13 @@ async function manualRefundDone(oid){
  const reason=prompt('취소 사유 (감사로그·결제이력에 기록)','수동환불(외부 처리)')||'수동환불(외부 처리)';
  try{const r=await cancelPost(oid,{reason,manual:true});
  toast('수동환불 완료처리 · 재고 복원');closeM();loadOrders(opage)}catch(e){alert(e.message)}}
+function sfBlock(o){const s=o.shipfee;if(!s)return '';const isSF=/^SF-/.test(o.order_id);
+ const pays=s.payments||[];const head=isSF?'원주문 (추가 배송비 청구 대상)':'추가 배송비 결제';
+ const stc=s.state==='PAID'?'PAID':(s.state==='WAIVED'||s.state==='CANCELLED'?'CANCELLED':'PENDING');
+ return `<div style="border:2px solid ${s.state==='PAID'?'#2e7d32':'#b58900'};padding:10px 12px;margin:-4px 0 12px;background:#fff">
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b style="font-size:13px">${head}</b><span class="st ${stc}">${esc(s.state_kr)}</span><span class="hint" style="display:inline">청구 ${won(s.charge_amount)} · ${esc(s.created)} 생성</span></div>
+ ${pays.length?`<table><tr><th>배송비 결제번호</th><th>결제일시</th><th>수단</th><th class="right">금액</th><th>상태</th><th></th></tr>${pays.map(p=>`<tr><td class="mono" style="font-size:11.5px">${esc(p.order_id)}</td><td class="mono">${esc(p.paid_at)}</td><td>${esc(p.method)}</td><td class="right mono">${won(p.amount)}</td><td><span class="st ${esc(p.status)}">${p.status==='PAID'?'결제완료':'취소(환불)'}</span></td><td>${p.order_id!==o.order_id?`<button class="btn sm ghost" onclick="openOrder('${esc(p.order_id)}')">보기</button>`:''}</td></tr>`).join('')}</table>`:'<div class="hint">아직 결제되지 않았습니다.</div>'}
+ <div class="hint" style="margin-top:6px">함께 청구된 주문: ${s.orders.map(x=>x===o.order_id?`<b class="mono">${esc(x)}</b>`:`<a href="#" class="mono" onclick="openOrder('${esc(x)}');return false">${esc(x)}</a>`).join(' · ')}</div></div>`}
 async function cancelPost(oid,b){try{return await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
  catch(e){if(!/구매확정/.test(e.message||''))throw e;if(prompt(e.message+'\n\n그래도 취소하려면 "강제취소" 를 입력하세요 (OWNER 전용 · 감사로그 기록)')!=='강제취소')throw new Error('취소하지 않았습니다');
   return await api('/admin/api/orders/'+encodeURIComponent(oid)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},b,{force:true}))})}}
@@ -11092,6 +11109,9 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
   (o.vbank.holder?'<br>예금주 '+esc(o.vbank.holder):'')+(o.vbank.due?'<br>입금기한 '+esc(vbDue(o.vbank.due)):'')+
   '<br>입금액 <b>'+won(o.amount)+'</b> — 입금 확인 즉시 자동으로 결제완료 처리됩니다.</div>':'')+
  '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+'</div>'+
+ (o.shipfee?'<div style="border:1px solid var(--line);padding:10px 12px;margin-top:10px;font-size:13px"><b>추가 배송비 결제</b>'+
+  o.shipfee.payments.map(p=>'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px"><span class="mono" style="font-size:11.5px">'+esc(p.order_id)+'</span><span>'+esc(p.paid_at)+'</span><b>'+won(p.amount)+'</b><span class="tagst '+(p.status==='PAID'?'s5':'s0')+'">'+(p.status==='PAID'?'결제완료':'환불')+'</span>'+(p.receipt?'<a class="b ghost" target="_blank" rel="noopener" href="'+esc(p.receipt)+'">영수증</a>':'')+'</div>').join('')+
+  (o.shipfee.orders.length>1?'<div class="hint" style="margin:6px 0 0">함께 청구된 주문: '+o.shipfee.orders.map(esc).join(' · ')+'</div>':'')+'</div>':'')+
  (o.confirmed_at?'<div class="hint" style="color:#2e7d32"><b>구매확정</b> '+esc(o.confirmed_at)+' — 확정된 주문은 환불·취소·교환·배송지 변경을 할 수 없습니다. 문의는 1:1 문의로 남겨 주세요.</div>'
   :o.can_confirm?'<div class="hint"><b>[구매확정]</b>을 누르면 구매가 확정됩니다. 구매확정 후에는 환불·취소·교환·배송지 변경을 할 수 없습니다.</div>':'')+
  (o.open_request?'<div class="hint" style="color:var(--red)">'+({cancel:'취소',return:'반품',exchange:'교환'}[o.open_request.rtype]||'')+' 요청이 '+esc(o.open_request.status)+' 상태입니다.</div>':'')+
@@ -18085,7 +18105,16 @@ def api_m_order_detail(oid: str, request: Request):
             'can_return': r.get('status') == 'PAID' and (r.get('fulfill') or '') in ('SHIPPED', 'DONE') and not r.get('confirmed_at'),
             'can_confirm': can_confirm(r),
             'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
+            'shipfee': _member_shipfee(oid),
             'open_request': dict(open_req) if open_req else None}
+
+
+def _member_shipfee(oid):
+    """마이페이지용 추가 배송비 결제 요약 — 결제완료·환불된 건만 (청구 링크·토큰은 노출하지 않음)."""
+    s = _shipfee_links(oid)
+    if not s or not s.get('payments'): return None
+    return {'payments': [{k: p[k] for k in ('order_id', 'status', 'amount', 'paid_at', 'method', 'receipt')} for p in s['payments']],
+            'orders': s.get('orders') or [], 'paid_amount': s.get('paid_amount') or 0}
 
 
 @admin_router.post('/api/member/orders/{oid}/confirm')

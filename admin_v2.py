@@ -9626,6 +9626,10 @@ header{position:sticky;top:0;z-index:100;background:var(--paper);border-bottom:1
 .util{display:flex;gap:20px;font-size:14px;font-weight:600;align-items:center}
 .util a{font-size:14px;font-weight:600}.util a:hover{color:var(--red)}
 .util .cart{background:var(--ink);color:#fff;border-radius:22px;padding:8px 17px;font-size:12.5px}
+nav.main{display:flex;gap:30px;margin:0 auto 0 44px;align-items:center}
+nav.main a.top{font-size:13.5px;font-weight:700;letter-spacing:.08em;color:var(--ink)}
+nav.main a.top:hover,nav.main a.top.on{color:var(--red)}nav.main a.top.drops{color:var(--red)}
+@media(max-width:1024px){nav.main{display:none}}
 .crumb{max-width:1440px;margin:0 auto;padding:18px 48px 0;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--steel)}
 .crumb a:hover{color:var(--red)}
 .pdp{max-width:1440px;margin:0 auto;padding:28px 48px 56px;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:48px;align-items:start}
@@ -9715,7 +9719,8 @@ max-width:1440px;margin:0 auto;padding:20px 48px;color:#5F5E58;line-height:1.9}
 </style></head><body>
 <header><div class="header-inner">
 <a class="logo" href="/home">MAPDAL<em>SEOUL</em></a>
-<div class="util"><a href="/shop">SHOP</a><a href="/account" id="mpAuth">로그인</a><a class="cart" href="/cart" id="cartBadge">CART</a></div>
+<nav class="main"><div><a class="top drops" href="/new-drops">NEW / DROPS</a></div><div><a class="top%(nav_kpop)s" href="/kpop">KPOP(음반)</a></div><div><a class="top%(nav_shop)s" href="/shop">SHOP</a></div><div><a class="top" href="/mapdal-seoul">MAPDAL SEOUL</a></div><div><a class="top" href="/support">SUPPORT</a></div></nav>
+<div class="util"><a href="/search">검색</a><a href="/account" id="mpAuth">로그인</a><a class="cart" href="/cart" id="cartBadge">CART</a></div>
 </div></header>
 <div class="crumb"><a href="/home">HOME</a> &gt; <a href="%(caturl)s">%(catlabel)s</a> &gt; <span style="color:var(--ink)">%(name)s</span></div>
 <div class="pdp">
@@ -10013,6 +10018,7 @@ def pdp(pid: str, request: Request):
         'og': ('<meta property="og:image" content="%s"><meta name="twitter:card" content="summary_large_image">' % h(_img_og)),
         'seo': seohtml,
         'caturl': h(_cu or '/shop'), 'catlabel': h(_cl or 'SHOP'),
+        'nav_kpop': ' on' if (_cu or '') == '/kpop' else '', 'nav_shop': ' on' if (_cu or '/shop') == '/shop' else '',
         'flavor': flavor, 'badges': badges_html, 'brand': h(brand_line),
         'benefits': benefits_html, 'viewers': viewers,
         'galhtml': galhtml, 'herostyle': _hero_style, 'detailhtml': detailhtml, 'inforows': inforows,
@@ -16718,6 +16724,7 @@ def _track_apply(html, path=''):
         if 'mpEcomJs' not in html: add += _ecom_snippet()
         if 'mpReviews' not in html and path.startswith('/p/'): add += _REVIEW_SNIPPET
         if 'mpPopupJs' not in html and path.startswith('/p/'): add += POPUP_SNIPPET   # 판매 페이지 공지 팝업
+        if 'mpMobNav' not in html and path.startswith('/p/'): add += MOBNAV_SNIPPET   # 모바일 상단 카테고리 바 (상단 메뉴 동일)
         i = html.lower().rfind('</body>')
         return (html[:i] + add + html[i:]) if i >= 0 else (html + add)
     except Exception:

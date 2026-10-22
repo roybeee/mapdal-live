@@ -350,12 +350,14 @@ app = FastAPI(title='MAPDAL SEOUL API v2', lifespan=lifespan)
 from fastapi.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+_PG_FRAMED = ('/inicis/close', '/inicis/return', '/inicis/mobile-return')
+
 @app.middleware('http')
 async def account_security_headers(req: Request, call_next):
     # 브라우저 교차 사이트 상태변경 요청을 차단한다. PG/OAuth 공급자 콜백은 예외다.
     # 이니시스 결제 콜백은 외부(PG 서버·결제창)에서 cross-site 로 들어오므로 CSRF 검사 제외.
     _PG_CALLBACKS = ('/inicis/return', '/inicis/mobile-return', '/inicis/mobile-noti',
-                     '/inicis/vbank-noti', '/auth/apple/callback')
+                     '/inicis/vbank-noti', '/inicis/close', '/auth/apple/callback')
     if req.method in ('POST','PUT','PATCH','DELETE') and req.url.path not in _PG_CALLBACKS:
         origin=(req.headers.get('origin') or '').rstrip('/')
         fetch_site=(req.headers.get('sec-fetch-site') or '').lower()
@@ -363,7 +365,11 @@ async def account_security_headers(req: Request, call_next):
             return JSONResponse({'detail':'허용되지 않은 요청 출처입니다'},status_code=403)
     resp=await call_next(req)
     resp.headers.setdefault('X-Content-Type-Options','nosniff')
-    resp.headers.setdefault('X-Frame-Options','DENY')
+    if req.url.path in _PG_FRAMED:
+        # 이니시스 결제창(레이어 iframe) 안에서 열리는 페이지 — DENY 면 [X] 닫기 시 '페이지를 표시할 수 없음'이 뜬다
+        resp.headers.setdefault('Content-Security-Policy', "frame-ancestors 'self' https://*.inicis.com")
+    else:
+        resp.headers.setdefault('X-Frame-Options','DENY')
     resp.headers.setdefault('Referrer-Policy','strict-origin-when-cross-origin')
     resp.headers.setdefault('Permissions-Policy','camera=(), microphone=(), geolocation=()')
     if req.url.path.startswith('/api/member') or req.url.path.startswith('/admin') or req.url.path=='/account':

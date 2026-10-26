@@ -9379,6 +9379,11 @@ def _pdp_meta_html(cat, badge=''):
                  ) % (head, hl, rest, detail)
     return bdgs, m['brand'], bens
 
+def _strip_ben_row(html, head):
+    """혜택 아코디언에서 제목(head)이 일치하는 행 1개를 제거."""
+    return re.sub(r'<div class="ben-row"><div class="bh"><h6>%s</h6>.*?<div class="bd">.*?</div></div>' % re.escape(head),
+                  '', html or '', flags=re.S)
+
 def _related_public_item(item):
     pid = str(item.get('id') or '')
     out = dict(item)
@@ -9933,6 +9938,13 @@ def pdp(pid: str, request: Request):
                + _jsonld(_seo_breadcrumb(_su, _sn, str(r.get('name') or '')[:60], canon)))
     # ── 카테고리별 메타 (뱃지·브랜드라인·혜택 아코디언) ──
     badges_html, brand_line, benefits_html = _pdp_meta_html(cat, r.get('badge'))
+    # 프로모션 상품(예약판매·사인회·영상통화·럭키드로우 등 = 쿠폰 적용 불가)은 '가입혜택 2,000P' 행 숨김
+    #   (2026-10-26 CS 요청 — 이세계아이돌 앨범 등. 판정은 [판매 규칙] 체크박스·자동판정과 동일)
+    try:
+        if (product_rules([{'id': pid}]).get(pid) or {}).get('coupon_ok') is False:
+            benefits_html = _strip_ben_row(benefits_html, '가입혜택')
+    except Exception:
+        pass
     # 카테고리별 flavor 태그 + 구매정보 탭 추가행
     _FLAVOR = {'album': 'ALBUM', 'md': 'OFFICIAL MD', 'kfood': 'K-FOOD',
                'apparel': 'APPAREL', 'living': 'LIFESTYLE'}

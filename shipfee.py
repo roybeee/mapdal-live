@@ -506,7 +506,7 @@ def api_list(request: Request):
     summ['dup_paid'] = sum(r['dup_paid'] for r in rs)
     summ['unsent'] = len([r for r in rs if r['state'] == 'UNPAID' and not r['sent_count']])
     summ['unmailed'] = len([r for r in rs if r['state'] == 'UNPAID' and r['email'] and not r['mail_count']])
-    summ['refund_flag'] = len([r for r in rs if '부분환불 필요' in (r['note'] or '')])
+    summ['refund_flag'] = len([r for r in rs if '환불 필요' in (r['note'] or '')])
     bt = {}
     for r in rs:
         b = bt.setdefault(r['batch'], {'name': r['batch'], 'n': 0, 'unpaid': 0, 'unsent': 0, 'first': r['created']})
@@ -697,6 +697,67 @@ def api_status(request: Request, body: dict = Body(...)):
     _av().run('UPDATE ship_charges SET status=?, note=? WHERE id=?', (st, note, ch['id']))
     _av().audit(a, '추가배송비상태', ch['id'], '%s → %s %s' % (ch.get('status'), st, note))
     return {'ok': True}
+
+
+# ─────────────────────────── 무통장입금 완료 처리 (2026-10-26) ───────────────────────────
+#   링크 결제 대신 법인계좌로 직접 입금한 고객 — 관리자가 통장 입금을 확인한 뒤 [무통장입금 완료]를 누른다.
+#   카드·이체 결제와 똑같이 SF 주문(PAID · 결제수단 '무통장입금')을 만들어 둔다 → 결제 현황·주문 상세·마이페이지·
+#   매출 집계·원주문 취소 연동이 모두 기존 그대로 동작. 잘못 눌렀으면 그 SF 주문을 [수동환불 완료처리]로 취소하면
+#   청구가 다시 '미결제'로 돌아간다.
+BANK_METHOD = '무통장입금'
+_BANK_LOCK = threading.Lock()
+
+
+@shipfee_router.post('/admin/api/shipfee/bank-paid')
+def api_bank_paid(request: Request, body: dict = Body(...)):
+    a = _actor(request, 2, '추가 배송비 무통장입금 확인')        # MANAGER 이상
+    ensure()
+    av, A = _av(), _app()
+    with _BANK_LOCK:                                              # 더블클릭·동시 처리로 2건 생기는 것 방지
+        ch = av.one('SELECT * FROM ship_charges WHERE id=?', (str(body.get('id') or ''),))
+        if not ch:
+            raise HTTPException(404, '청구를 찾을 수 없습니다')
+        oinfo = _orders_info(_orders_of(ch))
+        due = due_of(ch, oinfo)
+        st = _state(ch, _sf_map().get(ch['id']), due)
+        if st == 'PAID':
+            raise HTTPException(409, '이미 결제완료된 청구입니다')
+        if st not in ('UNPAID', 'WAIVED'):
+            raise HTTPException(409, '원주문이 취소되었거나 청구가 취소된 건은 입금 처리할 수 없습니다')
+        try:
+            amount = int(str(body.get('amount') if body.get('amount') not in (None, '') else due).replace(',', ''))
+        except Exception:
+            raise HTTPException(400, '입금액은 숫자로 입력하세요')
+        if not (0 < amount <= 100000):
+            raise HTTPException(400, '입금액이 올바르지 않습니다')
+        payer = re.sub(r'\s+', ' ', str(body.get('payer') or '')).strip()[:30]
+        memo = re.sub(r'\s+', ' ', str(body.get('note') or '')).strip()[:100]
+        oids = _orders_of(ch)
+        oid = '%s%s-%s' % (SF_PREFIX, A.kst_naive().strftime('%Y%m%d'), secrets.token_hex(3).upper())
+        name = '[추가 배송비] ' + ', '.join(oids[:2]) + (' 외 %d건' % (len(oids) - 2) if len(oids) > 2 else '')
+        info = '무통장입금 확인 · 입금자 %s · %s원%s · 확인 %s' % (payer or (ch.get('name') or '-'), format(amount, ','),
+                                                         (' · ' + memo) if memo else '', a.get('name') or '')
+        buyer = {'name': ch.get('name') or '고객', 'phone': ch.get('phone') or '', 'email': ch.get('email') or '',
+                 'memo': '추가 배송비 청구 · 원주문 ' + ' '.join(oids)}
+        items = [{'id': SF_ITEM + ch['id'], 'n': name[:120], 'p': amount, 'q': 1}]
+        now = A.kst_iso()
+        with A.db() as c:
+            c.exec('INSERT INTO orders(order_id,created,status,amount,buyer,items,ship_method,customer_id,member_id,contact_phone_norm) '
+                   'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                   (oid, now, 'PAID', amount, json.dumps(buyer, ensure_ascii=False),
+                    json.dumps(items, ensure_ascii=False), 'none', None, None, ch.get('phone') or None))
+        try:
+            av.run("UPDATE orders SET pay_method=?, paid_at=?, fulfill='DONE', admin_memo=? WHERE order_id=?",
+                   (BANK_METHOD, now, ('%s · 원주문 %s' % (info, ' '.join(oids)))[:500], oid))
+        except Exception:
+            av.run('UPDATE orders SET pay_method=? WHERE order_id=?', (BANK_METHOD, oid))
+        if (ch.get('status') or 'OPEN') == 'WAIVED':                # 면제로 처리해 뒀던 입금 고객 → 결제완료로 정정
+            av.run("UPDATE ship_charges SET status='OPEN' WHERE id=?", (ch['id'],))
+        av.run('UPDATE ship_charges SET note=? WHERE id=?', (info[:200], ch['id']))
+    try: A._pay_log(oid, 'PAID', info)
+    except Exception: pass
+    av.audit(a, '추가배송비무통장입금', ch['id'], '%s · %s' % (oid, info))
+    return {'ok': True, 'order_id': oid, 'amount': amount, 'due': due}
 
 
 # 안내문 — 대표 제공 원문 그대로(2026-10-20 20:00). '링크' 자리에만 고객 전용 결제 링크를 넣는다.
@@ -1145,7 +1206,7 @@ function draw(){const f=$('#fst').value,q=($('#q').value||'').trim().toLowerCase
  <td><b>${won(r.state==='UNPAID'||r.state==='VOID'?r.due:r.amount)}</b>${r.due<r.amount&&r.state!=='PAID'?`<div class="hint" style="text-decoration:line-through">${won(r.amount)}</div>`:''}${r.orders.length>r.shipments&&r.shipments?`<div class="hint">주문 ${r.orders.length}건 · 배송지 ${r.shipments}곳</div>`:''}${r.cancelled_orders.length?`<div class="hint" style="color:#B71F18">취소 ${r.cancelled_orders.length}건</div>`:''}</td><td>${r.paid_order?`<div class="mono">${esc(r.paid_order)}</div><div class="hint">${esc(r.paid_at)} ${esc(r.paid_method)}</div>`:''}</td>
  <td class="hint">${r.sent_count?esc(r.sent_at)+' ('+r.sent_count+'회)':'미발송'}</td><td class="hint">${r.email?(r.mail_count?esc(r.mail_at)+' ('+r.mail_count+'회)':'미발송'):'-'}</td><td class="hint">${r.views?r.views+'회<br>'+esc(r.view_at):'-'}</td>
  <td><button class="sm g" onclick="cp('${esc(r.link)}')">복사</button></td>
- <td>${r.state==='UNPAID'?`<button class="sm g" onclick="st('${r.id}','WAIVED')">면제</button> <button class="sm g" onclick="send1('${r.id}')">문자</button>`:''}${r.state==='WAIVED'||r.state==='CANCELLED'?`<button class="sm g" onclick="st('${r.id}','OPEN')">재청구</button>`:''}${r.note?`<div class="hint">${esc(r.note)}</div>`:''}</td></tr>`).join('')||'<tr><td colspan="10" class="hint" style="padding:30px;text-align:center">청구 내역이 없습니다 — 위 [대상 미리보기] 후 [청구 생성]</td></tr>'}
+ <td>${r.state==='UNPAID'||r.state==='WAIVED'?`<button class="sm" style="background:#0a7d38" onclick="bank('${r.id}')">무통장입금 완료</button> `:''}${r.state==='UNPAID'?`<button class="sm g" onclick="st('${r.id}','WAIVED')">면제</button> <button class="sm g" onclick="send1('${r.id}')">문자</button>`:''}${r.state==='WAIVED'||r.state==='CANCELLED'?`<button class="sm g" onclick="st('${r.id}','OPEN')">재청구</button>`:''}${r.note?`<div class="hint">${esc(r.note)}</div>`:''}</td></tr>`).join('')||'<tr><td colspan="10" class="hint" style="padding:30px;text-align:center">청구 내역이 없습니다 — 위 [대상 미리보기] 후 [청구 생성]</td></tr>'}
 let _genBusy=false;
 async function gen(dry){if(_genBusy)return;_genBusy=true;document.querySelectorAll('.bar button').forEach(b=>{if(/청구 생성|대상 미리보기/.test(b.textContent))b.disabled=true});
  try{await gen2(dry)}finally{_genBusy=false;document.querySelectorAll('.bar button').forEach(b=>b.disabled=false)}}
@@ -1166,6 +1227,12 @@ async function cancelOverdue(){try{const pv=await post('/admin/api/shipfee/cance
  if(c!=='일괄취소'){if(c!==null)toast('확인 문구가 일치하지 않습니다');return}
  const d=await post('/admin/api/shipfee/cancel-overdue',{preview:false,confirm:c});toast(`${d.queued}건 취소 진행 중 — 잠시 후 새로고침`);setTimeout(load,8000)}catch(e){toast(e.message)}}
 async function send1(id){if(!confirm('이 고객에게 안내 문자를 발송할까요?'))return;try{const d=await post('/admin/api/shipfee/send',{ids:[id]});toast(d.queued?'발송 시작':'발송 대상 아님');setTimeout(load,3000)}catch(e){toast(e.message)}}
+async function bank(id){const r=D.rows.find(x=>x.id===id);if(!r)return;
+ const amt=prompt(`[무통장입금 완료] ${r.name} (${r.phone})\n통장에 입금된 금액을 확인해 입력하세요.\n청구액: ${won(r.due)}`,String(r.due||''));if(amt===null)return;
+ const payer=prompt('입금자명 (주문자명과 다르면 꼭 입력)',r.name||'');if(payer===null)return;
+ const note=prompt('메모 (선택 · 예: 10/21 신한 입금)','');if(note===null)return;
+ if(!confirm(`${r.name} 고객 추가 배송비 ${won(Number(String(amt).replace(/,/g,'')))} 무통장입금 완료로 처리합니다.\n입금자: ${payer||'-'}\n\n진행할까요?`))return;
+ try{const d=await post('/admin/api/shipfee/bank-paid',{id,amount:amt,payer,note});toast(`결제완료 처리 — ${d.order_id}`);load()}catch(e){toast(e.message)}}
 async function st(id,s){const note=s==='WAIVED'?prompt('면제 사유 (선택)')||'':'';if(s==='WAIVED'&&note===null)return;
  try{await post('/admin/api/shipfee/status',{id,status:s,note});toast('변경했습니다');load()}catch(e){toast(e.message)}}
 function cp(u){(navigator.clipboard?navigator.clipboard.writeText(u):Promise.reject()).then(()=>toast('링크를 복사했습니다')).catch(()=>prompt('링크',u))}
@@ -1259,6 +1326,12 @@ def on_order_cancelled(actor, oid):
         for p in paid:
             r = av.one('SELECT * FROM orders WHERE order_id=?', (p['order_id'],))
             if not r or r.get('status') == 'CANCELLED':
+                continue
+            if (r.get('pay_method') or '') == BANK_METHOD:   # 무통장입금 — PG 환불 불가, 계좌 송금환불 필요
+                msg = '무통장입금 배송비 환불 필요 %s원(%s) — 고객 계좌로 송금 후 주문 상세 [수동환불 완료처리]' % (
+                    format(p['amount'], ','), p['order_id'])
+                av.run('UPDATE ship_charges SET note=? WHERE id=?', (msg[:200], ch['id']))
+                av.audit(actor, '추가배송비환불필요', ch['id'], msg[:200])
                 continue
             try:
                 av._order_cancel_core(actor, r, '원주문 %s 취소에 따른 추가 배송비 환불' % oid)

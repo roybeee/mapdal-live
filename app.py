@@ -352,6 +352,13 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 _PG_FRAMED = ('/inicis/close', '/inicis/return', '/inicis/mobile-return')
 
+# 검색 노출 금지 경로 (2026-10-26 Search Console '색인이 생성되었으나 robots.txt에 의해 차단됨' 해결)
+#   robots.txt 로 막으면 구글이 noindex 를 읽지 못해 링크만으로 색인된다 → robots 차단을 풀고 헤더로 noindex.
+#   /admin·/api·/auth 등 시스템 경로는 robots 차단도 유지(크롤 예산), 헤더는 이중 안전장치.
+_NOINDEX_RE = re.compile(
+    r'^/(?:(?:en|ja|zh)/)?(?:cart|checkout(?:-global)?|order-complete|account|search|visit|shipfee)(?:\.html)?(?:/|$)'
+    r'|^/(?:admin|api|auth|hero-admin|i18n)(?:/|$)')
+
 @app.middleware('http')
 async def account_security_headers(req: Request, call_next):
     # 브라우저 교차 사이트 상태변경 요청을 차단한다. PG/OAuth 공급자 콜백은 예외다.
@@ -372,6 +379,8 @@ async def account_security_headers(req: Request, call_next):
         resp.headers.setdefault('X-Frame-Options','DENY')
     resp.headers.setdefault('Referrer-Policy','strict-origin-when-cross-origin')
     resp.headers.setdefault('Permissions-Policy','camera=(), microphone=(), geolocation=()')
+    if _NOINDEX_RE.match(req.url.path):
+        resp.headers.setdefault('X-Robots-Tag','noindex, nofollow')
     if req.url.path.startswith('/api/member') or req.url.path.startswith('/admin') or req.url.path=='/account':
         resp.headers.setdefault('Cache-Control','no-store')
     return resp

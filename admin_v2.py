@@ -16278,29 +16278,8 @@ Allow: /
 Disallow: /admin
 Disallow: /api/
 Disallow: /auth/
-Disallow: /cart
-Disallow: /checkout
-Disallow: /order-complete
-Disallow: /account
-Disallow: /search
 Disallow: /hero-admin
-Disallow: /visit
 Disallow: /i18n/
-Disallow: /en/cart
-Disallow: /en/checkout
-Disallow: /en/order-complete
-Disallow: /en/account
-Disallow: /en/search
-Disallow: /ja/cart
-Disallow: /ja/checkout
-Disallow: /ja/order-complete
-Disallow: /ja/account
-Disallow: /ja/search
-Disallow: /zh/cart
-Disallow: /zh/checkout
-Disallow: /zh/order-complete
-Disallow: /zh/account
-Disallow: /zh/search
 
 Sitemap: %s/sitemap.xml
 ''' % SITE_ORIGIN

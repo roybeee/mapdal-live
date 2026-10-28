@@ -5440,6 +5440,12 @@ a.btn{display:inline-block;font:inherit;font-weight:700;padding:4px 9px;font-siz
   <div class="hint" style="margin-bottom:10px">2026-11-09 09:00(한국시간) 기준 결제완료 상태인 이세계아이돌 [Across Dimensions] 주문에 1%를 일괄 적립합니다. 그 시각이 지나면 시스템이 10분 안에 자동으로 1회 지급하며, 기존 구매 적립과는 별개로 추가 지급됩니다. 대상금액 = 이세계아이돌 상품 금액 − 쿠폰 할인 안분(배송비 제외), 원 단위 절사. 비회원 주문은 고객 프로필에 적립되어 회원 연결 시 함께 옮겨집니다. 지급 후 취소·반품되면 보상 적립도 회수됩니다.</div>
   <div id="compbox" class="loading">불러오는 중…</div></div></section>
 <section id="t-cs" style="display:none">
+  <div class="panel" id="csrangebar"><h3>기간 지정 <span class="tag">취소·반품·교환 요청 · 1:1 문의 · 상품 Q&amp;A · 문의 검색에 모두 적용</span></h3>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+   <input type="date" id="csfrom" onchange="csRangeChanged()" style="padding:7px 8px"> <span>~</span> <input type="date" id="csto" onchange="csRangeChanged()" style="padding:7px 8px">
+   <span style="width:6px"></span>
+   <button class="btn sm ghost" data-csr="today" onclick="csRangeSet('today')">오늘</button><button class="btn sm ghost" data-csr="yday" onclick="csRangeSet('yday')">어제</button><button class="btn sm ghost" data-csr="d7" onclick="csRangeSet('d7')">최근 7일</button><button class="btn sm ghost" data-csr="d30" onclick="csRangeSet('d30')">최근 30일</button><button class="btn sm ghost" data-csr="month" onclick="csRangeSet('month')">이번 달</button><button class="btn sm ghost" data-csr="all" onclick="csRangeSet('all')">전체 기간</button></div>
+  <div id="csrangeinfo" class="hint" style="margin-top:6px">날짜를 하나만 고르면 그날 하루만 봅니다. 접수 일시(한국시간) 기준입니다.</div></div>
   <div class="panel"><h3>문의 검색 <span class="tag">취소·반품·교환 요청 · 1:1 문의 · 상품 Q&amp;A 전체</span></h3>
   <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
    <input id="csq" placeholder="예) 어제 배송비 때문에 취소한 사람 · 김민서 · MD-20261019-E23291 · 포카 안 왔다는 문의 · 미답변 입금" style="flex:1;min-width:260px;padding:9px 10px" onkeydown="if(event.key==='Enter'&&!event.isComposing)csSearch()">
@@ -7182,7 +7188,7 @@ async function saveSeo(){try{
   body:JSON.stringify({naver:$('#seonaver').value,google:$('#seogoogle').value,desc:$('#seodesc').value})});
  toast('저장 완료 — 소유확인 메타가 전 페이지에 반영되었습니다');loadSeo()}catch(e){toast(e.message)}}
 
-async function loadCS(){try{csqSugDraw();const d=await api('/admin/api/cs');
+async function loadCS(){const seq=++_csLoadSeq;try{csqSugDraw();const rq=csRangeQS();const d=await api('/admin/api/cs'+(rq?'?'+rq:''));if(seq!==_csLoadSeq)return;csRangeInfo(d);
  window._CSINQ={};(d.inq||[]).forEach(q=>{_CSINQ[q.id]=q});/*mpShipAddrEdit — 배송지 변경 모달의 원문 참조·자동 입력용*/
  const stag=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':(v==='거절'||v==='고객삭제')?'CANCELLED':'PENDING')+'">'+esc(v)+'</span>';
  $('#csreq').innerHTML=d.reqs.length?`<table><tr><th>일시</th><th>유형</th><th>주문번호</th><th>회원</th><th>사유</th><th>상태</th><th></th></tr>
@@ -7252,14 +7258,29 @@ function puPreview(){const f=puForm('');const b=document.createElement('div');b.
  ${f.link_url?`<div style="margin:0 20px 14px;padding:12px;background:#141414;color:#fff;text-align:center;font-weight:700">${esc(f.link_label||'자세히 보기')}</div>`:''}
  <div style="display:flex;border-top:1px solid #ddd8cc">${f.dismiss!=='none'?`<div style="flex:1;padding:14px;text-align:center;font-size:13.5px">${esc((PU_DISMISS.find(x=>x[0]===f.dismiss)||['',''])[1])}</div>`:''}<div style="flex:1;padding:14px;text-align:center;font-weight:700;border-left:1px solid #ddd8cc;font-size:13.5px">닫기</div></div></div>`;
  b.onclick=()=>b.remove();document.body.appendChild(b)}
+/*mpCsDateRange — CS 기간 지정 (2026-10-28) · 요청·1:1·Q&A 목록과 검색에 공통 적용*/
+let _csLoadSeq=0;
+function csKstDay(off){return new Date(Date.now()+9*3600e3+(off||0)*864e5).toISOString().slice(0,10)}
+function csRangeQS(){const f=($('#csfrom')||{}).value||'',t=($('#csto')||{}).value||'';return(f||t)?'from='+encodeURIComponent(f)+'&to='+encodeURIComponent(t):''}
+function csRangeSet(k){const t=csKstDay(0);let a='',b='';
+ if(k==='today'){a=b=t}else if(k==='yday'){a=b=csKstDay(-1)}else if(k==='d7'){a=csKstDay(-6);b=t}else if(k==='d30'){a=csKstDay(-29);b=t}else if(k==='month'){a=t.slice(0,8)+'01';b=t}
+ $('#csfrom').value=a;$('#csto').value=b;csRangeChanged(k)}
+function csRangeChanged(k){const f=$('#csfrom').value,t=$('#csto').value;
+ if(f&&t&&f>t){$('#csfrom').value=t;$('#csto').value=f}
+ document.querySelectorAll('#csrangebar [data-csr]').forEach(b=>b.classList.toggle('ghost',b.dataset.csr!==(k||'')));
+ loadCS();if(($('#csq').value||'').trim())csSearch(true)}
+function csRangeInfo(d){const el=$('#csrangeinfo');if(!el)return;const r=d.range||{};
+ const live=(d.inq||[]).filter(q=>q.status!=='고객삭제').length;
+ el.innerHTML=r.from?`<b>${esc(r.from)}${r.to&&r.to!==r.from?' ~ '+esc(r.to):''}</b> 접수분 — 취소·반품·교환 요청 <b>${d.reqs.length}</b>건 · 1:1 문의 <b>${live}</b>건 · 상품 Q&amp;A <b>${d.pqna.length}</b>건`
+  :'전체 기간 — 최근 요청 100건 · 1:1 문의 1,000건 · Q&amp;A 100건까지 표시됩니다. 오래된 문의는 날짜를 지정해 보세요. (접수 일시·한국시간 기준, 날짜를 하나만 고르면 그날 하루)'}
 /*mpCsSearch — CS 통합·자연어 검색 (2026-10-21)*/
 const CSQ_SUG=['오늘 들어온 문의','미답변 1:1','입금했는데 취소됐다는 고객','배송비 때문에 취소','포카 하자','주소 변경','중복결제 환불','미처리 취소 요청'];
 function csqSugDraw(){const el=$('#csqsug');if(el&&!el.innerHTML)el.innerHTML=CSQ_SUG.map(t=>`<button class="btn sm ghost" onclick="$('#csq').value=this.textContent;csSearch()">${esc(t)}</button>`).join('')}
 function csHL(text,terms){let h=esc(text||'');(terms||[]).filter(t=>t&&t.length>=1&&!/[<>&"']/.test(t)).forEach(t=>{const pat=[...t].map(c=>c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('\\s*');try{h=h.replace(new RegExp('('+pat+')(?![^<]*>)','gi'),'<mark style="background:#FFE58F;padding:0 1px">$1</mark>')}catch(_){}});return h}
 let _csqSeq=0;
-async function csSearch(){const q=($('#csq').value||'').trim();if(!q){toast('검색어를 입력하세요');return}
+async function csSearch(auto){const q=($('#csq').value||'').trim();const rq=csRangeQS();if(!q&&!rq){if(!auto)toast('검색어를 입력하세요');$('#csqres').innerHTML='';return}
  const seq=++_csqSeq;$('#csqres').innerHTML='<div class="loading">검색 중…</div>';
- try{const d=await api('/admin/api/cs/search?q='+encodeURIComponent(q)+'&kind='+encodeURIComponent($('#csqk').value||''));if(seq!==_csqSeq)return;
+ try{const d=await api('/admin/api/cs/search?q='+encodeURIComponent(q)+'&kind='+encodeURIComponent($('#csqk').value||'')+(rq?'&'+rq:''));if(seq!==_csqSeq)return;
   const kb={req:['요청','#E8332A'],inq:['1:1','#141414'],pqna:['Q&A','#6b5bd2']};
   const st=v=>'<span class="st '+(v==='완료'||v==='답변완료'?'PAID':(v==='거절'||v==='고객삭제'||v==='철회')?'CANCELLED':'PENDING')+'">'+esc(v||'-')+'</span>';
   const chips=d.labels.length?d.labels.map(l=>`<span style="display:inline-block;border:1px solid #ddd;border-radius:12px;padding:2px 8px;margin:2px 4px 2px 0;font-size:11.5px"><b>${esc(l.k)}</b> ${esc(l.v)}</span>`).join(''):'<span class="hint" style="display:inline">해석된 조건 없음</span>';
@@ -17108,19 +17129,27 @@ def api_cs(request: Request):
     각 문의/Q&A에 고객계정 id(cid)와 회원번호(cno)를 함께 내려준다. 문의 저장 시점에
     customer_id 가 비어 있던 과거 행은 members.customer_id 로 보강(COALESCE)한다."""
     a = get_actor(request); need(a, 0)
+    lo, hi = cs_date_range(request.query_params.get('from'), request.query_params.get('to'))
+    def _w(al):   # mpCsDateRange — 기간 지정 시 created(KST 텍스트) 기준 [시작일 00:00, 종료일+1 00:00)
+        if not lo: return '', ()
+        return ' WHERE %s.created >= ? AND %s.created < ?' % (al, al), (lo, hi)
+    lim_inq, lim_small = (3000, 3000) if lo else (1000, 100)
+    wq, pa = _w('q')
     inq = rows('SELECT q.*, m.name AS mname, m.email, '
                'COALESCE(q.customer_id, m.customer_id) AS cid, c.customer_no AS cno '
                'FROM member_inquiries q LEFT JOIN members m ON m.id=q.member_id '
-               'LEFT JOIN customer_profiles c ON c.id=COALESCE(q.customer_id, m.customer_id) '
-               'ORDER BY q.created DESC LIMIT 1000')
+               'LEFT JOIN customer_profiles c ON c.id=COALESCE(q.customer_id, m.customer_id)'
+               + wq + ' ORDER BY q.created DESC LIMIT %d' % lim_inq, pa)
     nm = _state['pname'] or 'id'
     pq = rows('SELECT q.*, m.name AS mname, p.%s AS pname, '
               'COALESCE(q.customer_id, m.customer_id) AS cid, c.customer_no AS cno '
               'FROM member_pqna q LEFT JOIN members m ON m.id=q.member_id '
               'LEFT JOIN products p ON p.id=q.product_id '
-              'LEFT JOIN customer_profiles c ON c.id=COALESCE(q.customer_id, m.customer_id) '
-              'ORDER BY q.created DESC LIMIT 100' % nm)
-    rq = rows('SELECT r.*, m.name AS mname, m.phone AS mphone FROM member_requests r LEFT JOIN members m ON m.id=r.member_id ORDER BY r.created DESC LIMIT 100')
+              'LEFT JOIN customer_profiles c ON c.id=COALESCE(q.customer_id, m.customer_id)' % nm
+              + wq + ' ORDER BY q.created DESC LIMIT %d' % lim_small, pa)
+    wr, pr = _w('r')
+    rq = rows('SELECT r.*, m.name AS mname, m.phone AS mphone FROM member_requests r LEFT JOIN members m ON m.id=r.member_id'
+              + wr + ' ORDER BY r.created DESC LIMIT %d' % lim_small, pr)
     krt = {'cancel': '취소', 'return': '반품', 'exchange': '교환'}
     return {'inq': [{'id': r['id'], 'title': r['title'], 'body': r['body'], 'order_id': r.get('order_id') or '',
                      'mname': r.get('mname') or '', 'email': r.get('email') or '',
@@ -17138,7 +17167,30 @@ def api_cs(request: Request):
             'reqs': [{'id': r['id'], 'order_id': r['order_id'], 'rtype': krt.get(r['rtype'], r['rtype']),
                       'reason': r['reason'], 'mname': r.get('mname') or '', 'mphone': r.get('mphone') or '',
                       'created': (r['created'] or '')[:16].replace('T', ' '), 'status': r['status'],
-                      'memo': r.get('admin_memo') or ''} for r in rq]}
+                      'memo': r.get('admin_memo') or ''} for r in rq],
+            'range': {'from': lo[:10] if lo else '', 'to': cs_range_last_day(hi) if lo else ''}}
+
+
+def cs_date_range(d_from, d_to):
+    """관리자 CS 기간 지정 — 'YYYY-MM-DD' 두 개 → (시작 'YYYY-MM-DDT00:00:00', 종료일 다음날 00:00) 반열린 구간.
+    한쪽만 주면 그 날 하루. 순서가 뒤집혀 있으면 바로잡는다. 형식이 틀리면 400.
+    (PG 텍스트 비교에서 '<= 종료일' 은 같은 날 시각이 빠지므로 반드시 '< 다음날' — learnings)"""
+    import datetime as _d
+    def p(v):
+        v = str(v or '').strip()[:10]
+        if not v: return None
+        try: return _d.date.fromisoformat(v)
+        except ValueError: raise HTTPException(400, '날짜 형식이 올바르지 않습니다 (YYYY-MM-DD)')
+    a, b = p(d_from), p(d_to)
+    if not a and not b: return None, None
+    a = a or b; b = b or a
+    if a > b: a, b = b, a
+    return a.isoformat() + 'T00:00:00', (b + _d.timedelta(days=1)).isoformat() + 'T00:00:00'
+
+
+def cs_range_last_day(hi):
+    import datetime as _d
+    return (_d.date.fromisoformat(hi[:10]) - _d.timedelta(days=1)).isoformat()
 
 # ── CS 통합 검색 (2026-10-21) — 취소·반품·교환 요청 · 1:1 문의 · 상품 Q&A ─────────────
 #   자연어 질의를 규칙으로 해석한다(외부 AI 호출 없음 · 응답 즉시 · 비용 0).
@@ -17405,8 +17457,13 @@ _CS_OPEN = {'접수', '처리중', '대기', ''}
 _CS_DONE = {'완료', '답변완료', '거절'}
 
 
-def cs_search(q, kind='', limit=200, now=None, docs=None):
+def cs_search(q, kind='', limit=200, now=None, docs=None, date_range=None):
     f = cs_parse_query(q, now)
+    if date_range and date_range[0]:   # 화면에서 지정한 기간이 문장 속 기간보다 우선
+        import datetime as _d
+        f['from'] = _d.date.fromisoformat(date_range[0][:10])
+        f['to'] = _d.date.fromisoformat(date_range[1][:10]) - _d.timedelta(days=1)
+        f['labels'] = [l for l in f['labels'] if l[0] != '기간'] + [('기간', f['from'].isoformat() + (' ~ ' + f['to'].isoformat() if f['to'] != f['from'] else ''))]
     if kind in ('req', 'inq', 'pqna'):
         f['kinds'] = {kind}
     docs = _cs_docs() if docs is None else docs
@@ -17478,9 +17535,10 @@ def api_cs_search(request: Request):
     a = get_actor(request); need(a, 0)
     q = request.query_params.get('q', '')
     kind = request.query_params.get('kind', '')
-    if not q.strip():
+    lo, hi = cs_date_range(request.query_params.get('from'), request.query_params.get('to'))
+    if not q.strip() and not lo:
         raise HTTPException(400, '검색어를 입력하세요')
-    return cs_search(q, kind)
+    return cs_search(q, kind, date_range=(lo, hi) if lo else None)
 
 @admin_router.post('/admin/api/cs/answer')
 def api_cs_answer(request: Request, body: dict = Body(...)):

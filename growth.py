@@ -2488,11 +2488,14 @@ def copy_apply(html, path=''):
 
 # ═══════════════════════════ O2O 확장: 국내 체크아웃 쿠폰 · 드롭 알림 구독 ═══════
 _CK_SEND_OLD = "client:(window.mpClientHint?window.mpClientHint():null)}));"
-_CK_SEND_NEW = ("client:(window.mpClientHint?window.mpClientHint():null),coupon:(window.mpCpCode||''),"
+_CK_SEND_NEW = ("client:(window.mpClientHint?window.mpClientHint():null),coupon:(window.mpCpCode||''),points:(window.mpPtUse||0),"
                 "lang:(window.MP_LANG||'ko')}));")
 _CK_CALC_OLD = "return {sub,ship,total:sub+ship,drop,pts};"
 _CK_CALC_NEW = ("var _off=(window.mpCpOff&&sub>=(window.mpCpMin||0))?Math.min(window.mpCpOff,Math.max(0,sub-100)):0;"
-                "window.mpCpApplied=_off;return {sub,ship,total:sub+ship-_off,drop,pts};")
+                "window.mpCpApplied=_off;"
+                "var _pt=Math.max(0,Math.min(window.mpPtReq||0,window.mpPtAvail||0,sub-_off,sub+ship-_off-(window.mpPtMinPay||1000)));"
+                "window.mpPtUse=_pt;"
+                "return {sub,ship,total:sub+ship-_off-_pt,drop,pts:Math.max(0,pts-Math.ceil(_pt*(CFG.pointRateBp||100)/10000))};")
 _CK_COUPON_UI = r'''<div id="mpCp" style="padding:10px 0;border-bottom:1px solid var(--line)">
 <div style="display:flex;gap:6px"><input class="f-input" id="mpCpIn" placeholder="쿠폰 코드 (예: HOME-XXXXXX)" aria-label="쿠폰 코드" style="margin:0;text-transform:uppercase;font-size:14px">
 <button type="button" id="mpCpBtn" style="background:var(--ink);color:#fff;border:0;padding:0 14px;font-weight:700;cursor:pointer;white-space:nowrap">적용</button></div>
@@ -2513,6 +2516,38 @@ function rs(){try{(window.renderSum||function(){})()}catch(e){}paint()}
 var b=$('mpCpBtn');if(b)b.addEventListener('click',apply);
 var i=$('mpCpIn');if(i)i.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();apply()}});
 try{var q=new URLSearchParams(location.search).get('coupon')||sessionStorage.getItem('mp_cp');if(q&&i){i.value=q;apply()}}catch(e){}
+}catch(e){}})();</script>'''
+
+# 포인트 사용 (2026-11-06) — 상품·이벤트 [할인 적용 항목]에서 허용된 장바구니의 로그인 회원에게만 보인다
+_CK_POINT_UI = r'''<div id="mpPt" style="display:none;padding:10px 0;border-bottom:1px solid var(--line)">
+<div id="mpPtLb" style="font-size:13px;font-weight:700;margin-bottom:6px">포인트 사용</div>
+<div style="display:flex;gap:6px"><input class="f-input" id="mpPtIn" inputmode="numeric" placeholder="0" aria-label="사용할 포인트" style="margin:0;font-size:14px">
+<button type="button" id="mpPtAll" style="background:var(--ink);color:#fff;border:0;padding:0 14px;font-weight:700;cursor:pointer;white-space:nowrap">전액 사용</button></div>
+<div id="mpPtMsg" style="font-size:12px;margin-top:4px;color:#8A8880" aria-live="polite"></div></div>
+<div class="sum-row" id="mpPtRow" style="display:none"><span id="mpPtRl">포인트 사용</span><span id="mpPtV" style="color:var(--red)"></span></div>'''
+_CK_POINT_JS = r'''<script id="mpPtJs">(function(){try{
+var $=function(i){return document.getElementById(i)},fmt=function(n){return Math.round(n).toLocaleString('ko-KR')};
+function its(){try{return JSON.parse(localStorage.getItem('mapdal_cart')||'[]').map(function(i){return {id:i.id,q:i.q}})}catch(e){return []}}
+function sig(){return its().map(function(i){return i.id}).sort().join('|')}
+function paint(){var r=$('mpPtRow'),v=$('mpPtV');if(!r)return;var o=window.mpPtUse||0;r.style.display=o?'':'none';v.textContent='−₩'+fmt(o);
+ var i=$('mpPtIn');if(i&&document.activeElement!==i)i.value=o?String(o):''}
+function rs(){try{(window.renderSum||function(){})()}catch(e){}paint()}
+function setReq(n){window.mpPtReq=Math.max(0,parseInt(n,10)||0);rs()}
+function apply(d){var i=$('mpPtIn'),b=$('mpPtAll');
+ window.mpPtAvail=(d&&d.usable)||0;window.mpPtMinPay=(d&&d.min_pay)||1000;
+ if(!d||!d.login||!(d.point_ok||d.reward_ok)){window.mpPtReq=0;$('mpPt').style.display='none';rs();return}
+ var nm=d.point_ok?'포인트':'보상포인트';$('mpPtLb').textContent=nm+' 사용';$('mpPtRl').textContent=nm+' 사용';
+ $('mpPtMsg').textContent='사용 가능 '+fmt(window.mpPtAvail)+'P · 1P=1원 · 상품 금액에만 적용 (배송비 제외)';
+ $('mpPt').style.display='';i.disabled=b.disabled=!window.mpPtAvail;b.style.opacity=window.mpPtAvail?'':'.4';rs()}
+var last=null,seq=0;
+function load(){var it=its();last=sig();var my=++seq;if(!it.length){apply(null);return}
+ fetch('/api/cart/points',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:it})})
+ .then(function(r){return r.ok?r.json():null}).then(function(d){if(my===seq)apply(d)}).catch(function(){if(my===seq)apply(null)})}
+var _rs=window.renderSum;if(typeof _rs==='function'){window.renderSum=function(){_rs.apply(this,arguments);paint();if(last!==null&&sig()!==last)load()}}
+var i=$('mpPtIn');i.addEventListener('change',function(){setReq(i.value)});
+i.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();setReq(i.value);i.blur()}});
+$('mpPtAll').addEventListener('click',function(){setReq(window.mpPtAvail)});
+load();
 }catch(e){}})();</script>'''
 
 _NL_BAND = r'''<section id="mpNl" aria-label="Drop alerts" style="background:#141414;color:#fff;border-top:4px solid #DC2B24">
@@ -2561,9 +2596,9 @@ def o2o_apply(html, path=''):
                 html = html.replace(_CK_SEND_OLD, _CK_SEND_NEW, 1)
             if _CK_CALC_OLD in html:
                 html = html.replace(_CK_CALC_OLD, _CK_CALC_NEW, 1)
-            html = html.replace('<div class="sum-row total">', _CK_COUPON_UI + '<div class="sum-row total">', 1)
+            html = html.replace('<div class="sum-row total">', _CK_COUPON_UI + _CK_POINT_UI + '<div class="sum-row total">', 1)
             i = html.lower().rfind('</body>')
-            html = html[:i] + _CK_COUPON_JS + html[i:]
+            html = html[:i] + _CK_COUPON_JS + _CK_POINT_JS + html[i:]
         if path == '/order-complete' and 'mpOcOpt' not in html:
             i = html.lower().rfind('</body>')
             html = html[:i] + _OC_OPTIN + html[i:]

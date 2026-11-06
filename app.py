@@ -283,7 +283,8 @@ _ORDER_EXTRA_COLS = ('customer_id', 'member_id', 'contact_phone_norm',
                      'vbank_num', 'vbank_name', 'vbank_holder', 'vbank_due', 'paid_at',
                      'ga_cid', 'ga_sid', 'ga_mp_sent', 'pay_log',
                      'client_ip', 'country', 'geo',      # 구매 국가(접속 국가) 2026-09-01 — admin_v2 가 기록
-                     'attr', 'coupon', 'discount')       # 유입 어트리뷰션·쿠폰 2026-10 — growth.py 가 기록
+                     'attr', 'coupon', 'discount',       # 유입 어트리뷰션·쿠폰 2026-10 — growth.py 가 기록
+                     'point_used')                       # 결제 시 포인트 사용 2026-11 — discount 에도 합산
 
 def _add_order_col(col: str) -> bool:
     """컬럼 1개 = 트랜잭션 1개. 반드시 이 단위를 유지한다.
@@ -811,6 +812,11 @@ async def create_order(req: Request, response: Response):
             import shipregion; region_name, region_extra = shipregion.extra_for(buyer)
         except Exception as _re:
             print('[ship-region] %s' % _re, flush=True)
+    # ── 포인트 사용 (2026-11-06) — 상품·이벤트 [할인 적용 항목] 체크 기준. 차감은 주문 트랜잭션 안에서 ──
+    point_req, point_rule = 0, None
+    if body.get('points'):
+        import admin_v2 as _avp
+        point_req, point_rule = _avp.point_use_gate(body.get('points'), items, customer_id, member_id)
     # ── 쿠폰 (2026-10 · growth) ─────────────────────────────────────────────
     #   유효성(기간·잔여·첫 주문 여부)은 주문 트랜잭션 '밖'에서 읽기로 확정하고,
     #   트랜잭션 안에서는 DB 접근 없는 순수 계산(coupon_amount)만 한다 — PG abort 방지.
@@ -830,6 +836,7 @@ async def create_order(req: Request, response: Response):
                                      bool(body.get('intl')))
         cp_reserved = growth.coupon_reserve(coupon)      # 사용 횟수 제한 쿠폰: 주문 생성 전 원자적 예약
     discount = 0
+    point_use = 0
     changed_stock_ids = []
     try:
         with db() as c:                      # ← 단일 트랜잭션: 검증·재고차감·주문생성 원자 처리
@@ -885,7 +892,13 @@ async def create_order(req: Request, response: Response):
             if coupon:
                 import growth
                 discount = growth.coupon_amount(coupon, sub)
-            amount = sub + ship_fee - discount
+            point_split = None
+            if point_req:                       # 쿠폰 다음에 차감 · 상품 금액까지 · 최소 결제금액 유지
+                import admin_v2 as _avp
+                point_split = _avp.point_take_tx(c, customer_id, point_req, point_rule,
+                                                 min(sub - discount, sub + ship_fee - discount - _avp.POINT_MIN_PAY), LOCK)
+                point_use = point_req
+            amount = sub + ship_fee - discount - point_use
             order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
             # ga_* 컬럼 존재 여부는 지연 프로브(_has_ga_cols, 1회 판정 캐시)로 확정한다.
             #   트랜잭션 내부 try/except 폴백은 PG 에서 트랜잭션 abort 를 유발하므로 금지.
@@ -901,6 +914,10 @@ async def create_order(req: Request, response: Response):
                         amount, json.dumps(buyer, ensure_ascii=False),
                         json.dumps(resolved, ensure_ascii=False), ship, customer_id or None, member_id or None,
                         phone_norm or None))
+            if point_split:
+                _avp.point_post_tx(c, customer_id, member_id, order_id, point_split)
+                c.exec('UPDATE orders SET point_used=?, discount=? WHERE order_id=?',
+                       (str(point_use), str(discount + point_use), order_id))
             if customer_id:
                 try:
                     c.exec('INSERT INTO account_order_links(order_id,customer_id,member_id,link_source,linked_at,verified_at) VALUES(?,?,?,?,?,?)',
@@ -936,7 +953,7 @@ async def create_order(req: Request, response: Response):
             growth.coupon_hold(order_id, coupon['code'], discount)
             with db() as c:
                 c.exec('UPDATE orders SET coupon=?, discount=? WHERE order_id=?',
-                       (coupon['code'], str(discount), order_id))
+                       (coupon['code'], str(discount + point_use), order_id))
     except Exception as _ge:
         print('[growth] post-create %s: %s' % (order_id, _ge), flush=True)
     try:
@@ -949,6 +966,7 @@ async def create_order(req: Request, response: Response):
     _pay_log(order_id, 'CREATED', '%s · %s원 · %s%s' %
              ('모바일' if _is_mobile_ua(req) else 'PC', format(amount, ','), order_name[:60],
               (' · 선택수단 ' + pay_sel) if pay_sel else '')
+             + ((' · 포인트 %sP' % format(point_use, ',')) if point_use else '')
              + ((' · %s +%s원' % ('제주' if region_name == 'jeju' else '도서산간', format(region_extra, ','))) if region_extra else ''))
 
     # ── INIStdPay STEP1 서명 파라미터 생성 (oid=order_id, price=amount) ──
@@ -989,7 +1007,7 @@ async def create_order(req: Request, response: Response):
     inicis_mobile = _ini_mobile_params(order_id, amount, order_name, buyer, origin, pay_sel)
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
             'sub': sub, 'shipFee': ship_fee, 'regionExtra': region_extra, 'region': region_name,
-            'discount': discount, 'inicis': inicis,
+            'discount': discount, 'pointUsed': point_use, 'inicis': inicis,
             'inicisMobile': inicis_mobile,
             'mobilePayUrl': 'https://mobile.inicis.com/smart/payment/',
             'isMobile': _is_mobile_ua(req)}
@@ -1028,6 +1046,8 @@ async def inicis_return(req: Request):
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
         return _paid_redirect(oid)
+    if not _point_preapprove(oid, order):            # 사용 포인트가 다른 주문에 쓰였으면 승인 전에 중단
+        return _fail('포인트 잔액이 부족합니다 — 다시 주문해 주세요')
 
     # ── STEP3 승인요청 ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -1184,6 +1204,8 @@ async def inicis_mobile_return(req: Request):
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
         return _paid_redirect(oid)
+    if not _point_preapprove(oid, order):            # 사용 포인트가 다른 주문에 쓰였으면 승인 전에 중단
+        return _fail('포인트 잔액이 부족합니다 — 다시 주문해 주세요')
 
     # ── 승인요청 (P_REQ_URL 에 P_MID + P_TID) ──
     payload = urllib.parse.urlencode({
@@ -1613,6 +1635,23 @@ def _ga4_mp_purchase(oid: str):
             print(f'[ga4] MP purchase 처리 실패 {oid}: {type(e).__name__}: {e}', flush=True)
     threading.Thread(target=_run, daemon=True).start()
 
+def _point_preapprove(oid: str, order) -> bool:
+    """PG 승인 직전 — 재주문으로 해제됐던 사용 포인트를 다시 잡는다. 모자라면 승인하지 않는다 (2026-11-06).
+    포인트를 쓰지 않은 주문은 아무 일도 하지 않고, 내부 오류는 통과시킨다(결제완료 시 재확인)."""
+    try:
+        if not order.get('point_used'):
+            return True
+        import admin_v2
+        if admin_v2.point_settle_paid(oid) <= 0:
+            return True
+    except Exception as e:
+        print('[point] preapprove %s: %s' % (oid, e), flush=True)
+        return True
+    with db() as c:
+        c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+    return False
+
+
 def _award_purchase_points(oid: str):
     """결제 완료 주문에 구매 적립 1% 지급 (드롭 상품·배송비 제외).
 
@@ -1629,6 +1668,12 @@ def _award_purchase_points(oid: str):
             o = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
         if not o or o['status'] != 'PAID':
             return
+        try:                                        # 미결제 해제됐던 사용 포인트 재차감 (2026-11-06, 멱등)
+            if o.get('point_used'):
+                import admin_v2
+                admin_v2.point_settle_paid(oid)
+        except Exception as _pe:
+            print('[point] settle %s: %s' % (oid, _pe), flush=True)
         cid = o['customer_id'] or ''
         mid = o['member_id'] or ''
         if not (cid and mid):                       # 로그인 회원 주문만 적립

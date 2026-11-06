@@ -1983,7 +1983,7 @@ def ensure_ready():
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
-    for col in ('list_price', 'sort_order', 'stock_baseline', 'ship_required', 'coupon_ok'):
+    for col in ('list_price', 'sort_order', 'stock_baseline', 'ship_required', 'coupon_ok', 'point_ok', 'reward_ok'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s INTEGER" % col)
             except Exception: pass
@@ -2382,6 +2382,7 @@ def api_order_detail(oid: str, request: Request):
             'pay_method': r.get('pay_method') or '',
             # 결제 상세(어떤 카드 · 어떤 페이) — 승인 시 적재분. 비어 있고 TID 가 있으면
             # 화면이 열릴 때 거래조회로 1회 채운다(can_pay_lookup).
+            'point_text': point_order_text(r),
             'pay_detail': _pd, 'pay_detail_text': pay_detail_text(_pd),
             'pay_detail_rows': sorted((_pd.get('raw') or {}).items()),
             'can_pay_lookup': bool(_ptid and _inicis_cred_for_tid(_ptid)),
@@ -3172,6 +3173,11 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         try: catalog_inventory_from_legacy(restored_id)
         except Exception: pass
     # 적립 회수 — 약관 제10조 제3항. 실패해도 환불/취소는 되돌리지 않는다.
+    point_back = 0                                     # 결제에 쓴 포인트 복원 (2026-11-06) — 회수보다 먼저
+    try:
+        point_back = point_restore_order(oid, by_admin=(a.get('name') if isinstance(a, dict) else '') or 'ADMIN', note='주문 취소')
+    except Exception as e:
+        print('[point] restore %s: %s' % (oid, e), flush=True)
     revoked = 0
     try:
         revoked = point_revoke_purchase(oid, by_admin=(a.get('name') if isinstance(a, dict) else '') or 'ADMIN')
@@ -3179,7 +3185,8 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         revoked = 0
     manual_paid = bool(manual and prev_status == 'PAID')   # 수동환불 완료처리(외부에서 이미 환불)
     audit(a, '환불' if refunded else ('수동환불처리' if manual_paid else '주문취소'), oid,
-          '%s / 금액 %s / 재고복원 %d%s%s' % (reason, num(r.get('amount')), restored,
+          '%s / 금액 %s / 재고복원 %d%s%s%s' % (reason, num(r.get('amount')), restored,
+                                          (' / 포인트복원 %dP' % point_back) if point_back else '',
                                           (' / 적립회수 %dP' % revoked) if revoked else '',
                                           refund_mid_note if refunded
                                           else (' / 이니시스 API 미호출(외부 환불 완료 전제)' if manual_paid else '')))
@@ -3197,7 +3204,7 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         shipfee_res = None
     return {'ok': True, 'refunded': refunded, 'manual': manual_paid,
             'stock_restored_items': restored,
-            'points_revoked': revoked, 'prev_status': prev_status, 'shipfee': shipfee_res}
+            'points_revoked': revoked, 'points_restored': point_back, 'prev_status': prev_status, 'shipfee': shipfee_res}
 
 @admin_router.post('/admin/api/orders/{oid}/cancel')
 def api_cancel(oid: str, request: Request, body: dict = Body(...)):
@@ -5713,6 +5720,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
  ${(o.buyer.selections&&o.buyer.selections.length)?`<b>응모 선택</b><span>${o.buyer.selections.map(s=>esc((s.event?'['+s.event+'] ':'')+(s.q||'')+' → '+(s.a||'')).replace(/\n/g,'')).join('<br>')}</span>`:''}
  ${(o.vbank&&o.vbank.num)?`<b>입금 계좌</b><span class="mono">${esc(o.vbank.bank)} ${esc(o.vbank.num)}${o.vbank.holder?' · 예금주 '+esc(o.vbank.holder):''}${o.vbank.due?'<br>입금기한 '+esc(o.vbank.due):''}</span>`:''}
  ${(o.refund&&o.refund.acct)?`<b>환불 계좌</b><span class="mono">${esc(o.refund.bank||'')} ${esc(o.refund.acct)} · 예금주 ${esc(o.refund.holder||'')}<br><span style="color:var(--steel);font-size:11px">고객이 주문 시 입력한 본인 명의 환불계좌 — 가상계좌 취소·환불 시 이 계좌로 송금</span></span>`:''}
+ ${o.point_text?`<b>포인트 사용</b><span class="mono">${esc(o.point_text)}</span>`:''}
  ${o.paid_at?`<b>입금완료</b><span class="mono">${esc(o.paid_at)}</span>`:''}
  ${o.receipt?`<b>영수증</b><span><a href="${esc(o.receipt)}" target="_blank">토스 영수증</a></span>`:''}</div>
  ${o.status==='WAITING_DEPOSIT'?`<div class="hint" style="background:#e8f0fe;border-left:3px solid #1565c0;padding:9px 11px;margin-bottom:10px;color:#0d47a1">
@@ -6879,7 +6887,7 @@ const _pub=r?(r._pub||(r.on===false?'off':'now')):'off';   /* 새 이벤트 기�
   </div>
   <div id="dr_pvbox" style="margin-top:8px;padding:9px 11px;border:1px dashed #cfcabc;border-radius:6px;background:#fbfaf6;font-size:12px">${drPvBoxHTML(r)}</div>
  </span>
-<b>판매 규칙</b><span style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:8px 10px;border:2px solid var(--black);border-radius:6px"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_shipreq" ${v.ship_required!==false?'checked':''}> 배송비 필수부과 <span class="hint" style="display:inline">(3,000원 · 무료배송 미적용)</span></label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_couponok" ${v.coupon_ok===true?'checked':''}> 쿠폰 적용 가능</label><span class="hint" style="flex-basis:100%;margin:0">이 이벤트의 옵션 상품(연결 상품 포함)에 결제 시 바로 적용됩니다. 기본값: 배송비 필수 ✓ · 쿠폰 ✗</span></span>
+<b>판매 규칙</b><span style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:8px 10px;border:2px solid var(--black);border-radius:6px"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_shipreq" ${v.ship_required!==false?'checked':''}> 배송비 필수부과 <span class="hint" style="display:inline">(3,000원 · 무료배송 미적용)</span></label><span style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;flex-basis:100%"><b>할인 적용 항목</b><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_couponok" ${v.coupon_ok===true?'checked':''}> 가입쿠폰</label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_pointok" ${v.point_ok===true?'checked':''}> 포인트</label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_rewardok" ${v.reward_ok===true?'checked':''}> 기타 할인(보상포인트)</label></span><span class="hint" style="flex-basis:100%;margin:0">이 이벤트의 옵션 상품(연결 상품 포함)에 결제 시 바로 적용됩니다. 기본값: 배송비 필수 ✓ · 할인 항목 모두 ✗</span></span>
  <b>제목 *</b><span><input id="dr_title" style="width:100%" value="${esc(v.title||'')}" placeholder="예) 스타라이트 1st MINI 발매 기념 대면 팬사인회 EVENT"></span>
  <b>아티스트</b><span><input id="dr_artist" style="width:100%" value="${esc(v.artist||'')}" placeholder="예) 스타라이트"></span>
  <b>유형</b><span><div id="dr_cats" style="display:flex;gap:6px;flex-wrap:wrap">${DRCATS.map(c=>{const on=(v.categories&&v.categories.length?v.categories:[v.category]).includes(c.id);return `<label class="drcat${on?' on':''}" style="display:inline-flex;align-items:center;padding:6px 12px;border:1.5px solid ${on?'#141414':'#ddd'};border-radius:999px;background:${on?'#141414':'#fff'};color:${on?'#fff':'#444'};cursor:pointer;font-size:12px;font-weight:700;user-select:none"><input type="checkbox" value="${c.id}" ${on?'checked':''} style="display:none" onchange="const l=this.parentElement,k=this.checked;l.style.background=k?'#141414':'#fff';l.style.color=k?'#fff':'#444';l.style.borderColor=k?'#141414':'#ddd'">${esc(c.label)}</label>`}).join('')}</div>
@@ -6949,7 +6957,7 @@ async function saveDrop(id){try{
   winner_videocall_extra:$('#dr_twv_extra').value,
   entry_extra:$('#dr_te_extra').value,
   announce_notice:$('#dr_annnotice').value,announce_body:$('#dr_annbody').value,winners:winners,
-  ship_required:!!($('#dr_shipreq')||{}).checked,coupon_ok:!!($('#dr_couponok')||{}).checked};
+  ship_required:!!($('#dr_shipreq')||{}).checked,coupon_ok:!!($('#dr_couponok')||{}).checked,point_ok:!!($('#dr_pointok')||{}).checked,reward_ok:!!($('#dr_rewardok')||{}).checked};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  toast('저장 완료 — '+(d.pub_label||'사이트에 즉시 반영')+' (#'+d.id+')');closeM();loadDrops();
 }catch(e){toast(e.message)}}
@@ -8367,7 +8375,7 @@ def api_product_create(request: Request, body: dict = Body(...)):
         cols.append('badge_color'); vals.append(badge_color(body.get('badge_color')))
     if 'hero_bg' in _state['pcols']:
         cols.append('hero_bg'); vals.append(hex_or_empty(body.get('hero_bg')))
-    for _rk in ('ship_required', 'coupon_ok'):
+    for _rk in ('ship_required', 'coupon_ok', 'point_ok', 'reward_ok'):
         if _rk in body and _rk in _state['pcols']:
             if type(body[_rk]) is not bool: raise HTTPException(400, '배송비·쿠폰 설정 값이 올바르지 않습니다')
             cols.append(_rk); vals.append(1 if body[_rk] else 0)
@@ -8612,17 +8620,20 @@ def _prod_rule_view(pid):
     try:
         pc = _state.get('pcols') or set()
         cols = 'id, %s AS name' % (_state.get('pname') or 'name') + ''.join(
-            ', ' + c for c in ('badge', 'ship_required', 'coupon_ok') if c in pc)
+            ', ' + c for c in ('badge', 'ship_required', 'coupon_ok', 'point_ok', 'reward_ok') if c in pc)
         r = one('SELECT %s FROM products WHERE id=?' % cols, (pid,)) or {'id': pid}
         sr, cp, explicit = _rule_of_row(r, _drop_rules_index())
-        return {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'rules_explicit': bool(explicit)}
+        po, rw = _disc_flags(r, _drop_disc_index())
+        return {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'rules_explicit': bool(explicit),
+                'point_ok': po, 'reward_ok': rw}
     except Exception:
-        return {'ship_required': False, 'coupon_ok': True, 'rules_explicit': False}
+        return {'ship_required': False, 'coupon_ok': True, 'rules_explicit': False, 'point_ok': False, 'reward_ok': False}
 
 def _rule_body(body, sets, args, log):
     """요청 본문의 체크박스 값을 컬럼 UPDATE 로 (둘 다 bool 일 때만)."""
     pc = _state.get('pcols') or set()
-    for k, lb in (('ship_required', '배송비 필수부과'), ('coupon_ok', '쿠폰 적용 가능')):
+    for k, lb in (('ship_required', '배송비 필수부과'), ('coupon_ok', '가입쿠폰'), ('point_ok', '포인트'),
+                  ('reward_ok', '기타 할인(보상포인트)')):
         if k in body and k in pc:
             if type(body[k]) is not bool: raise HTTPException(400, '%s 값은 true 또는 false여야 합니다' % lb)
             sets.append('%s=?' % k); args.append(1 if body[k] else 0); log.append('%s %s' % (lb, 'ON' if body[k] else 'OFF'))
@@ -8854,9 +8865,13 @@ h2{font-size:19px;margin-bottom:18px}
 <div class="card" id="ruleCard" style="border:2px solid var(--black)"><h3>판매 규칙<small>결제 시 바로 적용 · 예약판매·럭키드로우·팬사인회·영상통화 등 프로모션 상품 설정</small></h3>
  <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:center">
   <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rShip" style="width:18px;height:18px" onchange="_ruleTouched=true"> 배송비 필수부과 <span style="font-weight:400;color:#888;font-size:12px">(3,000원 · 3만원 이상 무료배송 미적용)</span></label>
-  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rCoupon" style="width:18px;height:18px" checked onchange="_ruleTouched=true"> 쿠폰 적용 가능</label>
+   </div>
+ <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid #eee"><b style="font-size:13px">할인 적용 항목</b>
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rCoupon" style="width:18px;height:18px" checked onchange="_ruleTouched=true"> 가입쿠폰</label>
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rPoint" style="width:18px;height:18px"> 포인트</label>
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rReward" style="width:18px;height:18px"> 기타 할인(보상포인트)</label>
  </div>
- <div class="hint" id="ruleHint" style="margin-top:8px">배지에 예약판매·사인회·영상통화·럭키드로우를 입력하면 자동으로 [배송비 필수부과 ✓ · 쿠폰 적용 ✗]로 맞춰집니다. 체크를 직접 바꾸면 그 값이 우선합니다. 판매 옵션·세트 상품은 이 설정을 그대로 따릅니다.</div>
+ <div class="hint" id="ruleHint" style="margin-top:8px">배지에 예약판매·사인회·영상통화·럭키드로우를 입력하면 자동으로 [배송비 필수부과 ✓ · 가입쿠폰 ✗]로 맞춰집니다. 체크를 직접 바꾸면 그 값이 우선합니다. 포인트·기타 할인(보상포인트)은 체크한 상품에서만 결제 시 사용할 수 있습니다(장바구니에 체크 안 된 상품이 섞이면 사용 불가). 판매 옵션·세트 상품은 이 설정을 그대로 따릅니다.</div>
 </div>
 <div class="card"><h3><span class="no">1</span>기본 정보<small>상품명 · 카테고리 · 가격 · 재고 · 배지</small></h3>
  <div class="f"><label>상품명 *</label><input type="text" id="fn" placeholder="예: 맵달 굿즈 키링"></div>
@@ -9116,7 +9131,7 @@ async function init(){
   stockLoad(d);$('#fd').value=d.descr;
   _info=infoParse(d.info_rows||'').map(([k,v])=>[k,String(v||'').split('//').join('\n')]);renderInfoRows();
   $('#fship').value=d.ship_rows||'';$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
-  $('#rShip').checked=!!d.ship_required;$('#rCoupon').checked=d.coupon_ok!==false;_ruleTouched=!!d.rules_explicit;
+  $('#rShip').checked=!!d.ship_required;$('#rCoupon').checked=d.coupon_ok!==false;$('#rPoint').checked=d.point_ok===true;$('#rReward').checked=d.reward_ok===true;_ruleTouched=!!d.rules_explicit;
   if(!d.rules_explicit&&(d.ship_required||d.coupon_ok===false))$('#ruleHint').innerHTML='<b style="color:#B71F18">자동 판정됨</b> — 배지·이벤트 연결 기준으로 프로모션 상품으로 인식했습니다. 저장하면 이 값으로 확정됩니다.';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
@@ -9181,7 +9196,7 @@ let _stockBaseline=null;
 function stockLoad(d){_stockBaseline=d.stock_baseline==null?null:d.stock_baseline;$('#fs').value=_stockBaseline==null?'':_stockBaseline;$('#fs').placeholder='미설정 / 무제한';$('#stockRemaining').textContent='현재 남은 재고: '+(d.stock==null?'무제한 / 구성 재고 사용':Number(d.stock).toLocaleString())+(_stockBaseline==null?' · 기준량 미설정':' · 판매되어도 기본 입고수량은 유지됩니다')}
 /* ── 판매 규칙 체크박스 (2026-10-20) ── */
 let _ruleTouched=false;
-function ruleVals(){return {ship_required:$('#rShip').checked,coupon_ok:$('#rCoupon').checked}}
+function ruleVals(){return {ship_required:$('#rShip').checked,coupon_ok:$('#rCoupon').checked,point_ok:$('#rPoint').checked,reward_ok:$('#rReward').checked}}
 document.addEventListener('input',e=>{if(!e.target||e.target.id!=='fb'||_ruleTouched)return;
  const promo=/예약\s*판매|사인회|팬\s*싸인|영상\s*통화|영통|럭키\s*드로우|fan\s*sign|video\s*call|fan\s*call|lucky\s*draw|pre-?\s*order/i.test(e.target.value);
  $('#rShip').checked=promo;$('#rCoupon').checked=!promo});
@@ -11147,7 +11162,7 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
   '<span class="mono" style="font-size:14px"><b>'+esc(o.vbank.bank)+' '+esc(o.vbank.num)+'</b></span>'+
   (o.vbank.holder?'<br>예금주 '+esc(o.vbank.holder):'')+(o.vbank.due?'<br>입금기한 '+esc(vbDue(o.vbank.due)):'')+
   '<br>입금액 <b>'+won(o.amount)+'</b> — 입금 확인 즉시 자동으로 결제완료 처리됩니다.</div>':'')+
- '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+'</div>'+
+ '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+(o.point_text?' · 포인트 사용 '+esc(o.point_text):'')+'</div>'+
  (o.shipfee?'<div style="border:1px solid var(--line);padding:10px 12px;margin-top:10px;font-size:13px"><b>추가 배송비 결제</b>'+
   o.shipfee.payments.map(p=>'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px"><span class="mono" style="font-size:11.5px">'+esc(p.order_id)+'</span><span>'+esc(p.paid_at)+'</span><b>'+won(p.amount)+'</b><span class="tagst '+(p.status==='PAID'?'s5':'s0')+'">'+(p.status==='PAID'?'결제완료':'환불')+'</span>'+(p.receipt?'<a class="b ghost" target="_blank" rel="noopener" href="'+esc(p.receipt)+'">영수증</a>':'')+'</div>').join('')+
   (o.shipfee.orders.length>1?'<div class="hint" style="margin:6px 0 0">함께 청구된 주문: '+o.shipfee.orders.map(esc).join(' · ')+'</div>':'')+'</div>':'')+
@@ -12975,6 +12990,30 @@ def _drop_rules_index():
     return idx
 
 
+def _drop_disc_index():
+    """이벤트 옵션 상품 → (포인트 가능, 보상포인트 가능). 이벤트 편집기 체크박스 — 미지정이면 둘 다 불가."""
+    idx = {}
+    try:
+        for d in _drops_all():
+            if not isinstance(d, dict):
+                continue
+            flags = (d.get('point_ok') is True, d.get('reward_ok') is True)
+            for o in _drop_opts_norm(d.get('options')):
+                if o.get('product_id'):
+                    idx[str(o['product_id'])] = flags
+    except Exception:
+        pass
+    return idx
+
+
+def _disc_flags(r, drop_disc):
+    """상품 행 → (포인트 가능, 보상포인트 가능). 자동 판정 없음 — 관리자가 체크한 곳에서만 True."""
+    pid = str(r.get('id') or '')
+    if pid in drop_disc:
+        return drop_disc[pid]
+    return (_rule_bool(r.get('point_ok')) is True, _rule_bool(r.get('reward_ok')) is True)
+
+
 def _rule_of_row(r, drop_idx):
     """상품 행 → (ship_required, coupon_ok, 명시여부). 명시값(관리자 체크박스) 우선, 미지정이면 자동 판정."""
     pid = str(r.get('id') or '')
@@ -13012,9 +13051,10 @@ def product_rules(items):
     if not pids:
         return out
     drop_idx = _drop_rules_index()
+    drop_disc = _drop_disc_index()
     pc = _state.get('pcols') or set()
     cols = 'id, ' + (_state.get('pname') or 'name') + ' AS name' + ''.join(
-        ', ' + c for c in ('badge', 'ship_required', 'coupon_ok') if c in pc)
+        ', ' + c for c in ('badge', 'ship_required', 'coupon_ok', 'point_ok', 'reward_ok') if c in pc)
     for pid in pids:
         res = None
         for cand in _cp_cands(pid)[:4]:
@@ -13024,7 +13064,7 @@ def product_rules(items):
                 r = None
             if not r:
                 if cand.startswith('mpd::'):
-                    res = {'ship_required': True, 'coupon_ok': False, 'name': cand}
+                    res = {'ship_required': True, 'coupon_ok': False, 'name': cand, 'point_ok': False, 'reward_ok': False}
                     break
                 continue
             nm = str(r.get('name') or cand)
@@ -13039,10 +13079,11 @@ def product_rules(items):
             # 자식 이름의 【영상통화】 등 태그는 부모가 자동 판정일 때만 보조 반영
             if target is not r and _rule_bool(target.get('coupon_ok')) is None and _cp_promo_row(r):
                 sr, cp = True, False
-            res = {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'name': nm}
+            po, rw = _disc_flags(target, drop_disc)
+            res = {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'name': nm, 'point_ok': po, 'reward_ok': rw}
             break
         if res is None and pid.startswith('mpd::'):
-            res = {'ship_required': True, 'coupon_ok': False, 'name': pid}
+            res = {'ship_required': True, 'coupon_ok': False, 'name': pid, 'point_ok': False, 'reward_ok': False}
         if res is not None:
             out[pid] = res
     return out
@@ -13066,6 +13107,213 @@ def coupon_promo_gate(items):
     nm = coupon_block_item(items)
     if nm:
         raise HTTPException(400, '%s (%s)' % (COUPON_BLOCK_MSG, nm[:40]))
+
+
+# ── 결제 시 포인트 사용 (2026-11-06 — 이주현 팀장 요청 · 대표 지시) ──────────────────────
+#   상품·이벤트 [할인 적용 항목]에 체크한 곳에서만 쓴다. 장바구니의 '모든' 상품이 허용해야 한다.
+#   · 기타 할인(보상포인트) = COMPENSATION 원장으로 지급된 잔액 / 포인트 = 그 외 잔액
+#   · 1P = 1원 · 상품 금액에만 적용(배송비 제외) · 쿠폰 다음에 차감 · 최소 결제금액 POINT_MIN_PAY
+#   · 주문 생성 트랜잭션에서 차감(동시 주문 이중 사용 방지) → 취소·만료 시 복원
+#   · 미결제(PENDING·FAILED) 주문이 잡고 있는 포인트는 같은 고객의 재주문 시 풀어 준다 — 그 주문이
+#     뒤늦게 결제되면 point_settle_paid 가 다시 차감한다
+POINT_MIN_PAY = 1000
+_POINT_POOLS = {'reward': ('REWARD_USE', 'REWARD_RESTORE', '보상포인트'), 'point': ('POINT_USE', 'POINT_RESTORE', '포인트')}
+_REWARD_LEDGER_TYPES = ('COMPENSATION', 'COMPENSATION_REVOKE', 'REWARD_USE', 'REWARD_RESTORE')
+_REWARD_SUM_SQL = ("SELECT COALESCE(SUM(amount),0) AS s FROM point_ledger WHERE customer_id=? AND event_type IN (%s)"
+                   % ','.join("'%s'" % t for t in _REWARD_LEDGER_TYPES))
+
+
+def _point_split_pools(balance, reward_sum):
+    """(전체 잔액, 보상 원장 합계) → (보상포인트, 일반 포인트). 합계는 전체 잔액을 넘을 수 없다."""
+    balance = max(0, int(balance or 0))
+    reward = max(0, min(int(reward_sum or 0), balance))
+    return reward, balance - reward
+
+
+def _point_order_state(oid):
+    """주문의 풀별 사용 상태 {pool: {'target','net','n'}} — 원장이 단일 출처."""
+    out = {}
+    for pool, (use_t, back_t, _) in _POINT_POOLS.items():
+        rs = rows('SELECT event_type, amount, event_key FROM point_ledger WHERE order_id=? AND event_type IN (?,?)',
+                  (oid, use_t, back_t))
+        if rs:
+            first = 'use:%s:%s' % (pool, oid)
+            out[pool] = {'target': sum(-num(x['amount']) for x in rs if x.get('event_key') == first),
+                         'net': sum(-num(x['amount']) for x in rs), 'n': len(rs)}
+    return out
+
+
+def _point_unpaid_holds(customer_id):
+    """고객의 미결제 주문이 잡고 있는 포인트 — {order_id: {pool: 수량}}."""
+    out = {}
+    try:
+        odr = rows("SELECT order_id FROM orders WHERE customer_id=? AND status IN ('PENDING','FAILED') "
+                   "AND point_used IS NOT NULL AND point_used<>''", (customer_id,))
+    except Exception:
+        return out
+    for o in odr:
+        st = _point_order_state(o['order_id'])
+        hold = {k: v['net'] for k, v in st.items() if v['net'] > 0}
+        if hold:
+            out[o['order_id']] = hold
+    return out
+
+
+def point_restore_order(order_id, by_admin='', note=''):
+    """주문이 쓴 포인트를 돌려준다 (멱등 — 순사용량만큼만, 이벤트 키에 원장 건수 포함)."""
+    oid = str(order_id or '')
+    o = one('SELECT customer_id, member_id FROM orders WHERE order_id=?', (oid,)) if oid else None
+    if not o or not o.get('customer_id'):
+        return 0
+    total = 0
+    for pool, v in _point_order_state(oid).items():
+        if v['net'] <= 0:
+            continue
+        before = one('SELECT points_balance FROM customer_profiles WHERE id=?', (o['customer_id'],)) or {}
+        after = point_apply(o['customer_id'], o.get('member_id') or '', _POINT_POOLS[pool][1], v['net'],
+                            'use_back:%s:%s:%d' % (pool, oid, v['n']),
+                            '%s 사용 복원%s' % (_POINT_POOLS[pool][2], (' · ' + note) if note else ''),
+                            order_id=oid, by_admin=by_admin or 'SYSTEM')
+        total += max(0, num(after) - num(before.get('points_balance')))
+    return total
+
+
+def point_release_unpaid(customer_id):
+    """재주문 전에 같은 고객의 미결제 주문이 잡은 포인트를 풀어 준다 (결제창 이탈·실패 후 재시도)."""
+    for oid in _point_unpaid_holds(customer_id):
+        try:
+            point_restore_order(oid, note='미결제 주문 — 재주문으로 해제')
+        except Exception as e:
+            print('[point] release %s: %s' % (oid, e), flush=True)
+
+
+def point_settle_paid(order_id):
+    """결제완료 시 풀려 있던 사용 포인트를 다시 차감한다. 잔액이 모자라면 결제 이력·감사로그에 남긴다."""
+    oid = str(order_id or '')
+    o = one('SELECT customer_id, member_id FROM orders WHERE order_id=?', (oid,)) if oid else None
+    if not o or not o.get('customer_id'):
+        return 0
+    short_total = 0
+    for pool, v in _point_order_state(oid).items():
+        short = v['target'] - v['net']
+        if short <= 0:
+            continue
+        before = one('SELECT points_balance FROM customer_profiles WHERE id=?', (o['customer_id'],)) or {}
+        after = point_apply(o['customer_id'], o.get('member_id') or '', _POINT_POOLS[pool][0], -short,
+                            'use_again:%s:%s:%d' % (pool, oid, v['n']),
+                            '%s 사용 재차감(미결제 해제 후 결제완료)' % _POINT_POOLS[pool][2], order_id=oid, by_admin='SYSTEM')
+        short_total += short - max(0, num(before.get('points_balance')) - num(after))
+    if short_total > 0:
+        try:
+            import app as _app
+            _app._pay_log(oid, 'POINT_SHORT', '포인트 잔액 부족 — %sP 미차감(확인 필요)' % format(short_total, ','))
+            audit({'name': 'SYSTEM', 'role': 'NOTI'}, '포인트미차감', oid, '%sP' % format(short_total, ','))
+        except Exception:
+            pass
+    return short_total
+
+
+def point_use_gate(raw, items, customer_id, member_id):
+    """주문 전 검증 (트랜잭션 밖) → (요청 포인트, {'point_ok','reward_ok'}). 판정 실패는 사용 불가로 처리."""
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(400, '사용할 포인트를 숫자로 입력해 주세요')
+    if n < 0 or isinstance(raw, bool) or str(raw).strip() != str(n):
+        raise HTTPException(400, '사용할 포인트를 숫자로 입력해 주세요')
+    if n == 0:
+        return 0, None
+    if not (customer_id and member_id):
+        raise HTTPException(400, '포인트는 로그인 회원만 사용할 수 있습니다')
+    pids = {str(i.get('id') or '').strip() for i in items if isinstance(i, dict)}
+    try:
+        rs = product_rules(items)
+    except Exception:
+        rs = {}
+    vals = [rs.get(p) or {} for p in pids]
+    rule = {'point_ok': bool(vals) and all(v.get('point_ok') is True for v in vals),
+            'reward_ok': bool(vals) and all(v.get('reward_ok') is True for v in vals)}
+    if not (rule['point_ok'] or rule['reward_ok']):
+        raise HTTPException(400, '장바구니에 포인트를 사용할 수 없는 상품이 포함되어 있습니다')
+    point_release_unpaid(customer_id)
+    return n, rule
+
+
+def point_take_tx(c, customer_id, n, rule, max_use, lock=''):
+    """주문 트랜잭션 안에서 잔액을 잠그고 풀별 차감량을 정한다 → {'reward':x,'point':y,'balance':b}."""
+    pr = c.one('SELECT points_balance FROM customer_profiles WHERE id=?' + lock, (customer_id,))
+    if not pr:
+        raise HTTPException(400, '포인트 계정을 찾을 수 없습니다')
+    bal = num(pr['points_balance'])
+    rw = c.one(_REWARD_SUM_SQL, (customer_id,))
+    reward, general = _point_split_pools(bal, num(rw['s']) if rw else 0)
+    avail = (reward if rule.get('reward_ok') else 0) + (general if rule.get('point_ok') else 0)
+    if n > avail:
+        raise HTTPException(400, '사용 가능한 포인트를 초과했습니다 (사용 가능 %sP)' % format(avail, ','))
+    if n > max(0, max_use):
+        raise HTTPException(400, '포인트는 상품 금액까지, 최소 결제금액 %s원을 남기고 사용할 수 있습니다 (최대 %sP)'
+                            % (format(POINT_MIN_PAY, ','), format(max(0, max_use), ',')))
+    take_r = min(n, reward) if rule.get('reward_ok') else 0
+    return {'reward': take_r, 'point': n - take_r, 'balance': bal}
+
+
+def point_post_tx(c, customer_id, member_id, order_id, split):
+    """주문 INSERT 뒤 같은 트랜잭션에서 잔액·원장을 기록한다."""
+    bal = split['balance']
+    for pool in ('reward', 'point'):
+        n = split.get(pool) or 0
+        if n <= 0:
+            continue
+        bal -= n
+        c.exec('INSERT INTO point_ledger(id,customer_id,member_id,event_type,amount,balance_after,event_key,order_id,reason,expires_at,created_at,by_admin) '
+               'VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+               (uid(), customer_id, member_id or '', _POINT_POOLS[pool][0], -n, bal, 'use:%s:%s' % (pool, order_id), order_id,
+                '주문 결제 시 %s 사용' % _POINT_POOLS[pool][2], '', now_iso(), ''))
+    c.exec('UPDATE customer_profiles SET points_balance=?, updated_at=? WHERE id=?', (bal, now_iso(), customer_id))
+    c.exec('UPDATE members SET points=? WHERE customer_id=?', (bal, customer_id))
+
+
+def point_order_text(r):
+    """주문 상세 표시용 — '보상포인트 770P' / '' (사용 없음)."""
+    if not num((r or {}).get('point_used')):
+        return ''
+    try:
+        st = _point_order_state(r.get('order_id'))
+        parts = ['%s %sP' % (_POINT_POOLS[k][2], format(v['target'], ',')) for k, v in st.items() if v['target'] > 0]
+        return ' · '.join(parts) or '%sP' % format(num(r.get('point_used')), ',')
+    except Exception:
+        return '%sP' % format(num(r.get('point_used')), ',')
+
+
+@admin_router.post('/api/cart/points')
+def api_cart_points(request: Request, body: dict = Body(...)):
+    """체크아웃 표시용 — 이 장바구니에 쓸 수 있는 포인트. 실제 차감은 /api/orders 가 재검증한다."""
+    try: ensure_ready()
+    except Exception: pass
+    empty = {'login': False, 'point_ok': False, 'reward_ok': False, 'reward': 0, 'general': 0, 'usable': 0, 'min_pay': POINT_MIN_PAY}
+    items = [x for x in (body.get('items') or [])[:50] if isinstance(x, dict)]
+    try:
+        m = member_of(request)
+    except Exception:
+        m = None
+    cid = (m or {}).get('customer_id') or ''
+    if not m or not cid or (m.get('status') or 'ACTIVE') != 'ACTIVE' or not items:
+        return empty
+    pids = {str(i.get('id') or '').strip() for i in items}
+    try:
+        rs = product_rules(items)
+        vals = [rs.get(p) or {} for p in pids]
+        po = all(v.get('point_ok') is True for v in vals); rw = all(v.get('reward_ok') is True for v in vals)
+        pr = one('SELECT points_balance FROM customer_profiles WHERE id=?', (cid,)) or {}
+        rs_ = one(_REWARD_SUM_SQL, (cid,)) or {}
+        bal, rsum = num(pr.get('points_balance')), num(rs_.get('s'))
+        for hold in _point_unpaid_holds(cid).values():    # 재주문 시 풀리는 몫까지 사용 가능으로 안내
+            bal += sum(hold.values()); rsum += hold.get('reward', 0)
+        reward, general = _point_split_pools(bal, rsum)
+    except Exception:
+        return dict(empty, login=True)
+    return {'login': True, 'point_ok': po, 'reward_ok': rw, 'reward': reward, 'general': general,
+            'usable': (reward if rw else 0) + (general if po else 0), 'min_pay': POINT_MIN_PAY}
 
 
 @admin_router.post('/api/cart/rules')
@@ -13907,7 +14155,12 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'ship_required': (bool(body['ship_required']) if isinstance(body.get('ship_required'), bool)
                              else (cur or {}).get('ship_required', True) is not False),
            'coupon_ok': (bool(body['coupon_ok']) if isinstance(body.get('coupon_ok'), bool)
-                         else (cur or {}).get('coupon_ok') is True)}
+                         else (cur or {}).get('coupon_ok') is True),
+           # 할인 적용 항목 (2026-11-06) — 체크한 이벤트에서만 포인트·보상포인트 사용
+           'point_ok': (bool(body['point_ok']) if isinstance(body.get('point_ok'), bool)
+                        else (cur or {}).get('point_ok') is True),
+           'reward_ok': (bool(body['reward_ok']) if isinstance(body.get('reward_ok'), bool)
+                         else (cur or {}).get('reward_ok') is True)}
     try:
         rec['options'] = _drop_product_sync(rec, (cur or {}).get('options'), a)
     except HTTPException:
@@ -18007,7 +18260,9 @@ def api_m_points(request: Request):
     rs = rows('SELECT event_type,amount,balance_after,reason,expires_at,created_at FROM point_ledger WHERE customer_id=? ORDER BY created_at DESC LIMIT 200', (cid,))
     names = {'SIGNUP_BONUS':'최초 가입 혜택','LEGACY_BALANCE':'기존 포인트 이관','ADMIN_ADJUST':'관리자 조정',
              'PURCHASE_REWARD':'구매 적립 (1%)','PURCHASE_REVOKE':'구매 적립 회수 (취소·반품)',
-             'COMPENSATION':'이세계아이돌 예약판매 보상 적립 (1%)','COMPENSATION_REVOKE':'보상 적립 회수 (취소·반품)'}
+             'COMPENSATION':'이세계아이돌 예약판매 보상 적립 (1%)','COMPENSATION_REVOKE':'보상 적립 회수 (취소·반품)',
+             'REWARD_USE':'보상포인트 사용','REWARD_RESTORE':'보상포인트 사용 복원',
+             'POINT_USE':'포인트 사용','POINT_RESTORE':'포인트 사용 복원'}
     return {'balance': num(cp.get('points_balance')), 'rows': [
         {'type': names.get(r['event_type'], r['event_type']), 'amount': num(r['amount']),
          'balance': num(r['balance_after']), 'reason': r.get('reason') or '',
@@ -18142,6 +18397,7 @@ def api_m_order_detail(oid: str, request: Request):
                  'holder': r.get('vbank_holder') or '', 'due': r.get('vbank_due') or ''}
     return {'order_id': oid, 'created': (r.get('created') or '')[:19].replace('T', ' '), 'step': st, 'status_kr': kr,
             'amount': num(r.get('amount')), 'ship_method': r.get('ship_method') or '',
+            'point_text': point_order_text(r),
             'tracking': r.get('tracking') or '',
             'courier_kr': courier_name(r.get('courier') or '') if (r.get('courier') or '') else '',
             'track_url': track_url(r.get('courier') or '', r.get('tracking') or ''),
@@ -18313,13 +18569,14 @@ th,td{border:1px solid #ccc;padding:7px 9px}th{background:#141414;color:#fff;fon
 <b>주문번호</b> %s &nbsp;·&nbsp; <b>거래일시</b> %s<br>
 <b>받는분</b> %s (%s) · %s</div>
 <table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th><th class="r">금액</th></tr>%s</table>
-<div class="tot">합계 (부가세 포함) &nbsp; ₩ %s</div>
+%s<div class="tot">합계 (부가세 포함) &nbsp; ₩ %s</div>
 <div class="meta" style="color:#888;font-size:11.5px">본 명세서는 전자상거래 주문내역 확인용입니다. 세금계산서/현금영수증은 결제수단 및 신청에 따라 별도 발급됩니다.</div>
 <button class="btn" onclick="window.print()">인쇄하기</button></body></html>'''
         % (h(oid), h(oid), h((r.get('created') or '')[:19].replace('T', ' ')),
            h(b.get('name', '')), h(b.get('phone', '')),
            h(('[%s] %s %s' % (b.get('zip', ''), b.get('addr1', ''), b.get('addr2', ''))).strip()),
-           tr, format(num(r.get('amount')), ',')))
+           tr, ('<div class="meta" style="text-align:right;margin:0">포인트 사용 &nbsp; %s</div>' % h(point_order_text(r))) if num(r.get('point_used')) else '',
+           format(num(r.get('amount')), ',')))
 
 @admin_router.post('/api/member/phone/send')
 def api_m_phone_send(request: Request, body: dict = Body(...)):

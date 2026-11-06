@@ -1983,7 +1983,7 @@ def ensure_ready():
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s TEXT" % col)
             except Exception: pass
-    for col in ('list_price', 'sort_order', 'stock_baseline', 'ship_required', 'coupon_ok'):
+    for col in ('list_price', 'sort_order', 'stock_baseline', 'ship_required', 'coupon_ok', 'points_ok', 'etc_ok'):
         if pcx and col not in pcx:
             try: run("ALTER TABLE products ADD COLUMN %s INTEGER" % col)
             except Exception: pass
@@ -2387,6 +2387,7 @@ def api_order_detail(oid: str, request: Request):
             'can_pay_lookup': bool(_ptid and _inicis_cred_for_tid(_ptid)),
             'paid_at': (r.get('paid_at') or '')[:19].replace('T', ' '),
             'pay_log': plog, 'pending_reason': preason,
+            'points_used': _order_points_view(r.get('order_id')),
             # 구매 국가(접속 국가) — 저장분 또는 과거 주문 추정. 미조회분은 화면이 열릴 때 1회 조회(auto_lookup).
             'geo': geo_view(r, RANK.get(a.get('role'), 0)),
             'member_id': r.get('member_id') or '',
@@ -2468,6 +2469,19 @@ def api_order_mark_paid(oid: str, request: Request):
 _RESTORE_MAX = 100
 
 
+def _order_points_view(oid):
+    """관리자 주문 상세 — 결제에 쓴 포인트 (적립금 · 기타 할인) · 반환 여부."""
+    try:
+        import pointpay
+        u = pointpay.usage(oid)
+        if not u['total']:
+            return None
+        return {'point': u['used']['point'], 'reward': u['used']['reward'], 'total': u['total'],
+                'held': u['net']['point'] + u['net']['reward']}
+    except Exception:
+        return None
+
+
 def _restore_check(oid):
     """(ok, 사유, 주문행) — 미리보기와 실행이 같은 판정을 쓴다."""
     r = one('SELECT * FROM orders WHERE order_id=?', (oid,))
@@ -2532,6 +2546,10 @@ def _restore_one(oid, actor_name, note):
     for pid in taken:
         try: catalog_inventory_from_legacy(pid)
         except Exception: pass
+    try:                                               # 취소 때 반환한 결제 포인트를 다시 차감한다 (멱등)
+        import pointpay; pointpay.on_paid(oid)
+    except Exception:
+        pass
     coupon = ''
     try:                                               # 취소 때 풀린 쿠폰 사용을 되돌린다 (멱등)
         cu = one("SELECT code FROM mp_coupon_uses WHERE order_id=? AND status='RELEASED'", (oid,))
@@ -3168,6 +3186,11 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
     if 'admin_memo' in _state['ocols']: sets.append('admin_memo=?'); args.append(('[취소] ' + reason)[:300])
     restored_ids = _cancel_order_stock(oid, sets, args, bool(_state['pcols'] and restock), expected_status=prev_status)
     restored = len(restored_ids)
+    pts_back = 0
+    try:                                              # 결제에 쓴 포인트 반환 (pointpay · 멱등) — 실패해도 취소는 유지
+        import pointpay; pts_back = pointpay.restore(oid, '주문 취소')
+    except Exception as _pe:
+        print('[pointpay] restore %s: %s' % (oid, _pe), flush=True)
     for restored_id in restored_ids:
         try: catalog_inventory_from_legacy(restored_id)
         except Exception: pass
@@ -3179,8 +3202,9 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         revoked = 0
     manual_paid = bool(manual and prev_status == 'PAID')   # 수동환불 완료처리(외부에서 이미 환불)
     audit(a, '환불' if refunded else ('수동환불처리' if manual_paid else '주문취소'), oid,
-          '%s / 금액 %s / 재고복원 %d%s%s' % (reason, num(r.get('amount')), restored,
+          '%s / 금액 %s / 재고복원 %d%s%s%s' % (reason, num(r.get('amount')), restored,
                                           (' / 적립회수 %dP' % revoked) if revoked else '',
+                                          (' / 사용포인트 반환 %dP' % pts_back) if pts_back else '',
                                           refund_mid_note if refunded
                                           else (' / 이니시스 API 미호출(외부 환불 완료 전제)' if manual_paid else '')))
     try:                                              # 결제 진행 이력에도 남긴다 — 실패해도 취소는 유지
@@ -3197,7 +3221,7 @@ def _order_cancel_core(a, r, reason, manual=False, restock=True):
         shipfee_res = None
     return {'ok': True, 'refunded': refunded, 'manual': manual_paid,
             'stock_restored_items': restored,
-            'points_revoked': revoked, 'prev_status': prev_status, 'shipfee': shipfee_res}
+            'points_revoked': revoked, 'points_returned': pts_back, 'prev_status': prev_status, 'shipfee': shipfee_res}
 
 @admin_router.post('/admin/api/orders/{oid}/cancel')
 def api_cancel(oid: str, request: Request, body: dict = Body(...)):
@@ -5703,7 +5727,7 @@ async function openOrder(oid){try{const o=await api('/admin/api/orders/'+encodeU
    :'<span style="color:#999">카드 상세 없음 — 거래번호(TID)가 없는 주문입니다</span>');
  $('#mbox').innerHTML=`<h3>주문 ${esc(o.order_id)} <span class="st ${esc(o.status)}">${esc(o.status)}</span></h3>
  <div class="kv"><b>일시</b><span class="mono">${esc((o.created||'').slice(0,19).replace('T',' '))}</span>
- <b>금액</b><span class="mono">${won(o.amount)}${o.method?' · '+esc(o.method):(pmName?' · '+esc(pmName):'')}${o.pay_mid?' · MID '+esc(o.pay_mid)+(midOld?'<b style="color:#b5443c">(구)</b>':''):''}</span>
+ <b>금액</b><span class="mono">${won(o.amount)}${o.points_used?' <span style="color:#B71F18;font-weight:700">(포인트 사용 −'+won(o.points_used.total)+(o.points_used.reward?' · 기타할인 '+o.points_used.reward.toLocaleString('ko-KR')+'P':'')+(o.points_used.point?' · 적립금 '+o.points_used.point.toLocaleString('ko-KR')+'P':'')+(o.points_used.held<o.points_used.total?' · 반환됨':'')+')</span>':''}${o.method?' · '+esc(o.method):(pmName?' · '+esc(pmName):'')}${o.pay_mid?' · MID '+esc(o.pay_mid)+(midOld?'<b style="color:#b5443c">(구)</b>':''):''}</span>
  <b>결제수단</b><span id="mpaydet">${pdHtml}</span>
  <b>주문자</b><span>${esc(o.buyer.name)} · ${esc(o.buyer.phone)}</span>
  <b>구매 국가</b><span id="mgeo">${geoHtml(o.geo,o.order_id)}</span>
@@ -6879,7 +6903,7 @@ const _pub=r?(r._pub||(r.on===false?'off':'now')):'off';   /* 새 이벤트 기�
   </div>
   <div id="dr_pvbox" style="margin-top:8px;padding:9px 11px;border:1px dashed #cfcabc;border-radius:6px;background:#fbfaf6;font-size:12px">${drPvBoxHTML(r)}</div>
  </span>
-<b>판매 규칙</b><span style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:8px 10px;border:2px solid var(--black);border-radius:6px"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_shipreq" ${v.ship_required!==false?'checked':''}> 배송비 필수부과 <span class="hint" style="display:inline">(3,000원 · 무료배송 미적용)</span></label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_couponok" ${v.coupon_ok===true?'checked':''}> 쿠폰 적용 가능</label><span class="hint" style="flex-basis:100%;margin:0">이 이벤트의 옵션 상품(연결 상품 포함)에 결제 시 바로 적용됩니다. 기본값: 배송비 필수 ✓ · 쿠폰 ✗</span></span>
+<b>판매 규칙</b><span style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:8px 10px;border:2px solid var(--black);border-radius:6px"><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_shipreq" ${v.ship_required!==false?'checked':''}> 배송비 필수부과 <span class="hint" style="display:inline">(3,000원 · 무료배송 미적용)</span></label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_couponok" ${v.coupon_ok===true?'checked':''}> 쿠폰 적용 가능</label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_pointsok" ${v.points_ok===true?'checked':''}> 적립금 사용 가능</label><label style="display:inline-flex;gap:6px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="dr_etcok" ${v.etc_ok===true?'checked':''}> 기타 할인 <span class="hint" style="display:inline">(이세계아이돌 예약판매 1%)</span></label><span class="hint" style="flex-basis:100%;margin:0">이 이벤트의 옵션 상품(연결 상품 포함)에 결제 시 바로 적용됩니다. 기본값: 배송비 필수 ✓ · 쿠폰 ✗ · 적립금 ✗ · 기타 할인 ✗</span></span>
  <b>제목 *</b><span><input id="dr_title" style="width:100%" value="${esc(v.title||'')}" placeholder="예) 스타라이트 1st MINI 발매 기념 대면 팬사인회 EVENT"></span>
  <b>아티스트</b><span><input id="dr_artist" style="width:100%" value="${esc(v.artist||'')}" placeholder="예) 스타라이트"></span>
  <b>유형</b><span><div id="dr_cats" style="display:flex;gap:6px;flex-wrap:wrap">${DRCATS.map(c=>{const on=(v.categories&&v.categories.length?v.categories:[v.category]).includes(c.id);return `<label class="drcat${on?' on':''}" style="display:inline-flex;align-items:center;padding:6px 12px;border:1.5px solid ${on?'#141414':'#ddd'};border-radius:999px;background:${on?'#141414':'#fff'};color:${on?'#fff':'#444'};cursor:pointer;font-size:12px;font-weight:700;user-select:none"><input type="checkbox" value="${c.id}" ${on?'checked':''} style="display:none" onchange="const l=this.parentElement,k=this.checked;l.style.background=k?'#141414':'#fff';l.style.color=k?'#fff':'#444';l.style.borderColor=k?'#141414':'#ddd'">${esc(c.label)}</label>`}).join('')}</div>
@@ -6949,7 +6973,8 @@ async function saveDrop(id){try{
   winner_videocall_extra:$('#dr_twv_extra').value,
   entry_extra:$('#dr_te_extra').value,
   announce_notice:$('#dr_annnotice').value,announce_body:$('#dr_annbody').value,winners:winners,
-  ship_required:!!($('#dr_shipreq')||{}).checked,coupon_ok:!!($('#dr_couponok')||{}).checked};
+  ship_required:!!($('#dr_shipreq')||{}).checked,coupon_ok:!!($('#dr_couponok')||{}).checked,
+  points_ok:!!($('#dr_pointsok')||{}).checked,etc_ok:!!($('#dr_etcok')||{}).checked};
  const d=await api('/admin/api/drops/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  toast('저장 완료 — '+(d.pub_label||'사이트에 즉시 반영')+' (#'+d.id+')');closeM();loadDrops();
 }catch(e){toast(e.message)}}
@@ -8367,7 +8392,7 @@ def api_product_create(request: Request, body: dict = Body(...)):
         cols.append('badge_color'); vals.append(badge_color(body.get('badge_color')))
     if 'hero_bg' in _state['pcols']:
         cols.append('hero_bg'); vals.append(hex_or_empty(body.get('hero_bg')))
-    for _rk in ('ship_required', 'coupon_ok'):
+    for _rk in ('ship_required', 'coupon_ok', 'points_ok', 'etc_ok'):
         if _rk in body and _rk in _state['pcols']:
             if type(body[_rk]) is not bool: raise HTTPException(400, '배송비·쿠폰 설정 값이 올바르지 않습니다')
             cols.append(_rk); vals.append(1 if body[_rk] else 0)
@@ -8612,17 +8637,21 @@ def _prod_rule_view(pid):
     try:
         pc = _state.get('pcols') or set()
         cols = 'id, %s AS name' % (_state.get('pname') or 'name') + ''.join(
-            ', ' + c for c in ('badge', 'ship_required', 'coupon_ok') if c in pc)
+            ', ' + c for c in ('badge', 'ship_required', 'coupon_ok', 'points_ok', 'etc_ok') if c in pc)
         r = one('SELECT %s FROM products WHERE id=?' % cols, (pid,)) or {'id': pid}
-        sr, cp, explicit = _rule_of_row(r, _drop_rules_index())
-        return {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'rules_explicit': bool(explicit)}
+        di = _drop_rules_index()
+        sr, cp, explicit = _rule_of_row(r, di)
+        pt, et, _x = _pay_rule_of_row(r, di, promo_hint=(bool(sr) or not cp))
+        return {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'rules_explicit': bool(explicit),
+                'points_ok': bool(pt), 'etc_ok': bool(et)}
     except Exception:
-        return {'ship_required': False, 'coupon_ok': True, 'rules_explicit': False}
+        return {'ship_required': False, 'coupon_ok': True, 'rules_explicit': False, 'points_ok': False, 'etc_ok': True}
 
 def _rule_body(body, sets, args, log):
     """요청 본문의 체크박스 값을 컬럼 UPDATE 로 (둘 다 bool 일 때만)."""
     pc = _state.get('pcols') or set()
-    for k, lb in (('ship_required', '배송비 필수부과'), ('coupon_ok', '쿠폰 적용 가능')):
+    for k, lb in (('ship_required', '배송비 필수부과'), ('coupon_ok', '쿠폰 적용 가능'),
+                  ('points_ok', '적립금 사용 가능'), ('etc_ok', '기타 할인')):
         if k in body and k in pc:
             if type(body[k]) is not bool: raise HTTPException(400, '%s 값은 true 또는 false여야 합니다' % lb)
             sets.append('%s=?' % k); args.append(1 if body[k] else 0); log.append('%s %s' % (lb, 'ON' if body[k] else 'OFF'))
@@ -8855,6 +8884,8 @@ h2{font-size:19px;margin-bottom:18px}
  <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:center">
   <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rShip" style="width:18px;height:18px" onchange="_ruleTouched=true"> 배송비 필수부과 <span style="font-weight:400;color:#888;font-size:12px">(3,000원 · 3만원 이상 무료배송 미적용)</span></label>
   <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rCoupon" style="width:18px;height:18px" checked onchange="_ruleTouched=true"> 쿠폰 적용 가능</label>
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rPoint" style="width:18px;height:18px" onchange="_ruleTouched=true"> 적립금 사용 가능</label>
+  <label style="display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:14px;cursor:pointer"><input type="checkbox" id="rEtc" style="width:18px;height:18px" checked onchange="_ruleTouched=true"> 기타 할인 <span style="font-weight:400;color:#888;font-size:12px">(이세계아이돌 예약판매 1%)</span></label>
  </div>
  <div class="hint" id="ruleHint" style="margin-top:8px">배지에 예약판매·사인회·영상통화·럭키드로우를 입력하면 자동으로 [배송비 필수부과 ✓ · 쿠폰 적용 ✗]로 맞춰집니다. 체크를 직접 바꾸면 그 값이 우선합니다. 판매 옵션·세트 상품은 이 설정을 그대로 따릅니다.</div>
 </div>
@@ -9116,7 +9147,7 @@ async function init(){
   stockLoad(d);$('#fd').value=d.descr;
   _info=infoParse(d.info_rows||'').map(([k,v])=>[k,String(v||'').split('//').join('\n')]);renderInfoRows();
   $('#fship').value=d.ship_rows||'';$('#fb').value=d.badge||'';$('#fbc').value=d.badge_color||'#050505';
-  $('#rShip').checked=!!d.ship_required;$('#rCoupon').checked=d.coupon_ok!==false;_ruleTouched=!!d.rules_explicit;
+  $('#rShip').checked=!!d.ship_required;$('#rCoupon').checked=d.coupon_ok!==false;if($('#rPoint'))$('#rPoint').checked=d.points_ok===true;if($('#rEtc'))$('#rEtc').checked=d.etc_ok!==false;_ruleTouched=!!d.rules_explicit;
   if(!d.rules_explicit&&(d.ship_required||d.coupon_ok===false))$('#ruleHint').innerHTML='<b style="color:#B71F18">자동 판정됨</b> — 배지·이벤트 연결 기준으로 프로모션 상품으로 인식했습니다. 저장하면 이 값으로 확정됩니다.';
   setMainImg(d.img);
   _blocks=Array.isArray(d.detail_blocks)?d.detail_blocks:[];
@@ -9181,10 +9212,10 @@ let _stockBaseline=null;
 function stockLoad(d){_stockBaseline=d.stock_baseline==null?null:d.stock_baseline;$('#fs').value=_stockBaseline==null?'':_stockBaseline;$('#fs').placeholder='미설정 / 무제한';$('#stockRemaining').textContent='현재 남은 재고: '+(d.stock==null?'무제한 / 구성 재고 사용':Number(d.stock).toLocaleString())+(_stockBaseline==null?' · 기준량 미설정':' · 판매되어도 기본 입고수량은 유지됩니다')}
 /* ── 판매 규칙 체크박스 (2026-10-20) ── */
 let _ruleTouched=false;
-function ruleVals(){return {ship_required:$('#rShip').checked,coupon_ok:$('#rCoupon').checked}}
+function ruleVals(){return {ship_required:$('#rShip').checked,coupon_ok:$('#rCoupon').checked,points_ok:!!($('#rPoint')||{}).checked,etc_ok:!!($('#rEtc')||{}).checked}}
 document.addEventListener('input',e=>{if(!e.target||e.target.id!=='fb'||_ruleTouched)return;
  const promo=/예약\s*판매|사인회|팬\s*싸인|영상\s*통화|영통|럭키\s*드로우|fan\s*sign|video\s*call|fan\s*call|lucky\s*draw|pre-?\s*order/i.test(e.target.value);
- $('#rShip').checked=promo;$('#rCoupon').checked=!promo});
+ $('#rShip').checked=promo;$('#rCoupon').checked=!promo;if($('#rEtc'))$('#rEtc').checked=!promo;if(promo&&$('#rPoint'))$('#rPoint').checked=false});
 async function save(){
  const name=$('#fn').value.trim(),cat=$('#fc').value;
  if(!name)return toast('상품명을 입력하세요');
@@ -12959,14 +12990,16 @@ def _rule_bool(v):
 
 
 def _drop_rules_index():
-    """이벤트 옵션 상품 → (배송비 필수, 쿠폰 가능). 이벤트 편집기 체크박스 — 미지정이면 (필수, 불가)."""
+    """이벤트 옵션 상품 → (배송비 필수, 쿠폰 가능, 적립금 사용, 기타 할인). 이벤트 편집기 체크박스
+    — 미지정이면 (필수, 불가, 불가, 불가)."""
     idx = {}
     try:
         for d in _drops_all():
             if not isinstance(d, dict):
                 continue
             sr = d.get('ship_required'); cp = d.get('coupon_ok')
-            flags = (True if sr is None else bool(sr), False if cp is None else bool(cp))
+            flags = (True if sr is None else bool(sr), False if cp is None else bool(cp),
+                     d.get('points_ok') is True, d.get('etc_ok') is True)
             for o in _drop_opts_norm(d.get('options')):
                 if o.get('product_id'):
                     idx[str(o['product_id'])] = flags
@@ -12979,7 +13012,7 @@ def _rule_of_row(r, drop_idx):
     """상품 행 → (ship_required, coupon_ok, 명시여부). 명시값(관리자 체크박스) 우선, 미지정이면 자동 판정."""
     pid = str(r.get('id') or '')
     if pid in drop_idx:
-        return drop_idx[pid] + (True,)
+        return drop_idx[pid][:2] + (True,)
     sr, cp = _rule_bool(r.get('ship_required')), _rule_bool(r.get('coupon_ok'))
     if pid.startswith('mpd::'):                          # 이벤트 옵션 상품은 연결이 끊겨도 기본 = 필수/불가
         return (True if sr is None else sr, False if cp is None else cp, sr is not None and cp is not None)
@@ -12994,6 +13027,24 @@ def _rule_of_row(r, drop_idx):
             except Exception:
                 promo = False
     return (promo if sr is None else sr, (not promo) if cp is None else cp, sr is not None and cp is not None)
+
+
+def _pay_rule_of_row(r, drop_idx, promo_hint=None):
+    """상품 행 → (적립금 사용 가능, 기타 할인 가능, 명시여부) — 포인트 결제 (2026-11-06).
+    명시값(관리자 체크박스) 우선. 미지정이면 적립금 = 불가, 기타 할인 = 일반 상품만 가능(행사·이벤트 상품 불가)."""
+    pid = str(r.get('id') or '')
+    if pid in drop_idx:
+        return drop_idx[pid][2:4] + (True,)
+    pt, et = _rule_bool(r.get('points_ok')), _rule_bool(r.get('etc_ok'))
+    if pid.startswith('mpd::'):
+        return (bool(pt), bool(et), pt is not None and et is not None)
+    if et is None:
+        promo = promo_hint
+        if promo is None:
+            sr, cp, _x = _rule_of_row(r, drop_idx)
+            promo = bool(sr) or not cp
+        et = not promo
+    return (bool(pt), bool(et), _rule_bool(r.get('points_ok')) is not None and _rule_bool(r.get('etc_ok')) is not None)
 
 
 def product_rules(items):
@@ -13014,7 +13065,7 @@ def product_rules(items):
     drop_idx = _drop_rules_index()
     pc = _state.get('pcols') or set()
     cols = 'id, ' + (_state.get('pname') or 'name') + ' AS name' + ''.join(
-        ', ' + c for c in ('badge', 'ship_required', 'coupon_ok') if c in pc)
+        ', ' + c for c in ('badge', 'ship_required', 'coupon_ok', 'points_ok', 'etc_ok') if c in pc)
     for pid in pids:
         res = None
         for cand in _cp_cands(pid)[:4]:
@@ -13024,7 +13075,8 @@ def product_rules(items):
                 r = None
             if not r:
                 if cand.startswith('mpd::'):
-                    res = {'ship_required': True, 'coupon_ok': False, 'name': cand}
+                    res = {'ship_required': True, 'coupon_ok': False, 'name': cand,
+                           'points_ok': False, 'etc_ok': False}
                     break
                 continue
             nm = str(r.get('name') or cand)
@@ -13037,12 +13089,18 @@ def product_rules(items):
                     pass
             sr, cp, _ = _rule_of_row(target, drop_idx)
             # 자식 이름의 【영상통화】 등 태그는 부모가 자동 판정일 때만 보조 반영
+            child_promo = False
             if target is not r and _rule_bool(target.get('coupon_ok')) is None and _cp_promo_row(r):
                 sr, cp = True, False
-            res = {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'name': nm}
+                child_promo = True
+            pt, et, _ = _pay_rule_of_row(target, drop_idx, promo_hint=(bool(sr) or not cp))
+            if child_promo and _rule_bool(target.get('etc_ok')) is None:
+                et = False
+            res = {'ship_required': bool(sr), 'coupon_ok': bool(cp), 'name': nm,
+                   'points_ok': bool(pt), 'etc_ok': bool(et)}
             break
         if res is None and pid.startswith('mpd::'):
-            res = {'ship_required': True, 'coupon_ok': False, 'name': pid}
+            res = {'ship_required': True, 'coupon_ok': False, 'name': pid, 'points_ok': False, 'etc_ok': False}
         if res is not None:
             out[pid] = res
     return out
@@ -13080,6 +13138,8 @@ def api_cart_rules(request: Request, body: dict = Body(...)):
         rs = {}
     return {'ship_required': [k for k, v in rs.items() if v['ship_required']],
             'coupon_blocked': [k for k, v in rs.items() if not v['coupon_ok']],
+            'points_ok': [k for k, v in rs.items() if v.get('points_ok')],
+            'etc_ok': [k for k, v in rs.items() if v.get('etc_ok')],
             'ship_fee': 3000}
 
 
@@ -13907,7 +13967,12 @@ def api_drops_save(request: Request, body: dict = Body(...)):
            'ship_required': (bool(body['ship_required']) if isinstance(body.get('ship_required'), bool)
                              else (cur or {}).get('ship_required', True) is not False),
            'coupon_ok': (bool(body['coupon_ok']) if isinstance(body.get('coupon_ok'), bool)
-                         else (cur or {}).get('coupon_ok') is True)}
+                         else (cur or {}).get('coupon_ok') is True),
+           # 포인트 결제 (2026-11-06) — 적립금 사용 가능 · 기타 할인(이세계아이돌 예약판매 1%) — 기본 불가
+           'points_ok': (bool(body['points_ok']) if isinstance(body.get('points_ok'), bool)
+                         else (cur or {}).get('points_ok') is True),
+           'etc_ok': (bool(body['etc_ok']) if isinstance(body.get('etc_ok'), bool)
+                      else (cur or {}).get('etc_ok') is True)}
     try:
         rec['options'] = _drop_product_sync(rec, (cur or {}).get('options'), a)
     except HTTPException:
@@ -17073,6 +17138,11 @@ def _inject_auth(html, path='', uid=None):
         html = growth.html_apply(html, path)      # 가짜 사회적 증거 제거 · 어트리뷰션/동의(head) — 멱등
     except Exception:
         growth = None
+    try:
+        import pointpay
+        html = pointpay.checkout_apply(html, path)   # 체크아웃 포인트 사용 (쿠폰 주입 뒤 · 멱등)
+    except Exception:
+        pass
     add = ''
     if 'mpAuthJs' not in html: add += AUTH_SNIPPET
     if 'mpLikeJs' not in html: add += LIKE_SNIPPET
@@ -18007,8 +18077,16 @@ def api_m_points(request: Request):
     rs = rows('SELECT event_type,amount,balance_after,reason,expires_at,created_at FROM point_ledger WHERE customer_id=? ORDER BY created_at DESC LIMIT 200', (cid,))
     names = {'SIGNUP_BONUS':'최초 가입 혜택','LEGACY_BALANCE':'기존 포인트 이관','ADMIN_ADJUST':'관리자 조정',
              'PURCHASE_REWARD':'구매 적립 (1%)','PURCHASE_REVOKE':'구매 적립 회수 (취소·반품)',
-             'COMPENSATION':'이세계아이돌 예약판매 보상 적립 (1%)','COMPENSATION_REVOKE':'보상 적립 회수 (취소·반품)'}
-    return {'balance': num(cp.get('points_balance')), 'rows': [
+             'COMPENSATION':'이세계아이돌 예약판매 1%','COMPENSATION_REVOKE':'이세계아이돌 예약판매 1% 회수 (취소·반품)'}
+    _bk = {}
+    try:                                              # 포인트 결제 (2026-11-06) — 사용·반환 내역 · 갈래별 잔액
+        import pointpay; names.update(pointpay.TYPE_NAMES); _bk = pointpay.balances(cid)
+    except Exception:
+        _bk = {}
+    return {'balance': num(cp.get('points_balance')),
+            'balances': {'point': num(_bk.get('point')), 'reward': num(_bk.get('reward')),
+                         'reward_label': '이세계아이돌 예약판매 1%'} if _bk else None,
+            'rows': [
         {'type': names.get(r['event_type'], r['event_type']), 'amount': num(r['amount']),
          'balance': num(r['balance_after']), 'reason': r.get('reason') or '',
          'expires': r.get('expires_at') or '', 'created': (r.get('created_at') or '')[:16].replace('T',' ')} for r in rs]}

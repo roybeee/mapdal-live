@@ -691,6 +691,14 @@ def _require_buyer_email(buyer: dict, member: dict = None) -> str:
         raise HTTPException(400, '올바른 이메일 주소를 입력해 주세요 (예: name@example.com)')
     return e
 
+def _pts_fail(oid: str):
+    """결제 실패(FAILED) — 결제에 쓰려던 포인트를 돌려준다 (pointpay · 멱등 · 실패 무해)."""
+    try:
+        import pointpay
+        pointpay.restore(oid, '결제 실패', statuses=('FAILED',))
+    except Exception as e:
+        print('[pointpay] fail-restore %s: %s' % (oid, e), flush=True)
+
 @app.post('/api/orders')
 async def create_order(req: Request, response: Response):
     body = await req.json()
@@ -829,6 +837,37 @@ async def create_order(req: Request, response: Response):
         coupon = growth.coupon_check(body.get('coupon'), buyer.get('email') or '', customer_id, phone_norm,
                                      bool(body.get('intl')))
         cp_reserved = growth.coupon_reserve(coupon)      # 사용 횟수 제한 쿠폰: 주문 생성 전 원자적 예약
+    # ── 포인트 사용 (2026-11-06 · pointpay) ───────────────────────────────────
+    #   적립금 / 기타 할인(이세계아이돌 예약판매 1%) — 상품별 [적립금 사용 가능]·[기타 할인] 체크 상품 금액까지.
+    #   잔액 차감은 주문 트랜잭션 '전'에 pointpay.spend 가 원자적으로 하고(동시 주문 이중 사용 방지),
+    #   주문이 만들어지지 않으면(재고·한도 위반 등) 아래 except 에서 즉시 되돌린다.
+    order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
+    use_pt = use_rw = 0
+    pts_spent = None
+    pay_rules = {}
+    import pointpay as _pp
+    use_pt, use_rw = _pp.requested(body)
+    if use_pt or use_rw:
+        if not (member_id and customer_id):
+            if cp_reserved:
+                import growth; growth.coupon_unreserve(coupon['code'])
+            raise HTTPException(400, '포인트는 로그인한 회원만 사용할 수 있습니다')
+        try:
+            import admin_v2 as _avp; pay_rules = _avp.product_rules(items)
+        except Exception as _pe:
+            print('[pointpay] rules %s' % _pe, flush=True)
+            if cp_reserved:
+                import growth; growth.coupon_unreserve(coupon['code'])
+            raise HTTPException(400, '포인트 사용 가능 여부를 확인하지 못했습니다 — 잠시 후 다시 시도해 주세요')
+        try:
+            _pp.release_stale(customer_id)
+            pts_spent = _pp.spend(customer_id, member_id, order_id, use_pt, use_rw)
+        except BaseException:
+            if cp_reserved:
+                import growth; growth.coupon_unreserve(coupon['code'])
+            raise
+    pts_used = 0
+    elig_pt = elig_rw = 0
     discount = 0
     changed_stock_ids = []
     try:
@@ -865,6 +904,9 @@ async def create_order(req: Request, response: Response):
                 if parts:
                     changed_stock_ids.extend(p['id'] for p in parts)
                 sub += row['price'] * q
+                _pr = pay_rules.get(pid) or {}
+                if _pr.get('points_ok'): elig_pt += row['price'] * q
+                if _pr.get('etc_ok'): elig_rw += row['price'] * q
                 line_rec = {'id': db_id, 'n': row['name'], 'p': row['price'], 'q': q}
                 if parts: line_rec['parts'] = parts
                 resolved.append(line_rec)
@@ -885,8 +927,10 @@ async def create_order(req: Request, response: Response):
             if coupon:
                 import growth
                 discount = growth.coupon_amount(coupon, sub)
-            amount = sub + ship_fee - discount
-            order_id = f'MD-{kst_naive():%Y%m%d}-{secrets.token_hex(3).upper()}'
+            if pts_spent:
+                pts_used = _pp.check_use(pts_spent['point'], pts_spent['reward'], elig_pt, elig_rw,
+                                         sub, ship_fee, discount)
+            amount = sub + ship_fee - discount - pts_used
             # ga_* 컬럼 존재 여부는 지연 프로브(_has_ga_cols, 1회 판정 캐시)로 확정한다.
             #   트랜잭션 내부 try/except 폴백은 PG 에서 트랜잭션 abort 를 유발하므로 금지.
             if _ga_ok:
@@ -912,6 +956,11 @@ async def create_order(req: Request, response: Response):
         if cp_reserved:                  # 주문이 만들어지지 않았으면(재고·최소금액 등) 예약을 되돌린다
             import growth
             growth.coupon_unreserve(coupon['code'])
+        if pts_spent:                    # 차감한 포인트도 즉시 되돌린다 (멱등)
+            try:
+                _pp.restore(order_id, '주문 생성 실패')
+            except Exception as _pe:
+                print('[pointpay] rollback %s: %s' % (order_id, _pe), flush=True)
         raise
     # 새 상품마스터 재고 화면도 결제 직후 동일 수량을 보도록 호환 투영을 동기화한다.
     try:
@@ -949,7 +998,8 @@ async def create_order(req: Request, response: Response):
     _pay_log(order_id, 'CREATED', '%s · %s원 · %s%s' %
              ('모바일' if _is_mobile_ua(req) else 'PC', format(amount, ','), order_name[:60],
               (' · 선택수단 ' + pay_sel) if pay_sel else '')
-             + ((' · %s +%s원' % ('제주' if region_name == 'jeju' else '도서산간', format(region_extra, ','))) if region_extra else ''))
+             + ((' · %s +%s원' % ('제주' if region_name == 'jeju' else '도서산간', format(region_extra, ','))) if region_extra else '')
+             + ((' · 포인트 −%s원' % format(pts_used, ',')) if pts_used else ''))
 
     # ── INIStdPay STEP1 서명 파라미터 생성 (oid=order_id, price=amount) ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -989,7 +1039,7 @@ async def create_order(req: Request, response: Response):
     inicis_mobile = _ini_mobile_params(order_id, amount, order_name, buyer, origin, pay_sel)
     return {'orderId': order_id, 'amount': amount, 'orderName': order_name,
             'sub': sub, 'shipFee': ship_fee, 'regionExtra': region_extra, 'region': region_name,
-            'discount': discount, 'inicis': inicis,
+            'discount': discount, 'points': pts_used, 'inicis': inicis,
             'inicisMobile': inicis_mobile,
             'mobilePayUrl': 'https://mobile.inicis.com/smart/payment/',
             'isMobile': _is_mobile_ua(req)}
@@ -1048,12 +1098,14 @@ async def inicis_return(req: Request):
         _ini_net_cancel(net_cancel_url, auth_token)
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        _pts_fail(oid)
         return _fail('승인 통신 오류')
 
     if res.get('resultCode') != '0000':
         _pay_log(oid, 'APPROVE_FAIL', '[%s] %s' % (res.get('resultCode', ''), res.get('resultMsg', '승인 실패')))
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        _pts_fail(oid)
         return _fail(res.get('resultMsg', '승인 실패'))
 
     # 금액 위변조 검증: 승인금액(TotPrice) == 주문금액
@@ -1063,6 +1115,7 @@ async def inicis_return(req: Request):
         _ini_net_cancel(net_cancel_url, auth_token)
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        _pts_fail(oid)
         return _fail('결제 금액 불일치')
 
     tid = res.get('tid', ''); method = res.get('payMethod', '')
@@ -1198,6 +1251,7 @@ async def inicis_mobile_return(req: Request):
         _pay_log(oid, 'APPROVE_ERR', '승인 통신 오류')
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        _pts_fail(oid)
         return _fail('승인 통신 오류')
 
     # 승인 응답은 key=value&... 형태의 평문(NVP)으로 온다.
@@ -1206,6 +1260,7 @@ async def inicis_mobile_return(req: Request):
         _pay_log(oid, 'APPROVE_FAIL', '[%s] %s' % (res.get('P_STATUS', ''), res.get('P_RMESG1', '') or '승인 실패'))
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        _pts_fail(oid)
         return _fail(res.get('P_RMESG1', '') or '승인 실패')
 
     # 금액 위변조 검증: 승인금액 == 주문금액
@@ -1217,6 +1272,7 @@ async def inicis_mobile_return(req: Request):
         _pay_log(oid, 'AMOUNT_MISMATCH', '승인 %s원 ≠ 주문 %s원' % (format(paid, ','), format(int(order['amount']), ',')))
         with db() as c:
             c.exec("UPDATE orders SET status='FAILED' WHERE order_id=? AND status='PENDING'", (oid,))
+        _pts_fail(oid)
         return _fail('결제 금액 불일치')
 
     pay_tid = res.get('P_TID', '') or tid
@@ -1629,6 +1685,13 @@ def _award_purchase_points(oid: str):
             o = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
         if not o or o['status'] != 'PAID':
             return
+        pts_total = 0
+        try:                                        # 미결제로 풀렸던 결제 포인트 재반영 (멱등) · 사용분은 적립 기준 제외
+            import pointpay
+            pointpay.on_paid(oid)
+            pts_total = int(pointpay.usage(oid)['total'] or 0)
+        except Exception as _pe:
+            print('[pointpay] on_paid %s: %s' % (oid, _pe), flush=True)
         cid = o['customer_id'] or ''
         mid = o['member_id'] or ''
         if not (cid and mid):                       # 로그인 회원 주문만 적립
@@ -1640,6 +1703,7 @@ def _award_purchase_points(oid: str):
             base = max(0, base - int(float(o.get('discount') or 0)))
         except Exception:
             pass
+        base = max(0, base - pts_total)             # 포인트로 결제한 금액은 적립 기준에서 제외 (2026-11-06)
         pts = (base * POINT_RATE_BP) // 10000       # 1% · 원 단위 절사
         if pts <= 0:
             return
@@ -1884,6 +1948,12 @@ try:
     _growth_startup()
 except Exception as _e:
     print('growth load skipped:', _e)
+try:
+    # 포인트 결제 미리보기(/api/points/checkout) — admin_v2 catch-all 보다 먼저 등록
+    from pointpay import pointpay_router
+    app.include_router(pointpay_router)
+except Exception as _e:
+    print('pointpay load skipped:', _e)
 try:
     # 해외 직구 체크아웃(/checkout-global · PayPal) — 국내 이니시스 흐름과 분리
     from globalshop import global_router

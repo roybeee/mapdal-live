@@ -1091,6 +1091,7 @@ def api_pay(token: str, request: Request, body: dict = Body(...)):
     if not pay_sel:
         raise HTTPException(400, '지원하지 않는 결제수단입니다')
     A, av = _app(), _av()
+    A.pay_config_gate()                            # 운영 결제 설정 fail-closed (2026-11-10)
     amount = due                                   # 원주문 취소가 반영된 현재 청구액
     if amount <= 0:
         raise HTTPException(409, '결제하실 금액이 없습니다')

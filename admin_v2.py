@@ -456,6 +456,13 @@ def client_ip_of(request):
     Render 는 X-Forwarded-For 첫 IP 를 실제 클라이언트로 설정한다(request.client.host 는 10.x 프록시)."""
     try:
         h = request.headers
+        if getattr(getattr(request, 'state', None), 'edge_ok', None) is False:
+            # Cloudflare 미경유가 확인된 요청(edgeguard) — 클라이언트가 넣은 헤더는 믿지 않는다.
+            # 프록시(Render)가 덧붙인 X-Forwarded-For 맨 오른쪽 공인 IP 가 실제 접속지다.
+            for part in reversed(str(h.get('x-forwarded-for') or '').split(',')):
+                v = _ip_ok(part)
+                if v: return v
+            return _ip_ok(request.client.host if request.client else '')
         for k in _GEO_HDR_IP:
             v = _ip_ok(h.get(k))
             if v: return v

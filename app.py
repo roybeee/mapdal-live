@@ -8,6 +8,7 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 import os, re, json, secrets, datetime, base64, hashlib, threading, asyncio
 import urllib.request, urllib.error, urllib.parse
 import paysec
+import edgeguard
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +41,21 @@ INICIS_GOPAYMETHOD = (os.getenv('INICIS_GOPAYMETHOD', '') or 'Card:DirectBank:VB
 #   Cloudflare/Render 프록시 뒤에서는 req.base_url이 실제 도메인과 달라질 수 있으므로
 #   SITE_ORIGIN 환경변수로 실도메인을 고정하는 것이 가장 안전. 미설정 시 헤더로 추론.
 SITE_ORIGIN    = os.getenv('SITE_ORIGIN', 'https://mapdal.kr').rstrip('/')
+
+# ── 결제 설정 fail-closed (2026-11-10) — 운영에서 테스트 상점/빈 키로 결제가 '성공'하는 일을 막는다 ──
+IS_PRODUCTION = edgeguard.is_production(IS_PG)
+PAY_CONFIG_ERRORS, PAY_CONFIG_WARNINGS = edgeguard.inicis_config_check(
+    INICIS_MID if os.getenv('INICIS_MID') else '', os.getenv('INICIS_SIGNKEY', ''),
+    os.getenv('INICIS_INIAPI', ''), INICIS_MOBILE_HASHKEY, IS_PRODUCTION)
+for _m in PAY_CONFIG_ERRORS:
+    print('[pay-config] ERROR %s — 결제 생성이 차단됩니다' % _m, flush=True)
+for _m in PAY_CONFIG_WARNINGS:
+    print('[pay-config] WARN %s' % _m, flush=True)
+
+def pay_config_gate():
+    """결제(주문 생성·추가 배송비 결제) 진입 전 호출 — 운영 설정 오류면 재고 차감 전에 503."""
+    if PAY_CONFIG_ERRORS:
+        raise HTTPException(503, '결제 시스템 점검 중입니다 — 잠시 후 다시 시도해 주세요')
 
 # ── GA4 서버사이드 계측 (Measurement Protocol) ──────────────────────────
 #   클라이언트 purchase(주문완료 페이지 도달 시 전송)는 결제창 이탈·인앱 전환·
@@ -464,6 +480,25 @@ async def clean_urls(request, call_next):
                 request.scope['path'] = '/' + cand
     return await call_next(request)
 
+_ORIGIN_MISS = {'n': 0, 'last': 0.0}
+
+@app.middleware('http')
+async def origin_guard(request, call_next):
+    """Cloudflare 경유 강제 (2026-11-10) — 가장 바깥 미들웨어(마지막 등록)라 모든 요청에 먼저 적용된다.
+       ORIGIN_SHARED_SECRET 미설정 시 아무것도 하지 않는다(종전 동작)."""
+    allowed, edge_ok = edgeguard.origin_decision(request.url.path, request.headers)
+    request.state.edge_ok = edge_ok
+    if edge_ok is False and request.url.path not in edgeguard.ORIGIN_EXEMPT:
+        import time as _t
+        _ORIGIN_MISS['n'] += 1
+        if _t.time() - _ORIGIN_MISS['last'] > 60:          # 로그 폭주 방지 — 분당 1줄 요약
+            _ORIGIN_MISS['last'] = _t.time()
+            print('[origin-guard] Cloudflare 미경유 요청 누적 %d건 (최근 %s %s · %s 모드)'
+                  % (_ORIGIN_MISS['n'], request.method, request.url.path[:80], edgeguard.origin_mode()), flush=True)
+    if not allowed:
+        return JSONResponse({'detail': 'forbidden'}, status_code=403)
+    return await call_next(request)
+
 # ── API ─────────────────────────────────────────────────────────
 # KG이니시스 INIStdPay(표준결제창) 연동
 #   흐름: [1] /api/orders 주문생성 + STEP1 서명파라미터 반환
@@ -702,6 +737,7 @@ def _pts_fail(oid: str):
 
 @app.post('/api/orders')
 async def create_order(req: Request, response: Response):
+    pay_config_gate()
     body = await req.json()
     items, buyer = body.get('items') or [], body.get('buyer') or {}
     ship = body.get('shipMethod', 'standard')
@@ -1315,11 +1351,12 @@ async def inicis_mobile_return(req: Request):
     return _paid_redirect(oid)
 
 def _noti_client_ip(req) -> str:
-    """노티 발신 IP — Cloudflare 프록시 뒤라 CF-Connecting-IP 를 우선한다.
-       이니시스 공지 IP: 203.238.37.15 / 183.109.71.153 (기록용 — 차단하지 않는다.
-       IP 로 막다가 이니시스 대역 변경 시 입금통보가 전멸하는 쪽이 훨씬 위험하고,
-       위조 방어는 주문존재·금액일치·상태가드가 이미 수행한다)."""
+    """노티 발신 IP — Cloudflare 경유가 확인되면 CF-Connecting-IP, 아니면 프록시가 덧붙인 XFF 맨 오른쪽.
+       허용목록 판정은 paysec.ip_gate(기본 log 모드). 위조 방어의 본체는 거래조회 검증(paysec.verify_*)이다."""
     try:
+        if not edgeguard.trust_proxy_headers(req.state):
+            xs = [x.strip() for x in (req.headers.get('x-forwarded-for') or '').split(',') if x.strip()]
+            return xs[-1] if xs else ((req.client.host if req.client else '') or '-')
         return (req.headers.get('cf-connecting-ip')
                 or req.headers.get('x-forwarded-for', '').split(',')[0].strip()
                 or (req.client.host if req.client else '') or '-')
@@ -1887,7 +1924,7 @@ def client_ip(req: Request) -> str:
     운영은 Cloudflare → Render 구조라 CF-Connecting-IP 가 실제 접속 IP 다. X-Forwarded-For 의 맨 왼쪽은
     클라이언트가 임의로 넣을 수 있으므로, 없을 때는 프록시가 덧붙인 맨 오른쪽 값을 쓴다."""
     h = req.headers
-    ip = (h.get('cf-connecting-ip') or '').strip()
+    ip = (h.get('cf-connecting-ip') or '').strip() if edgeguard.trust_proxy_headers(req.state) else ''
     if not ip:
         xs = [x.strip() for x in (h.get('x-forwarded-for') or '').split(',') if x.strip()]
         ip = xs[-1] if xs else ''
@@ -1992,7 +2029,8 @@ def readyz():
     if not DB_READY:
         raise HTTPException(503, 'db connecting')
     with db() as c: c.one('SELECT 1 AS ok')
-    return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite'}
+    return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite',
+            'pay_config': 'invalid' if PAY_CONFIG_ERRORS else ('warn' if PAY_CONFIG_WARNINGS else 'ok')}
 
 @app.get('/')
 def root(): return RedirectResponse('/home', status_code=301)

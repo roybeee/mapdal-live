@@ -3275,6 +3275,20 @@ VBANK_EXPIRE_RESTOCK_D  = _env_int_av('VBANK_EXPIRE_RESTOCK_D', 7, 0, 365)
 
 _SWEEP_ACTOR = {'name': '시스템(자동정리)', 'role': 'OWNER', 'master': False}
 
+def _promo_pending_due(r, age_h):
+    """행사 상품(배송비 필수부과 판정) 포함 PENDING 이 ORDER_PENDING_PROMO_MIN 을 넘겼는가."""
+    try:
+        import ordergate
+        lim = ordergate.pending_promo_min()
+        if not lim or age_h * 60 < lim or (r.get('status') or '') != 'PENDING':
+            return False
+        if (r.get('ship_method') or '') == 'intl':
+            return False
+        its = [{'id': (x or {}).get('id')} for x in (jload(r.get('items'), []) or []) if isinstance(x, dict)]
+        return bool(its) and bool(ship_required_items(its))
+    except Exception:
+        return False
+
 def _vdue_dt(s):
     """vbank_due(YYYYMMDDhhmm[ss]) → datetime(KST naive). 파싱 불가면 None.
        시각이 없는 구 데이터(YYYYMMDD)는 그날 23:59 로 해석한다."""
@@ -3363,7 +3377,10 @@ def vbank_expire_sweep(dry=False, actor=None, limit=300):
             continue
         age_h = (now - c0).total_seconds() / 3600.0
         if age_h < max(2, ph or 24):                    # 승인 진행 중인 건 보호
-            continue
+            # 행사(한정) 상품이 든 미결제 주문은 더 빨리 푼다 (2026-11-10 · ordergate) — 재고 묶어두기 방지.
+            #   결제 진행 중 취소된 주문은 /inicis/return 이 승인 요청 전에 막는다(CANCELLED 가드).
+            if not (ph and _promo_pending_due(r, age_h)):
+                continue
         try:                                            # 해외 주문: 인보이스 72시간 확보 · PayPal 캡처 진행/보류/완료 건 보호
             import globalshop
             if globalshop.sweep_skip(r, age_h):

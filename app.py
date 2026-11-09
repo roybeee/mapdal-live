@@ -9,6 +9,7 @@ import os, re, json, secrets, datetime, base64, hashlib, threading, asyncio
 import urllib.request, urllib.error, urllib.parse
 import paysec
 import edgeguard
+import ordergate
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
@@ -617,6 +618,25 @@ def _vbank_finalize(oid: str, tid: str, vnum: str, vbank: str, vname: str, vdate
         pass
     return _paid_redirect(oid)
 
+def _cancelled_during_approval(oid: str, tid: str, via: str) -> bool:
+    """승인 요청 중에 미결제 자동정리가 주문을 취소한 경우 — PAID 로 되살리지 않는다(재고가 이미 복원됨).
+       True 면 호출부가 망취소(PC) 또는 수동 환불 안내(모바일)를 한다."""
+    try:
+        with db() as c:
+            r = c.one('SELECT status FROM orders WHERE order_id=?', (oid,))
+    except Exception:
+        return False
+    if not r or r['status'] != 'CANCELLED':
+        return False
+    _pay_log(oid, 'DEPOSIT_AFTER_CANCEL', '%s 승인 중 주문 취소됨 · TID …%s — 결제 취소 필요' % (via, str(tid)[-6:]))
+    try:
+        import admin_v2 as _av
+        _av.audit({'name': 'SYSTEM', 'role': 'PAY'}, '취소후승인', oid,
+                  '%s 승인 TID %s — 망취소 시도(PC) / 이니시스 상점관리자에서 취소 확인 필요' % (via, tid))
+    except Exception:
+        pass
+    return True
+
 def _paid_redirect(oid: str):
     """결제 승인 후 이동 — 추가 배송비(SF-) 주문은 전용 완료 페이지, 그 외는 주문완료."""
     if str(oid or '').startswith('SF-'):
@@ -817,6 +837,30 @@ async def create_order(req: Request, response: Response):
             customer_id = admin_v2.guest_customer_ensure(buyer.get('name') or '', phone_norm)
         except Exception:
             customer_id = ''
+
+    # ── 주문 생성 남용 방지 (2026-11-10 · ordergate) — 재고를 건드리기 전에 판정한다 ──
+    #   결제 없이 PENDING 주문을 반복 생성해 한정 재고를 묶어 두는 것을 막는다.
+    _og_msg = ordergate.rate_check(member_id, client_ip(req))
+    if _og_msg:
+        raise HTTPException(429, _og_msg)
+    if customer_id and ordergate.open_max():
+        _since = (kst_naive() - datetime.timedelta(hours=24)).isoformat(timespec='seconds')
+        with db() as c:
+            _open = c.one("SELECT COUNT(*) AS n FROM orders WHERE customer_id=? "
+                          "AND status IN ('PENDING','WAITING_DEPOSIT') AND created>=?",
+                          (customer_id, _since))
+        _og_msg = ordergate.open_cap_message(int((_open or {}).get('n') or 0))
+        if _og_msg:
+            raise HTTPException(429, _og_msg)
+    if ordergate.promo_max_qty():
+        try:
+            import admin_v2 as _avq
+            _promo = {k for k, v in _avq.product_rules(items).items() if v.get('ship_required')}
+        except Exception:
+            _promo = set()
+        _og_msg = ordergate.promo_qty_message(items, _promo)
+        if _og_msg:
+            raise HTTPException(400, _og_msg)
 
     # GA4 클라이언트/세션 식별자 — 결제 승인 시 서버사이드 purchase 백업 전송에 사용.
     # 체크아웃의 /api/orders 호출은 동일 오리진(XHR)이라 _ga 쿠키가 함께 도착한다.
@@ -1115,6 +1159,9 @@ async def inicis_return(req: Request):
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
         return _paid_redirect(oid)
+    if order['status'] == 'CANCELLED':               # 미결제 자동정리로 취소된 주문 — 승인 요청을 보내지 않는다(과금 없음)
+        _pay_log(oid, 'AUTH_AFTER_CANCEL', '취소된 주문의 결제 인증 — 승인 요청 생략')
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 다시 주문해 주세요')
 
     # ── STEP3 승인요청 ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -1188,11 +1235,14 @@ async def inicis_return(req: Request):
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
-                   "WHERE order_id=? AND status<>'PAID'", (tid, method, '', kst_iso(), oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (tid, method, '', kst_iso(), oid))
     except Exception:                                 # paid_at 컬럼 미생성 DB 대비
         with db() as c:
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
-                   "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (tid, method, '', oid))
+    if _cancelled_during_approval(oid, tid, 'PC'):
+        _ini_net_cancel(net_cancel_url, auth_token)  # 승인 직후 10분 내 망취소 — 고객 과금 되돌림
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 결제는 자동 취소됩니다')
     _award_purchase_points(oid)
     _ga4_mp_purchase(oid)                             # 서버사이드 purchase 백업 (무해 실패)
     try:
@@ -1274,6 +1324,9 @@ async def inicis_mobile_return(req: Request):
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
         return _paid_redirect(oid)
+    if order['status'] == 'CANCELLED':               # 미결제 자동정리로 취소된 주문 — 승인 요청 생략(과금 없음)
+        _pay_log(oid, 'AUTH_AFTER_CANCEL', '취소된 주문의 모바일 결제 인증 — 승인 요청 생략')
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 다시 주문해 주세요')
 
     # ── 승인요청 (P_REQ_URL 에 P_MID + P_TID) ──
     payload = urllib.parse.urlencode({
@@ -1337,11 +1390,13 @@ async def inicis_mobile_return(req: Request):
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
-                   "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', kst_iso(), oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (pay_tid, method, '', kst_iso(), oid))
     except Exception:                                 # paid_at 컬럼 미생성 DB 대비
         with db() as c:
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
-                   "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (pay_tid, method, '', oid))
+    if _cancelled_during_approval(oid, pay_tid, '모바일'):
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 결제 취소는 고객센터에서 처리해 드립니다')
     _award_purchase_points(oid)
     _ga4_mp_purchase(oid)                             # 서버사이드 purchase 백업 (무해 실패)
     try:

@@ -7,6 +7,7 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 """
 import os, re, json, secrets, datetime, base64, hashlib, threading, asyncio
 import urllib.request, urllib.error, urllib.parse
+import paysec
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
@@ -1366,6 +1367,15 @@ def _vbank_deposit_apply(oid: str, amt: int, tid: str, via: str, extra: str = ''
         except Exception:
             pass
         return 'mismatch', '금액 불일치'
+    # ── 진위 검증 (2026-11-10) — 노티 본문은 위조 가능하다. 거래조회로 입금완료(Y)를 확인한 뒤에만 전환 ──
+    if paysec.verify_enabled():
+        verdict, vnote, _vt = paysec.verify_deposit(order, tid, _noti_inquire)
+        if verdict != 'ok':
+            _pay_log(oid, 'NOTI_UNVERIFIED', '%s · %s' % (via, vnote))
+            if verdict == 'reject':
+                _noti_security_audit('입금통보검증실패', oid, '%s · %s' % (via, vnote))
+            return ('retry' if verdict == 'retry' else 'unverified'), vnote
+        extra = (extra + ' · ' if extra else '') + vnote
     # 채번TID(payment_key)는 환불 API 의 기준값 — 입금TID(no_tid)로 덮지 않는다.
     # 비어 있을 때만 통보 TID 로 보충한다.
     with db() as c:
@@ -1385,6 +1395,37 @@ def _vbank_deposit_apply(oid: str, amt: int, tid: str, via: str, extra: str = ''
     except Exception:
         pass
     return 'paid', '입금 확인'
+
+def _noti_inquire(tid: str, oid: str = ''):
+    """노티 검증용 거래조회 — TID 에 박힌 MID 의 INIAPI key 로 조회(구 MID 주문 대응)."""
+    cred = None
+    try:
+        import admin_v2 as _av
+        cred = _av._inicis_cred_for_tid(tid)
+    except Exception:
+        cred = None
+    mid, key = (cred[0], cred[1]) if cred else (INICIS_MID, INICIS_INIAPI)
+    return paysec.inquiry_v1(mid, key, tid, oid)
+
+def _noti_security_audit(action: str, target: str, detail: str):
+    try:
+        import admin_v2 as _av
+        _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, action, target, detail[:300])
+    except Exception:
+        pass
+
+def _noti_ip_check(req, via: str) -> bool:
+    """발신 IP 허용목록 — enforce 모드에서만 차단, log 모드는 감사 기록만."""
+    ip = _noti_client_ip(req)
+    ok, note = paysec.ip_gate(ip)
+    if note:
+        _noti_security_audit('노티발신IP', via, note)
+    return ok
+
+def _noti_reply(code: str) -> PlainTextResponse:
+    """_vbank_deposit_apply 결과 → 이니시스 응답. OK 외에는 재전송된다(24시간·약 10분 주기).
+       missing·retry·unverified 는 FAIL — 진짜 입금이면 재조회 기회가 남고, 위조면 아무 일도 없다."""
+    return PlainTextResponse('FAIL' if code in ('missing', 'retry', 'unverified') else 'OK')
 
 def _noti_unparsed_audit(via: str, req, form: dict):
     """주문번호를 못 찾은 노티 — 원문을 감사로그에 남겨 사람이 추적할 수 있게 한다.
@@ -1430,6 +1471,8 @@ async def inicis_vbank_noti(req: Request):
             form.setdefault(k, v)
         if not form:                                  # 파라미터 없는 접근(모니터링 핑 등)
             return PlainTextResponse('OK')
+        if not _noti_ip_check(req, '/inicis/vbank-noti'):
+            return PlainTextResponse('FAIL', status_code=403)
 
         def _amt(*keys):
             for k in keys:
@@ -1454,7 +1497,7 @@ async def inicis_vbank_noti(req: Request):
                 _pay_log(oid, 'VBANK_NOTI', 'PC 노티 수신 · 거래구분 %s (미처리) · %s원' % (tmsg, format(amt, ',')))
                 return PlainTextResponse('OK')
             code, _note = _vbank_deposit_apply(oid, amt, tid, 'PC노티', extra)
-            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+            return _noti_reply(code)
 
         # ── ② PRO/모바일 계열: P_STATUS ──────────────────────────────
         oid = str(form.get('P_OID') or form.get('oid') or form.get('MOID')
@@ -1468,7 +1511,7 @@ async def inicis_vbank_noti(req: Request):
         if st == '02':                                # 입금통보 — 유일한 PAID 전환 신호
             extra = ('입금자 %s · %s' % (form.get('P_UNAME') or '-', form.get('P_FN_NM') or '')).strip(' ·')
             code, _note = _vbank_deposit_apply(oid, amt, tid, 'P노티(02)', extra)
-            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+            return _noti_reply(code)
         if st == '00':                                # 채번통보 — 입금 아님. 기록만.
             _pay_log(oid, 'VBANK_ISSUED', '채번통보 수신(P_STATUS=00) · %s원 — 입금 아님, 대기 유지' % format(amt, ','))
             return PlainTextResponse('OK')
@@ -1504,6 +1547,8 @@ async def inicis_mobile_noti(req: Request):
             form.setdefault(k, v)
         if not form:
             return PlainTextResponse('OK')
+        if not _noti_ip_check(req, '/inicis/mobile-noti'):
+            return PlainTextResponse('FAIL', status_code=403)
 
         status = str(form.get('P_STATUS', '')).strip()
         oid    = str(form.get('P_OID', '') or form.get('P_NOTI', '')).strip()
@@ -1522,13 +1567,28 @@ async def inicis_mobile_noti(req: Request):
         if status == '02':                            # 가상계좌 입금통보 → PAID
             extra = ('입금자 %s · %s' % (form.get('P_UNAME') or '-', form.get('P_FN_NM') or '')).strip(' ·')
             code, _note = _vbank_deposit_apply(oid, amt, tid, '모바일노티(02)', extra)
-            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+            return _noti_reply(code)
 
         if status == '00' and vbankish:               # 채번통보 — 입금 아님. 기록만.
             _pay_log(oid, 'VBANK_ISSUED', '모바일 채번통보 수신(00) · %s원 — 입금 아님, 대기 유지' % format(amt, ','))
             return PlainTextResponse('OK')
 
-        if status == '00':                            # 1trs 승인통보(카드 등) — 종전 동작 유지
+        if status == '00':                            # 1trs 승인통보(카드 등)
+            # 진위 검증 (2026-11-10) — 노티 본문만 믿고 PAID 로 바꾸지 않는다. 거래조회로 승인(0)·금액 확인.
+            #   조회 전에 읽기만 하고, 확인되면 같은 상태 가드로 전환한다(트랜잭션 안에서 외부 호출 금지).
+            with db() as c:
+                order0 = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+            if not order0:
+                _noti_unparsed_audit('모바일노티(주문없음)', req, form)
+                return PlainTextResponse('FAIL')
+            if (order0['status'] not in ('PAID', 'CANCELLED') and amt == int(order0['amount'])
+                    and paysec.verify_enabled()):
+                verdict, vnote, _vt = paysec.verify_approval(order0, tid, _noti_inquire)
+                if verdict != 'ok':
+                    _pay_log(oid, 'NOTI_UNVERIFIED', '모바일 승인통보 · %s' % vnote)
+                    if verdict == 'reject':
+                        _noti_security_audit('승인통보검증실패', oid, vnote)
+                    return PlainTextResponse('FAIL')
             with db() as c:
                 order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
                 _late = bool(order and order['status'] == 'CANCELLED')

@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const root = path.resolve(__dirname, '..');
-const fixtures = JSON.parse(execFileSync('/tmp/mapdal-related-venv/bin/python', ['-c', `
+const fixtures = JSON.parse(execFileSync(process.env.PYTHON || 'python3', ['-c', `
 import json, pathlib, admin_v2 as admin
 html = pathlib.Path('static/product-goods-logo-hoodie.html').read_text()
 result = {}

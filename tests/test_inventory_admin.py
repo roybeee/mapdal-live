@@ -156,7 +156,7 @@ class InventoryAdminTests(unittest.TestCase):
         self.assertLess(guard.lineno, min(writes))
 
     def test_edit_form_does_not_submit_legacy_options(self):
-        text = SOURCE.read_text()
+        text = (SOURCE.parent / 'templates' / 'admin_product_form.html').read_text()   # admin_v2 분리 (2026-11-10)
         start = text.index("await api('/admin/api/products/detail/update'")
         payload = text[start:text.index("toast('저장되었습니다')", start)]
         self.assertNotIn('options:poCollect()', payload)

@@ -72,7 +72,7 @@ def app_env(tmp_path, monkeypatch):
             CREATE TABLE orders(order_id TEXT PRIMARY KEY, created TEXT, status TEXT, amount INTEGER, buyer TEXT,
               items TEXT, ship_method TEXT, payment_key TEXT, pay_method TEXT, receipt_url TEXT, customer_id TEXT,
               member_id TEXT, contact_phone_norm TEXT, paid_at TEXT, pay_log TEXT);
-            CREATE TABLE products(id TEXT PRIMARY KEY, name TEXT, price INTEGER, soldout INTEGER, kind TEXT, stock INTEGER);
+            CREATE TABLE products(id TEXT PRIMARY KEY, name TEXT, price INTEGER, soldout INTEGER, kind TEXT, stock INTEGER, bundle TEXT);
         """)
     monkeypatch.setattr(appmod, 'SQLITE_PATH', str(dbp))
     monkeypatch.setattr(appmod, 'IS_PG', False)

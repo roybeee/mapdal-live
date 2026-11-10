@@ -20,7 +20,7 @@ scope = dict(re=re, json=json, time=time, ensure_ready=lambda: None,
     derived_pct=lambda *args: 0, is_new_product=lambda value: False,
     _k2g_cat_cache={'t':0,'body':None}, _k2g_removed_set=lambda: set())
 constants = {'_MP_CAT_TAG','_MP_COVERS','_MP_IMG_OK','_FB_TOOLBAR_CSS','_FB_TOOLS_JS'}
-functions = {'_mp_shop_cards','_k2g_catalog_json','_fb_toolbar_html','_feedback_apply'}
+functions = {'_mp_shop_cards','_k2g_catalog_json','_fb_toolbar_html','_feedback_apply','product_sold_out'}
 for node in tree.body:
     names = [target.id for target in getattr(node,'targets',[]) if isinstance(target,ast.Name)]
     if set(names)&constants or isinstance(node,ast.FunctionDef) and node.name in functions:

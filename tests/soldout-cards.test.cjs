@@ -29,7 +29,7 @@ scope = dict(re=re, json=json, ensure_ready=lambda: None,
     derived_pct=lambda *args: 0, is_new_product=lambda value: False)
 for node in tree.body:
     names = [target.id for target in getattr(node, 'targets', []) if isinstance(target, ast.Name)]
-    if set(names) & {'_MP_CAT_TAG', '_MP_COVERS', '_MP_IMG_OK'} or isinstance(node, ast.FunctionDef) and node.name == '_mp_shop_cards':
+    if set(names) & {'_MP_CAT_TAG', '_MP_COVERS', '_MP_IMG_OK'} or isinstance(node, ast.FunctionDef) and node.name in ('_mp_shop_cards', 'product_sold_out'):
         exec(compile(ast.Module(body=[node], type_ignores=[]), '<production>', 'exec'), scope)
 print(scope['_mp_shop_cards']())
 `], { cwd: root, encoding: 'utf8' });

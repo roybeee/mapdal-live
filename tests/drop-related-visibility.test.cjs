@@ -8,7 +8,9 @@ const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
 const page = fs.readFileSync(path.join(root, 'static/new-drops.html'), 'utf8');
-const admin = fs.readFileSync(path.join(root, 'admin_v2.py'), 'utf8');
+// admin_v2 의 대형 HTML 은 templates/ 로 분리됨 (2026-11-10) — 소스+템플릿을 함께 본다.
+const admin = fs.readFileSync(path.join(root, 'admin_v2.py'), 'utf8')
+  + fs.readFileSync(path.join(root, 'templates/admin_dashboard.html'), 'utf8');
 const render = page.slice(page.indexOf('function won('), page.indexOf('function bindRelSide('));
 const scope = vm.createContext({ esc: String, CATFALL: '#eee' });
 vm.runInContext(render, scope);

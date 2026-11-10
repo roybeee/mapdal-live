@@ -1,0 +1,352 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>마이페이지 — MAPDAL SEOUL</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+<style>
+:root{--red:#E8332A;--black:#141414;--paper:#F7F6F2;--amber:#FFB000;--line:#e3e1db}
+/* 안드로이드 Chrome 폰트 자동확대(Font Boosting) 차단 — 레이아웃 붕괴 방지 */
+html{-webkit-text-size-adjust:100%;-moz-text-size-adjust:100%;text-size-adjust:100%}
+html,body{max-width:100%;overflow-x:clip}
+img,video,canvas,svg{max-width:100%;height:auto}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'IBM Plex Sans KR',sans-serif;background:var(--paper);color:var(--black);font-size:14px}
+header{background:var(--black);color:#fff;padding:0 20px;height:54px;display:flex;align-items:center;justify-content:space-between}
+header a.logo{color:#fff;text-decoration:none;font-family:'Black Han Sans';font-size:19px}header a.logo span{color:var(--red)}
+header .r a{color:#ccc;font-size:12px;font-weight:700;text-decoration:none;margin-left:16px}
+main{max-width:1080px;margin:0 auto;padding:24px 16px 90px;display:grid;grid-template-columns:190px 1fr;gap:26px}
+@media(max-width:820px){main{grid-template-columns:1fr}}
+h1{font-size:24px;margin-bottom:18px}
+aside .grp{font-size:15px;font-weight:800;margin:18px 0 10px}
+aside a{display:block;font-size:13.5px;color:#555;text-decoration:none;padding:5px 0}
+aside a.on{color:var(--red);font-weight:700}
+aside hr{border:0;border-top:1px solid var(--line);margin:16px 0}
+.banner{background:var(--black);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.banner .hi{font-weight:700}.banner .gr{background:var(--red);color:#fff;font-size:11px;font-weight:800;padding:3px 10px}
+.banner .sp{margin-left:auto;display:flex;gap:22px;font-size:12.5px}
+.banner .sp b{font-family:'IBM Plex Mono';font-size:16px;display:block;color:var(--amber)}
+.steps{display:flex;background:#fff;border:1px solid var(--line);border-top:0;padding:20px 8px}
+.steps .st{flex:1;text-align:center;position:relative}
+.steps .st b{font-family:'IBM Plex Mono';font-size:26px;display:block;color:#bbb}
+.steps .st.on b{color:var(--black)}
+.steps .st span{font-size:12px;color:#777}
+.steps .st:not(:last-child):after{content:'›';position:absolute;right:-4px;top:8px;color:#ccc;font-size:18px}
+.panel{background:#fff;border:1px solid var(--line);padding:18px;margin-top:16px}
+.panel h3{font-size:14px;border-left:4px solid var(--red);padding-left:8px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#faf9f5;border-bottom:2px solid var(--black);font-size:11.5px;padding:8px;text-align:left}
+td{border-bottom:1px solid var(--line);padding:9px 8px;vertical-align:middle}
+.r{text-align:right}.mono{font-family:'IBM Plex Mono'}
+.tagst{font-size:11px;font-weight:800;padding:2px 8px;background:#eee}
+.tagst.s1{background:#fff6e0;color:#9a6b00}.tagst.s2{background:#e9f7ee;color:#0a7d38}
+.tagst.s3{background:#fff2f1;color:var(--red)}.tagst.s4{background:#e8f3ff;color:#1a5fb4}
+.tagst.s5{background:#141414;color:#FFB000}.tagst.s0{background:#f0f0f0;color:#999}
+.oship{margin:12px 0;padding:12px 14px;background:#fafafa;border:1px solid var(--line)}
+.steps{display:flex;flex-wrap:wrap;margin-bottom:9px}
+.steps b{font-size:11px;font-weight:800;color:#c2c2c2;display:flex;align-items:center}
+.steps b:not(:last-child):after{content:'›';margin:0 7px;color:#ddd;font-weight:400}
+.steps b.on{color:#141414}.steps b.cur{color:var(--red)}
+button.b,a.b{font:inherit;font-weight:700;font-size:12px;border:0;padding:7px 12px;cursor:pointer;background:var(--black);color:#fff;text-decoration:none;display:inline-block}
+button.b.ghost,a.b.ghost{background:#fff;color:var(--black);border:1px solid #999}
+button.b.red{background:var(--red)}
+input,select,textarea{font:inherit;padding:8px 10px;border:1px solid #ccc;background:#fff;width:100%}
+input:focus,textarea:focus{outline:2px solid var(--red)}
+label{display:block;font-size:11.5px;font-weight:700;color:#555;margin:12px 0 4px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.hint{font-size:11.5px;color:#888;margin-top:8px;line-height:1.7}
+.empty{color:#999;text-align:center;padding:30px 10px}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--black);color:#fff;padding:10px 20px;display:none;z-index:200;font-weight:700}
+.qa{border-bottom:1px solid var(--line);padding:12px 4px}
+.qa .q{font-weight:700}.qa .a{margin-top:8px;color:#444;background:#faf9f5;padding:10px;white-space:pre-wrap}
+.mob{display:none}
+@media(max-width:820px){
+ aside{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+ aside .grp,aside hr{display:none}
+ aside h1{grid-column:1/-1;margin-bottom:2px}
+ aside a{padding:10px 6px;background:#fff;border:1px solid var(--line);
+  text-align:center;font-size:12px;line-height:1.3;white-space:normal;
+  display:flex;align-items:center;justify-content:center;min-width:0}
+}
+@media(max-width:560px){
+ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+ aside{grid-template-columns:repeat(2,minmax(0,1fr))}
+ aside a{font-size:11.5px;padding:10px 5px}
+ main{padding:16px 13px}
+ header{padding:0 13px}
+ input,select,textarea{font-size:16px}   /* iOS 포커스 확대 방지 */
+ .row2{grid-template-columns:1fr}
+ table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
+</style></head><body>
+<header><a class="logo" href="/">MAPDAL<span>SEOUL</span></a>
+<div class="r"><a href="/shop">SHOP</a><a href="/cart">장바구니</a><a href="#" onclick="logout()">로그아웃</a></div></header>
+<main>
+<aside>
+ <h1>마이페이지</h1>
+ <div class="grp">쇼핑 활동</div>
+ <a data-p="orders" class="on" href="#orders">주문/배송 조회</a>
+ <a data-p="requests" href="#requests">취소/반품/교환 내역</a>
+ <a data-p="receipts" href="#receipts">거래증빙서류 확인</a>
+ <a data-p="points" href="#points">포인트 내역</a>
+ <a href="/cart">장바구니</a>
+ <a data-p="likes" href="#likes">좋아요</a>
+ <a data-p="restock" href="#restock">재입고 알림</a>
+ <hr><div class="grp">마이 정보</div>
+ <a data-p="profile" href="#profile">회원정보 수정</a>
+ <a data-p="addr" href="#addr">배송지 관리</a>
+ <a data-p="consents" href="#consents">약관·마케팅 동의</a>
+ <a data-p="security" href="#security">로그인·보안</a>
+ <a data-p="store" href="#store">관심 매장 관리</a>
+ <a data-p="withdraw" href="#withdraw">회원탈퇴</a>
+ <hr><div class="grp">문의</div>
+ <a data-p="inq" href="#inq">1:1 문의내역</a>
+ <a data-p="pqna" href="#pqna">상품 Q&amp;A 내역</a>
+</aside>
+<section>
+ <div class="banner"><span class="hi" id="hi"></span><span class="gr" id="gr"></span>
+  <div class="sp"><span><a href="#points" style="color:inherit;text-decoration:none">포인트<b id="pt">0P</b></a></span>
+  <span><a href="#profile" data-p="profile" style="color:var(--amber);font-size:12px;font-weight:700;text-decoration:none">나의 프로필 ›</a></span></div></div>
+ <div class="steps" id="steps"></div>
+ <div id="pane"></div>
+</section></main>
+<div id="toast"></div>
+<script>
+const MD = __MDATA__;
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const won=n=>'₩'+Number(n||0).toLocaleString('ko-KR');
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2400)}
+async function api(u,opt){const r=await fetch(u,opt);if(!r.ok){let m='오류';try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}return r.json()}
+async function post(u,b){return api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
+async function logout(){await fetch('/api/member/logout',{method:'POST'});location.href='/'}
+let OV=null;
+async function boot(){OV=await api('/api/member/overview');
+ $('#hi').textContent=OV.name+'님, 환영합니다';$('#gr').textContent=OV.grade;$('#pt').textContent=OV.points.toLocaleString()+'P';
+ const names=['주문접수','결제완료','배송준비중','배송중','배송완료'];
+ $('#steps').innerHTML=names.map((n,i)=>{const c=OV.counters[String(i+1)]||0;
+  return '<div class="st'+(c?' on':'')+'" onclick="location.hash=\'#orders\'" style="cursor:pointer"><b>'+c+'</b><span>'+n+'</span></div>'}).join('');
+ if(OV.consent_required){location.hash='#consents'} route()}
+const PANES={orders,requests:reqPane,receipts,points:pointsPane,likes:likesPane,restock:restockPane,profile,addr:addrPane,consents:consentPane,security:securityPane,store:storePane,withdraw:withdrawPane,inq:inqPane,pqna:pqnaPane};
+function route(){const p=(location.hash||'#orders').slice(1);
+ document.querySelectorAll('aside a[data-p]').forEach(a=>a.className=a.dataset.p===p?'on':'');
+ (PANES[p]||orders)()}
+window.addEventListener('hashchange',route);
+async function orders(rng){rng=rng||'3m';
+ const d=await api('/api/member/orders?range='+rng);
+ const rsel='<select onchange="orders(this.value)" style="font:inherit;font-size:12px;padding:4px 6px">'+[['1m','최근 1개월'],['3m','최근 3개월'],['all','전체 기간']].map(x=>'<option value="'+x[0]+'"'+(rng===x[0]?' selected':'')+'>'+x[1]+'</option>').join('')+'</select>';
+ $('#pane').innerHTML='<div class="panel"><h3>주문/배송 조회 <small style="font-weight:400">'+rsel+'</small></h3>'+
+ (d.rows.length?'<table><tr><th>주문번호/일시</th><th>상품</th><th class="r">금액</th><th>상태</th><th></th></tr>'+
+ d.rows.map(o=>'<tr><td class="mono" style="font-size:11.5px">'+esc(o.order_id)+'<br><span style="color:#999">'+esc(o.created)+'</span></td>'+
+ '<td>'+esc(o.label)+'</td><td class="r mono">'+won(o.amount)+'</td>'+
+ '<td><span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span>'+(o.tracking?'<br><a class="mono" target="_blank" rel="noopener" style="font-size:11px;color:#1a5fb4;text-decoration:underline" href="'+esc(o.track_url||'#')+'">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+' ↗</a>':'')+'</td>'+
+ '<td><button class="b ghost" onclick="orderDetail(\''+esc(o.order_id)+'\')">상세</button>'+(o.can_confirm?'<button class="b" style="margin-left:4px" onclick="confirmOrder(\''+esc(o.order_id)+'\')">구매확정</button>':'')+'</td></tr>').join('')+'</table>':'<div class="empty">'+(rng==='all'?'연결된 주문이 없습니다':'이 기간에 주문이 없습니다 — 위에서 [전체 기간]을 선택해 보세요')+'</div>')+'</div>'+
+ '<div class="panel"><h3>기존·비회원 주문 연결</h3><div class="hint">주문번호와 주문 당시 휴대폰으로 받은 인증번호를 확인한 후에만 이 계정으로 연결됩니다.</div><div class="row2"><div><label>주문번호</label><input id="coid" placeholder="MD-2026..."></div><div><label>주문 당시 휴대폰</label><input id="cph" placeholder="010-0000-0000"></div></div><div style="margin-top:10px"><button class="b" onclick="claimSend()">인증번호 받기</button></div><div id="claimVerify" style="display:none"><label>인증번호 6자리</label><div style="display:flex;gap:8px"><input id="ccode" maxlength="6"><button class="b red" onclick="claimVerify()" style="white-space:nowrap">주문 연결</button></div></div></div><div id="odetail"></div>'}
+let CLAIM_ID='';async function claimSend(){try{const d=await post('/api/member/orders/claim/send',{order_id:$('#coid').value,phone:$('#cph').value});CLAIM_ID=d.claim_id;$('#claimVerify').style.display='block';toast(d.dry?'테스트 모드: 관리자 알림 로그에서 인증번호를 확인하세요':'인증번호를 발송했습니다')}catch(e){toast(e.message)}}
+async function claimVerify(){try{await post('/api/member/orders/claim/verify',{claim_id:CLAIM_ID,code:$('#ccode').value});toast('주문이 안전하게 연결되었습니다');orders()}catch(e){toast(e.message)}}
+async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeURIComponent(oid));
+ $('#odetail').innerHTML='<div class="panel"><h3>주문 상세 — '+esc(oid)+' <span class="tagst s'+o.step+'">'+esc(o.status_kr)+'</span></h3>'+
+ '<table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th></tr>'+
+ o.items.map(i=>'<tr><td>'+esc(i.name)+'</td><td class="r mono">'+won(i.price)+'</td><td class="r mono">'+i.qty+'</td></tr>').join('')+'</table>'+
+ '<div class="oship"><b style="font-size:12.5px;display:block;margin-bottom:8px">배송 진행</b><div class="steps">'+['주문접수','결제완료','배송준비중','배송중','배송완료'].map((s,i)=>'<b class="'+(o.step===0?'':(i+1<o.step?'on':(i+1===o.step?'on cur':'')))+'">'+s+'</b>').join('')+'</div>'+
+ (o.step===0?'<div class="hint" style="margin:0">'+esc(o.status_kr)+' 처리된 주문입니다.</div>'
+  :o.tracking?'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="font-size:12.5px">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+'</span>'+(o.track_url?'<a class="b" target="_blank" rel="noopener" href="'+esc(o.track_url)+'">배송조회</a>':'')+'</div>'
+  :'<div class="hint" style="margin:0">'+(o.step>=4?'상품이 출고되어 배송 중입니다. 운송장 번호가 등록되면 이곳에서 바로 조회할 수 있습니다.':o.step===3?'상품을 준비하고 있습니다. 발송과 함께 운송장 번호가 등록됩니다.':o.step===2?'결제가 확인되었습니다. 곧 상품 준비를 시작합니다.':'결제(입금) 확인 전 주문입니다. 확인 후 상품 준비가 시작됩니다.')+'</div>')+'</div>'+
+ (o.vbank&&o.vbank.num?'<div style="background:#fff7e0;border-left:3px solid #b58900;padding:10px 12px;margin-top:10px;font-size:13px"><b>입금 계좌 안내</b><br>'+
+  '<span class="mono" style="font-size:14px"><b>'+esc(o.vbank.bank)+' '+esc(o.vbank.num)+'</b></span>'+
+  (o.vbank.holder?'<br>예금주 '+esc(o.vbank.holder):'')+(o.vbank.due?'<br>입금기한 '+esc(vbDue(o.vbank.due)):'')+
+  '<br>입금액 <b>'+won(o.amount)+'</b> — 입금 확인 즉시 자동으로 결제완료 처리됩니다.</div>':'')+
+ '<div class="hint">배송지 '+esc(o.addr)+' · 결제금액 '+won(o.amount)+'</div>'+
+ (o.shipfee?'<div style="border:1px solid var(--line);padding:10px 12px;margin-top:10px;font-size:13px"><b>추가 배송비 결제</b>'+
+  o.shipfee.payments.map(p=>'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px"><span class="mono" style="font-size:11.5px">'+esc(p.order_id)+'</span><span>'+esc(p.paid_at)+'</span><b>'+won(p.amount)+'</b><span class="tagst '+(p.status==='PAID'?'s5':'s0')+'">'+(p.status==='PAID'?'결제완료':'환불')+'</span>'+(p.receipt?'<a class="b ghost" target="_blank" rel="noopener" href="'+esc(p.receipt)+'">영수증</a>':'')+'</div>').join('')+
+  (o.shipfee.orders.length>1?'<div class="hint" style="margin:6px 0 0">함께 청구된 주문: '+o.shipfee.orders.map(esc).join(' · ')+'</div>':'')+'</div>':'')+
+ (o.confirmed_at?'<div class="hint" style="color:#2e7d32"><b>구매확정</b> '+esc(o.confirmed_at)+' — 확정된 주문은 환불·취소·교환·배송지 변경을 할 수 없습니다. 문의는 1:1 문의로 남겨 주세요.</div>'
+  :o.can_confirm?'<div class="hint"><b>[구매확정]</b>을 누르면 구매가 확정됩니다. 구매확정 후에는 환불·취소·교환·배송지 변경을 할 수 없습니다.</div>':'')+
+ (o.open_request?'<div class="hint" style="color:var(--red)">'+({cancel:'취소',return:'반품',exchange:'교환'}[o.open_request.rtype]||'')+' 요청이 '+esc(o.open_request.status)+' 상태입니다.</div>':'')+
+ '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
+ (o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a>':'')+
+ '<a class="b ghost" target="_blank" href="/api/member/receipt/'+encodeURIComponent(oid)+'">거래명세서</a>'+
+ (o.can_self_cancel?'<button class="b red" onclick="selfCancel(\''+esc(oid)+'\')">주문 즉시취소</button>'
+  :(!o.open_request&&o.can_cancel?'<button class="b red" onclick="reqOrder(\''+esc(oid)+'\',\'cancel\')">취소 요청</button>':''))+
+ (o.can_confirm&&!o.open_request?'<button class="b red" onclick="confirmOrder(\''+esc(oid)+'\')">구매확정</button>':'')+
+ (!o.open_request&&o.can_return?'<button class="b" onclick="reqOrder(\''+esc(oid)+'\',\'return\')">반품 요청</button><button class="b ghost" onclick="reqOrder(\''+esc(oid)+'\',\'exchange\')">교환 요청</button>':'')+
+ (o.can_edit_addr?'<button class="b ghost" onclick="addrEditForm(\''+esc(oid)+'\')">배송지 변경</button>':'')+
+ '</div><div id="addredit"></div></div>';$('#odetail').scrollIntoView({behavior:'smooth'});window._ODET=o}
+function vbDue(d){d=String(d||'');return d.length>=12?(d.slice(0,4)+'.'+d.slice(4,6)+'.'+d.slice(6,8)+' '+d.slice(8,10)+':'+d.slice(10,12)):d}
+async function confirmOrder(oid){if(!confirm('구매를 확정할까요?\n구매확정 후에는 환불·취소·교환·배송지 변경을 할 수 없습니다.'))return;
+ try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/confirm',{});toast('구매확정되었습니다. 감사합니다!');orders();if($('#odetail').innerHTML)orderDetail(oid)}catch(e){alert(e.message)}}
+async function selfCancel(oid){if(!confirm('이 주문을 바로 취소할까요?\n입금 전 주문은 즉시 취소되며 되돌릴 수 없습니다.\n(수량·옵션 변경은 취소 후 다시 주문해 주세요)'))return;
+ try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/self-cancel',{reason:'고객 직접 취소'});
+ toast('주문이 취소되었습니다');orders()}catch(e){alert(e.message)}}
+function addrEditForm(oid){const b=(window._ODET&&window._ODET.buyer)||{};
+ $('#addredit').innerHTML='<div style="border:1px solid var(--line);padding:12px;margin-top:10px"><b style="font-size:12.5px">배송지 변경</b>'+
+ '<div class="row2" style="margin-top:6px"><div><label>받는분 *</label><input id="ae_n" value="'+esc(b.name)+'"></div><div><label>연락처</label><input id="ae_p" value="'+esc(b.phone)+'"></div>'+
+ '<div><label>우편번호</label><input id="ae_z" value="'+esc(b.zip)+'"></div><div><label>배송 메모</label><input id="ae_m" value="'+esc(b.memo)+'"></div></div>'+
+ '<label>주소 *</label><input id="ae_1" value="'+esc(b.addr1)+'"><label>상세주소</label><input id="ae_2" value="'+esc(b.addr2)+'">'+
+ '<div style="margin-top:10px;display:flex;gap:8px"><button class="b" onclick="addrEditSave(\''+esc(oid)+'\')">변경 저장</button><button class="b ghost" onclick="document.getElementById(\'addredit\').innerHTML=\'\'">닫기</button></div>'+
+ '<div class="hint">발송 전 주문만 변경됩니다. 이미 발송된 주문은 1:1 문의로 접수해 주세요.</div></div>'}
+async function addrEditSave(oid){try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/ship-addr',
+ {name:$('#ae_n').value,phone:$('#ae_p').value,zip:$('#ae_z').value,addr1:$('#ae_1').value,addr2:$('#ae_2').value,memo:$('#ae_m').value});
+ toast('배송지가 변경되었습니다');orderDetail(oid)}catch(e){alert(e.message)}}
+async function reqOrder(oid,t){const kr={cancel:'취소',return:'반품',exchange:'교환'}[t];
+ const reason=prompt(kr+' 사유를 입력해 주세요');if(!reason)return;
+ try{await post('/api/member/orders/'+encodeURIComponent(oid)+'/request',{rtype:t,reason});
+ toast(kr+' 요청이 접수되었습니다');location.hash='#requests'}catch(e){alert(e.message)}}
+
+async function reqPane(){const d=await api('/api/member/requests');
+ $('#pane').innerHTML='<div class="panel"><h3>취소/반품/교환 요청</h3>'+
+ (d.requests.length?'<table><tr><th>일시</th><th>주문번호</th><th>유형</th><th>사유</th><th>상태</th><th></th></tr>'+
+ d.requests.map(r=>'<tr><td class="mono">'+esc(r.created)+'</td><td class="mono" style="font-size:11.5px">'+esc(r.order_id)+'</td><td><b>'+esc(r.rtype)+'</b></td><td>'+esc(r.reason)+(r.memo?'<br><span class="hint">답변: '+esc(r.memo)+'</span>':'')+'</td><td><span class="tagst '+(r.status==='완료'?'s2':r.status==='거절'||r.status==='철회'?'s0':'s1')+'">'+esc(r.status)+'</span></td>'+
+ '<td>'+(r.status==='접수'?'<button class="b ghost" onclick="reqWithdraw(\''+esc(r.id)+'\')">철회</button>':'')+'</td></tr>').join('')+'</table>':'<div class="empty">요청 내역이 없습니다</div>')+'</div>'+
+ '<div class="panel"><h3>취소 완료된 주문</h3>'+(d.cancelled_orders.length?'<table><tr><th>주문번호</th><th>일자</th><th class="r">금액</th></tr>'+d.cancelled_orders.map(c=>'<tr><td class="mono">'+esc(c.order_id)+'</td><td class="mono">'+esc(c.created)+'</td><td class="r mono">'+won(c.amount)+'</td></tr>').join('')+'</table>':'<div class="empty">없음</div>')+'</div>'}
+async function reqWithdraw(id){if(!confirm('이 요청을 철회할까요?\n관리자 처리가 시작되기 전(접수 상태)에만 철회할 수 있습니다.'))return;
+ try{await post('/api/member/requests/withdraw',{id});toast('요청을 철회했습니다');reqPane()}catch(e){alert(e.message)}}
+
+async function receipts(){
+ const d=await api('/api/member/orders?range=all');const rs=d.rows.filter(o=>o.paid||o.receipt);
+ $('#pane').innerHTML='<div class="panel"><h3>거래증빙서류</h3>'+
+ (rs.length?'<table><tr><th>주문번호</th><th>일시</th><th class="r">금액</th><th>증빙</th></tr>'+
+ rs.map(o=>'<tr><td class="mono" style="font-size:11.5px">'+esc(o.order_id)+'</td><td class="mono">'+esc(o.created)+'</td><td class="r mono">'+won(o.amount)+'</td>'+
+ '<td>'+(o.receipt?'<a class="b ghost" target="_blank" href="'+esc(o.receipt)+'">토스 영수증</a> ':'')+
+ '<a class="b ghost" target="_blank" href="/api/member/receipt/'+encodeURIComponent(o.order_id)+'">거래명세서</a></td></tr>').join('')+'</table>':'<div class="empty">결제 완료된 주문이 없습니다</div>')+
+ '<div class="hint">세금계산서·현금영수증은 결제 시 신청 내역에 따라 토스 영수증에서 확인됩니다.</div></div>'}
+
+async function pointsPane(){const d=await api('/api/member/points');
+ $('#pane').innerHTML='<div class="panel"><h3>포인트 <span class="tagst s5">'+d.balance.toLocaleString()+'P</span></h3><div class="hint">최초 가입 <b>2,000P</b>(1회) · 구매 시 상품 금액의 <b>1% 적립</b>(배송비 제외 · 원 단위 절사).<br>NEW/DROPS 상품은 적립 대상에서 제외되며, 주문 취소·반품 시 해당 적립은 회수됩니다.</div>'+
+ (d.rows.length?'<table style="margin-top:14px"><tr><th>일시</th><th>구분</th><th>사유</th><th class="r">증감</th><th class="r">잔액</th></tr>'+d.rows.map(x=>'<tr><td class="mono">'+esc(x.created)+'</td><td>'+esc(x.type)+'</td><td>'+esc(x.reason)+'</td><td class="r mono" style="color:'+(x.amount>=0?'#0a7d38':'var(--red)')+'">'+(x.amount>0?'+':'')+x.amount.toLocaleString()+'P</td><td class="r mono">'+x.balance.toLocaleString()+'P</td></tr>').join('')+'</table>':'<div class="empty">포인트 이력이 없습니다</div>')+'</div>'}
+
+async function likesPane(){const d=await api('/api/member/likes');
+ const thumb=p=>p.img?'<img src="'+esc(p.img)+'" style="width:64px;height:64px;object-fit:cover;display:block" onerror="this.outerHTML=likePh()">':likePh();
+ window.likePh=()=>'<div style=\"width:64px;height:64px;background:#141414;color:#FFB000;display:flex;align-items:center;justify-content:center;font-family:Black Han Sans;font-size:20px\">M</div>';
+ $('#pane').innerHTML='<div class="panel"><h3>좋아요 <small style="color:#888;font-weight:400">'+d.rows.length+'개</small></h3>'+
+ (d.rows.length?'<table>'+d.rows.map(p=>'<tr>'+
+ '<td style="width:72px;padding:8px 4px"><a href="'+esc(p.link)+'">'+thumb(p)+'</a></td>'+
+ '<td><a href="'+esc(p.link)+'" style="color:inherit;font-weight:500">'+esc(p.name)+'</a></td>'+
+ '<td class="r mono" style="white-space:nowrap">'+(p.price?won(p.price):'-')+'</td>'+
+ '<td>'+(p.soldout?'<span class="tagst s3">품절</span>':'<span class="tagst s2">구매가능</span>')+'</td>'+
+ '<td class="r"><button class="b ghost" onclick="unlike(\''+p.rid+'\')">해제</button></td></tr>').join('')+'</table>':'<div class="empty">SHOP과 상품 페이지의 ♥ 버튼으로 담아보세요</div>')+'</div>'}
+async function unlike(rid){await post('/api/member/likes/remove',{rid});likesPane()}
+
+async function restockPane(){const d=await api('/api/member/restock');
+ $('#pane').innerHTML='<div class="panel"><h3>재입고 알림</h3>'+
+ (d.rows.length?'<table><tr><th>상품</th><th>신청일</th><th>상태</th><th></th></tr>'+
+ d.rows.map(r=>'<tr><td><a href="/p/'+encodeURIComponent(r.id)+'" style="color:inherit">'+esc(r.name)+'</a></td><td class="mono">'+esc(r.created)+'</td>'+
+ '<td>'+(r.notified?'<span class="tagst s2">알림 발송됨</span>':r.soldout?'<span class="tagst s1">입고 대기</span>':'<span class="tagst s2">재입고됨</span>')+'</td>'+
+ '<td class="r">'+(!r.notified?'<button class="b ghost" onclick="restockOff(\''+esc(r.id).replace(/'/g,"\\'")+'\')">해제</button>':'')+'</td></tr>').join('')+'</table>':'<div class="empty">품절 상품 페이지에서 [재입고 알림]을 신청하세요</div>')+
+ '<div class="hint">재입고 시 인증된 휴대폰으로 문자를 보내드립니다.</div></div>'}
+async function restockOff(id){await post('/api/member/restock',{product_id:id,off:true});restockPane()}
+
+async function profile(){const m=OV;
+ $('#pane').innerHTML='<div class="panel"><h3>회원정보 수정</h3>'+
+ '<label>이름</label><input id="pfn" value="'+esc(m.name)+'">'+
+ '<label>이메일 ('+esc(m.provider)+' 가입)</label><input value="'+esc(m.email)+'" disabled style="background:#f4f3ef">'+
+ '<div class="row2"><div><label>성별</label><select id="pfg"><option value="">선택 안 함</option><option value="F" '+(m.gender==='F'?'selected':'')+'>여성</option><option value="M" '+(m.gender==='M'?'selected':'')+'>남성</option></select></div>'+
+ '<div><label>생년월일</label><input id="pfb" type="date" value="'+esc(m.birth)+'"></div></div>'+
+ '<div style="margin-top:14px"><button class="b" onclick="saveName()">저장</button></div>'+
+ (m.has_pw?'<hr style="border:0;border-top:1px solid var(--line);margin:18px 0"><h3>비밀번호 변경</h3>'+
+ '<div class="row2"><div><label>현재 비밀번호</label><input id="pw0" type="password"></div><div></div>'+
+ '<div><label>새 비밀번호 (8자 이상)</label><input id="pw1" type="password"></div><div><label>새 비밀번호 확인</label><input id="pw2" type="password"></div></div>'+
+ '<div style="margin-top:12px"><button class="b" onclick="savePw()">비밀번호 변경</button></div>':'')+
+ '</div><div class="panel"><h3>휴대폰 인증 '+(m.phone_verified?'<span class="tagst s2">인증됨 · '+esc(m.phone)+'</span>':'<span class="tagst s3">미인증</span>')+'</h3>'+
+ '<div class="hint">인증된 번호는 재입고·배송 알림과 본인 확인에 사용됩니다. 기존 주문은 주문번호와 별도 인증번호로 직접 연결합니다.</div>'+
+ '<div class="row2" style="margin-top:10px"><div><label>휴대폰 번호</label><input id="phn" placeholder="010-0000-0000" value="'+esc(m.phone)+'"></div>'+
+ '<div><label>&nbsp;</label><button class="b" style="width:100%;padding:10px" onclick="sendCode()">인증번호 발송</button></div></div>'+
+ '<div class="row2" id="vrow" style="display:none;margin-top:4px"><div><label>인증번호 6자리</label><input id="vcd" maxlength="6"></div>'+
+ '<div><label>&nbsp;</label><button class="b red" style="width:100%;padding:10px" onclick="verifyCode()">확인</button></div></div></div>'}
+async function saveName(){try{await post('/api/member/profile',{name:$('#pfn').value,gender:$('#pfg').value,birth:$('#pfb').value});toast('저장되었습니다');OV=await api('/api/member/overview');boot()}catch(e){toast(e.message)}}
+async function savePw(){if($('#pw1').value!==$('#pw2').value)return toast('새 비밀번호가 서로 다릅니다');
+ try{await post('/api/member/password',{old:$('#pw0').value,new:$('#pw1').value});toast('변경되었습니다')}catch(e){toast(e.message)}}
+async function sendCode(){try{const r=await post('/api/member/phone/send',{phone:$('#phn').value});
+ $('#vrow').style.display='grid';toast(r.dry?'테스트 모드: 인증번호가 관리자 알림 로그에 기록되었습니다':'인증번호를 발송했습니다')}catch(e){toast(e.message)}}
+async function verifyCode(){try{await post('/api/member/phone/verify',{code:$('#vcd').value});
+ toast('휴대폰 인증이 완료되었습니다');OV=await api('/api/member/overview');boot()}catch(e){toast(e.message)}}
+
+async function addrPane(){const d=await api('/api/member/addresses');
+ $('#pane').innerHTML='<div class="panel"><h3>배송지 관리</h3>'+
+ (d.rows.length?'<table><tr><th>배송지명</th><th>받는분</th><th>주소</th><th></th></tr>'+
+ d.rows.map(a=>'<tr><td><b>'+esc(a.label)+'</b>'+(a.is_default?' <span class="tagst s5">기본</span>':'')+'</td><td>'+esc(a.rname)+'<br><span class="mono" style="font-size:11px">'+esc(a.phone)+'</span></td>'+
+ '<td style="font-size:12.5px">['+esc(a.zip)+'] '+esc(a.addr1)+' '+esc(a.addr2)+'</td>'+
+ '<td class="r" style="white-space:nowrap">'+(!a.is_default?'<button class="b ghost" onclick="addrAct(\''+a.id+'\',\'default\')">기본설정</button> ':'')+'<button class="b ghost" onclick="addrAct(\''+a.id+'\',\'delete\')">삭제</button></td></tr>').join('')+'</table>':'<div class="empty">등록된 배송지가 없습니다</div>')+
+ '<h3 style="margin-top:18px">새 배송지 추가</h3>'+
+ '<div class="row2"><div><label>배송지명</label><input id="al" placeholder="집 / 회사"></div><div><label>받는분 *</label><input id="an"></div>'+
+ '<div><label>연락처 *</label><input id="ap" placeholder="010-0000-0000"></div><div><label>우편번호 *</label><input id="az"></div></div>'+
+ '<label>주소 *</label><input id="a1"><label>상세주소</label><input id="a2">'+
+ '<div style="margin-top:12px"><button class="b" onclick="addrAdd()">배송지 추가</button></div><div class="hint">환불계좌는 계정에 상시 저장하지 않습니다. 필요한 환불 건에서만 안전하게 별도 확인합니다.</div></div>'}
+async function addrAdd(){try{await post('/api/member/addresses',{label:$('#al').value,rname:$('#an').value,phone:$('#ap').value,zip:$('#az').value,addr1:$('#a1').value,addr2:$('#a2').value});toast('추가되었습니다');addrPane()}catch(e){toast(e.message)}}
+async function addrAct(id,act){if(act==='delete'&&!confirm('이 배송지를 삭제할까요?'))return;
+ await post('/api/member/addresses',{act,id});addrPane()}
+
+async function consentPane(){const d=await api('/api/member/consents');
+ $('#pane').innerHTML='<div class="panel"><h3>약관·개인정보 동의</h3><div class="qa"><div class="q">이용약관 <span class="tagst '+(d.terms?'s2':'s3')+'">'+(d.terms?'동의 완료':'동의 필요')+'</span></div><div class="hint">버전 '+esc(d.terms_version)+' · <a href="/terms" target="_blank">내용 보기</a></div></div><div class="qa"><div class="q">개인정보 수집·이용 <span class="tagst '+(d.privacy?'s2':'s3')+'">'+(d.privacy?'동의 완료':'동의 필요')+'</span></div><div class="hint">버전 '+esc(d.privacy_version)+' · <a href="/privacy" target="_blank">내용 보기</a></div></div>'+
+ ((!d.terms||!d.privacy)?'<label style="font-size:13px"><input id="reqConsent" type="checkbox" style="width:auto"> 필수 이용약관과 개인정보 처리 내용을 확인하고 동의합니다.</label><button class="b red" onclick="saveRequiredConsent()">필수 동의 완료</button>':'')+
+ '<hr style="border:0;border-top:1px solid var(--line);margin:18px 0"><h3>선택 동의</h3><label style="font-size:13px"><input id="mkConsent" type="checkbox" style="width:auto" '+(d.marketing?'checked':'')+'> 이벤트·신상품·혜택 마케팅 알림 수신</label><div class="hint">선택 동의이며 언제든 철회할 수 있습니다.</div><button class="b ghost" style="margin-top:10px" onclick="saveMarketing()">마케팅 동의 저장</button></div>'}
+async function saveRequiredConsent(){if(!$('#reqConsent').checked)return toast('필수 내용을 확인하고 동의해 주세요');try{await post('/api/member/consents',{accept_required:true});OV=await api('/api/member/overview');toast('필수 동의를 저장했습니다');consentPane()}catch(e){toast(e.message)}}
+async function saveMarketing(){try{await post('/api/member/consents',{marketing:$('#mkConsent').checked});OV.marketing_ok=$('#mkConsent').checked?1:0;toast('선택 동의를 저장했습니다')}catch(e){toast(e.message)}}
+
+async function securityPane(){const d=await api('/api/member/sessions');
+ $('#pane').innerHTML='<div class="panel"><h3>연결된 로그인 방법</h3><div>'+OV.identity_providers.map(x=>'<span class="tagst s2" style="margin-right:6px">'+esc(x)+'</span>').join('')+'</div><div style="display:flex;gap:7px;margin-top:12px;flex-wrap:wrap">'+[['google','Google'],['kakao','카카오'],['apple','Apple']].filter(x=>!OV.identity_providers.includes(x[0])).map(x=>'<a class="b ghost" href="/auth/'+x[0]+'?link=1">'+x[1]+' 연결</a>').join('')+'</div><div class="hint">다른 로그인 수단은 해당 서비스에서 본인을 다시 인증한 후 연결됩니다. 동일 이메일만으로 자동 병합하지 않습니다.</div></div><div class="panel"><h3>로그인 기기</h3>'+
+ (d.rows.length?'<table><tr><th>기기</th><th>접속 IP</th><th>시작</th><th>만료</th><th></th></tr>'+d.rows.map(x=>'<tr><td style="max-width:280px">'+esc(x.device)+(x.current?' <span class="tagst s5">현재</span>':'')+'</td><td class="mono">'+esc(x.ip)+'</td><td class="mono">'+esc(x.created)+'</td><td class="mono">'+esc(x.expires)+'</td><td>'+(x.current?'':'<button class="b ghost" onclick="revokeSession(\''+esc(x.id)+'\')">종료</button>')+'</td></tr>').join('')+'</table>':'<div class="empty">활성 세션이 없습니다</div>')+'<button class="b red" style="margin-top:12px" onclick="revokeOthers()">다른 기기 모두 로그아웃</button></div>'}
+async function revokeSession(id){await post('/api/member/sessions/revoke',{id});toast('세션을 종료했습니다');securityPane()}
+async function revokeOthers(){if(!confirm('현재 기기를 제외한 모든 로그인을 종료할까요?'))return;await post('/api/member/sessions/revoke',{all:true});toast('다른 기기 로그인을 종료했습니다');securityPane()}
+
+async function storePane(){const on=OV.fav_store;
+ $('#pane').innerHTML='<div class="panel"><h3>관심 매장 관리</h3>'+
+ '<table><tr><td><b>맵달SEOUL 성수 플래그십</b><br><span class="hint">서울 성동구 성수이로16길 5 · 매일 11:00–21:00 · 825평 K-컬처 복합공간</span></td>'+
+ '<td class="r" style="white-space:nowrap">'+(on?'<span class="tagst s2">관심 매장</span> <button class="b ghost" onclick="favStore(0)">해제</button>':'<button class="b red" onclick="favStore(1)">관심 매장 등록</button>')+'</td></tr></table>'+
+ '<div class="hint">관심 매장으로 등록하면 오프라인 드롭·팬미팅·시식 이벤트 소식을 우선 안내해 드립니다.</div></div>'}
+async function favStore(v){await post('/api/member/profile',{fav_store:v});OV.fav_store=v;toast(v?'관심 매장으로 등록했습니다':'해제되었습니다');storePane()}
+
+async function withdrawPane(){const m=OV;
+ $('#pane').innerHTML='<div class="panel"><h3>회원탈퇴</h3>'+
+ '<div class="hint">탈퇴 시 로그인 정보·세션·좋아요·재입고 알림·배송지·마케팅 정보는 삭제 또는 비식별 처리되어 복구할 수 없습니다.<br>주문·결제 및 분쟁 처리 기록은 관계 법령에 따른 기간 동안 일반 회원 데이터와 분리해 보관됩니다.</div>'+
+ (m.has_pw?'<label>비밀번호 확인</label><input id="wpw" type="password" style="max-width:320px">':'<label>아래 입력란에 <b>탈퇴</b> 를 입력해 주세요</label><input id="wcf" style="max-width:320px" placeholder="탈퇴">')+
+ '<div style="margin-top:14px"><button class="b red" onclick="doWithdraw('+(m.has_pw?1:0)+')">탈퇴하기</button></div></div>'}
+async function doWithdraw(pw){if(!confirm('정말 탈퇴하시겠습니까?'))return;
+ try{await post('/api/member/withdraw',pw?{password:$('#wpw').value}:{confirm:$('#wcf').value});
+ alert('탈퇴가 완료되었습니다. 이용해 주셔서 감사합니다.');location.href='/'}catch(e){toast(e.message)}}
+
+let INQC=[];
+function inqCatSel(id,cur){return '<select id="'+id+'" style="max-width:320px"><option value="">문의 유형을 선택하세요</option>'+INQC.map(function(c){return '<option'+(c===cur?' selected':'')+'>'+esc(c)+'</option>'}).join('')+'</select>'}
+async function inqPane(){const d=await api('/api/member/inquiries');
+ if(!INQC.length){try{INQC=(await api('/api/inquiry-categories')).categories||[]}catch(e){INQC=[]}}
+ $('#pane').innerHTML='<div class="panel"><h3>1:1 문의하기</h3>'+
+ (INQC.length?'<label>문의 유형 *</label>'+inqCatSel('iqc',''):'')+
+ '<label>제목</label><input id="iqt"><label>내용</label><textarea id="iqb" rows="4"></textarea>'+
+ '<label>관련 주문번호 (선택)</label><input id="iqo" placeholder="MPD...">'+
+ '<label>사진 첨부 (선택 · 최대 3장)</label><input id="iqp" type="file" accept="image/*" multiple>'+
+ '<div class="hint">하자·교환 문의는 사진을 함께 올려주시면 별도 요청 없이 바로 확인해 드립니다.</div>'+
+ '<div id="iqpv" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>'+
+ '<div style="margin-top:12px"><button class="b" id="iqbtn" onclick="inqAdd()">문의 등록</button></div></div>'+
+ '<div class="panel"><h3>1:1 문의내역</h3>'+
+ (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q">'+(q.category?'<span class="tagst s0" style="margin-right:6px">'+esc(q.category)+'</span>':'')+esc(q.title)+' <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+(q.order_id?' · '+esc(q.order_id):'')+'</span></div>'+
+ '<div style="margin-top:6px;white-space:pre-wrap;font-size:13px">'+esc(q.body)+'</div>'+
+ ((q.photos&&q.photos.length)?'<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'+q.photos.map(u=>'<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" style="width:64px;height:64px;object-fit:cover;border:1px solid #ddd"></a>').join('')+'</div>':'')+
+ (q.answer?'<div class="a"><b>맵달SEOUL 답변</b> <span class="hint" style="display:inline">'+esc(q.answered_at)+'</span><br>'+esc(q.answer)+'</div>':'')+
+ (q.editable?'<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="b ghost" style="padding:5px 12px;font-size:12px" onclick="inqEdit(\''+esc(q.id)+'\')">수정</button><button class="b ghost" style="padding:5px 12px;font-size:12px" onclick="inqDel(\''+esc(q.id)+'\')">삭제</button>'+(q.edited?'<span class="hint" style="display:inline">수정됨</span>':'')+'</div><div id="iqe_'+esc(q.id)+'"></div>':'')+'</div>').join(''):'<div class="empty">문의 내역이 없습니다</div>')+
+ '<div class="hint" style="margin-top:8px">답변 전 문의는 직접 수정·삭제할 수 있습니다. 답변이 등록된 후에는 수정·삭제할 수 없습니다.</div></div>';
+ window._INQ={};d.rows.forEach(q=>{_INQ[q.id]=q})}
+/*mpInqEdit — 고객 직접 수정·삭제 (2026-10-20)*/
+function inqEdit(id){const q=(window._INQ||{})[id];const box=$('#iqe_'+id);if(!q||!box)return;
+ if(box.innerHTML){box.innerHTML='';return}
+ box.innerHTML='<div style="margin-top:8px;padding:10px;background:#faf9f5;border:1px solid var(--line)">'+
+ (INQC.length?'<label>문의 유형</label>'+inqCatSel('iqec_'+id,q.category||''):'')+'<label>제목</label><input id="iqet_'+id+'"><label>내용</label><textarea id="iqeb_'+id+'" rows="4"></textarea>'+
+ '<label>관련 주문번호 (선택)</label><input id="iqeo_'+id+'">'+
+ '<div style="margin-top:8px;display:flex;gap:6px"><button class="b" onclick="inqSave(\''+id+'\',this)">저장</button><button class="b ghost" onclick="inqEdit(\''+id+'\')">취소</button></div></div>';
+ $('#iqet_'+id).value=q.title;$('#iqeb_'+id).value=q.body;$('#iqeo_'+id).value=q.order_id||''}
+async function inqSave(id,btn){btn.disabled=true;
+ try{const r=await post('/api/member/inquiries/update',{id,category:($('#iqec_'+id)||{}).value||'',title:$('#iqet_'+id).value,body:$('#iqeb_'+id).value,order_id:$('#iqeo_'+id).value});
+ toast(r&&r.changed===false?'변경된 내용이 없습니다':'문의가 수정되었습니다');inqPane()}catch(e){toast(e.message);btn.disabled=false}}
+async function inqDel(id){if(!confirm('이 문의를 삭제할까요?\n문제가 해결되어 더 이상 답변이 필요 없을 때 삭제해 주세요.'))return;
+ try{await post('/api/member/inquiries/delete',{id});toast('문의가 삭제되었습니다');inqPane()}catch(e){toast(e.message)}}
+async function inqAdd(){const btn=$('#iqbtn');if(INQC.length&&$('#iqc')&&!$('#iqc').value){toast('문의 유형을 선택하세요');$('#iqc').focus();return}btn.disabled=true;
+ try{const files=Array.from(($('#iqp').files)||[]).slice(0,3);const photos=[];
+ for(const f of files){const fd=new FormData();fd.append('file',f);
+  const r=await fetch('/api/member/inquiries/photo',{method:'POST',body:fd});
+  const j=await r.json();if(!r.ok)throw new Error(j.detail||'사진 업로드 실패');photos.push(j.url)}
+ await post('/api/member/inquiries',{category:($('#iqc')||{}).value||'',title:$('#iqt').value,body:$('#iqb').value,order_id:$('#iqo').value,photos});
+ toast('문의가 접수되었습니다');inqPane()}catch(e){toast(e.message)}finally{btn.disabled=false}}
+
+async function pqnaPane(){const d=await api('/api/member/pqna');
+ $('#pane').innerHTML='<div class="panel"><h3>상품 Q&amp;A 내역</h3>'+
+ (d.rows.length?d.rows.map(q=>'<div class="qa"><div class="q"><a href="/p/'+encodeURIComponent(q.product_id)+'" style="color:inherit">'+esc(q.product)+'</a> <span class="tagst '+(q.status==='답변완료'?'s2':'s1')+'">'+esc(q.status)+'</span> <span class="hint" style="display:inline">'+esc(q.created)+'</span></div>'+
+ '<div style="margin-top:6px;font-size:13px">'+esc(q.question)+'</div>'+
+ (q.answer?'<div class="a"><b>맵달SEOUL 답변</b><br>'+esc(q.answer)+'</div>':'')+'</div>').join(''):'<div class="empty">상품 페이지에서 문의를 남겨보세요</div>')+'</div>'}
+boot();
+</script></body></html>

@@ -7,6 +7,9 @@ FastAPI + PostgreSQL(운영) / SQLite(로컬 폴백) + 토스페이먼츠
 """
 import os, re, json, secrets, datetime, base64, hashlib, threading, asyncio
 import urllib.request, urllib.error, urllib.parse
+import paysec
+import edgeguard
+import ordergate
 from contextlib import contextmanager
 from fastapi import FastAPI, Request, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +42,21 @@ INICIS_GOPAYMETHOD = (os.getenv('INICIS_GOPAYMETHOD', '') or 'Card:DirectBank:VB
 #   Cloudflare/Render 프록시 뒤에서는 req.base_url이 실제 도메인과 달라질 수 있으므로
 #   SITE_ORIGIN 환경변수로 실도메인을 고정하는 것이 가장 안전. 미설정 시 헤더로 추론.
 SITE_ORIGIN    = os.getenv('SITE_ORIGIN', 'https://mapdal.kr').rstrip('/')
+
+# ── 결제 설정 fail-closed (2026-11-10) — 운영에서 테스트 상점/빈 키로 결제가 '성공'하는 일을 막는다 ──
+IS_PRODUCTION = edgeguard.is_production(IS_PG)
+PAY_CONFIG_ERRORS, PAY_CONFIG_WARNINGS = edgeguard.inicis_config_check(
+    INICIS_MID if os.getenv('INICIS_MID') else '', os.getenv('INICIS_SIGNKEY', ''),
+    os.getenv('INICIS_INIAPI', ''), INICIS_MOBILE_HASHKEY, IS_PRODUCTION)
+for _m in PAY_CONFIG_ERRORS:
+    print('[pay-config] ERROR %s — 결제 생성이 차단됩니다' % _m, flush=True)
+for _m in PAY_CONFIG_WARNINGS:
+    print('[pay-config] WARN %s' % _m, flush=True)
+
+def pay_config_gate():
+    """결제(주문 생성·추가 배송비 결제) 진입 전 호출 — 운영 설정 오류면 재고 차감 전에 503."""
+    if PAY_CONFIG_ERRORS:
+        raise HTTPException(503, '결제 시스템 점검 중입니다 — 잠시 후 다시 시도해 주세요')
 
 # ── GA4 서버사이드 계측 (Measurement Protocol) ──────────────────────────
 #   클라이언트 purchase(주문완료 페이지 도달 시 전송)는 결제창 이탈·인앱 전환·
@@ -463,6 +481,25 @@ async def clean_urls(request, call_next):
                 request.scope['path'] = '/' + cand
     return await call_next(request)
 
+_ORIGIN_MISS = {'n': 0, 'last': 0.0}
+
+@app.middleware('http')
+async def origin_guard(request, call_next):
+    """Cloudflare 경유 강제 (2026-11-10) — 가장 바깥 미들웨어(마지막 등록)라 모든 요청에 먼저 적용된다.
+       ORIGIN_SHARED_SECRET 미설정 시 아무것도 하지 않는다(종전 동작)."""
+    allowed, edge_ok = edgeguard.origin_decision(request.url.path, request.headers)
+    request.state.edge_ok = edge_ok
+    if edge_ok is False and request.url.path not in edgeguard.ORIGIN_EXEMPT:
+        import time as _t
+        _ORIGIN_MISS['n'] += 1
+        if _t.time() - _ORIGIN_MISS['last'] > 60:          # 로그 폭주 방지 — 분당 1줄 요약
+            _ORIGIN_MISS['last'] = _t.time()
+            print('[origin-guard] Cloudflare 미경유 요청 누적 %d건 (최근 %s %s · %s 모드)'
+                  % (_ORIGIN_MISS['n'], request.method, request.url.path[:80], edgeguard.origin_mode()), flush=True)
+    if not allowed:
+        return JSONResponse({'detail': 'forbidden'}, status_code=403)
+    return await call_next(request)
+
 # ── API ─────────────────────────────────────────────────────────
 # KG이니시스 INIStdPay(표준결제창) 연동
 #   흐름: [1] /api/orders 주문생성 + STEP1 서명파라미터 반환
@@ -580,6 +617,25 @@ def _vbank_finalize(oid: str, tid: str, vnum: str, vbank: str, vname: str, vdate
     except Exception:
         pass
     return _paid_redirect(oid)
+
+def _cancelled_during_approval(oid: str, tid: str, via: str) -> bool:
+    """승인 요청 중에 미결제 자동정리가 주문을 취소한 경우 — PAID 로 되살리지 않는다(재고가 이미 복원됨).
+       True 면 호출부가 망취소(PC) 또는 수동 환불 안내(모바일)를 한다."""
+    try:
+        with db() as c:
+            r = c.one('SELECT status FROM orders WHERE order_id=?', (oid,))
+    except Exception:
+        return False
+    if not r or r['status'] != 'CANCELLED':
+        return False
+    _pay_log(oid, 'DEPOSIT_AFTER_CANCEL', '%s 승인 중 주문 취소됨 · TID …%s — 결제 취소 필요' % (via, str(tid)[-6:]))
+    try:
+        import admin_v2 as _av
+        _av.audit({'name': 'SYSTEM', 'role': 'PAY'}, '취소후승인', oid,
+                  '%s 승인 TID %s — 망취소 시도(PC) / 이니시스 상점관리자에서 취소 확인 필요' % (via, tid))
+    except Exception:
+        pass
+    return True
 
 def _paid_redirect(oid: str):
     """결제 승인 후 이동 — 추가 배송비(SF-) 주문은 전용 완료 페이지, 그 외는 주문완료."""
@@ -701,6 +757,7 @@ def _pts_fail(oid: str):
 
 @app.post('/api/orders')
 async def create_order(req: Request, response: Response):
+    pay_config_gate()
     body = await req.json()
     items, buyer = body.get('items') or [], body.get('buyer') or {}
     ship = body.get('shipMethod', 'standard')
@@ -780,6 +837,30 @@ async def create_order(req: Request, response: Response):
             customer_id = admin_v2.guest_customer_ensure(buyer.get('name') or '', phone_norm)
         except Exception:
             customer_id = ''
+
+    # ── 주문 생성 남용 방지 (2026-11-10 · ordergate) — 재고를 건드리기 전에 판정한다 ──
+    #   결제 없이 PENDING 주문을 반복 생성해 한정 재고를 묶어 두는 것을 막는다.
+    _og_msg = ordergate.rate_check(member_id, client_ip(req))
+    if _og_msg:
+        raise HTTPException(429, _og_msg)
+    if customer_id and ordergate.open_max():
+        _since = (kst_naive() - datetime.timedelta(hours=24)).isoformat(timespec='seconds')
+        with db() as c:
+            _open = c.one("SELECT COUNT(*) AS n FROM orders WHERE customer_id=? "
+                          "AND status IN ('PENDING','WAITING_DEPOSIT') AND created>=?",
+                          (customer_id, _since))
+        _og_msg = ordergate.open_cap_message(int((_open or {}).get('n') or 0))
+        if _og_msg:
+            raise HTTPException(429, _og_msg)
+    if ordergate.promo_max_qty():
+        try:
+            import admin_v2 as _avq
+            _promo = {k for k, v in _avq.product_rules(items).items() if v.get('ship_required')}
+        except Exception:
+            _promo = set()
+        _og_msg = ordergate.promo_qty_message(items, _promo)
+        if _og_msg:
+            raise HTTPException(400, _og_msg)
 
     # GA4 클라이언트/세션 식별자 — 결제 승인 시 서버사이드 purchase 백업 전송에 사용.
     # 체크아웃의 /api/orders 호출은 동일 오리진(XHR)이라 _ga 쿠키가 함께 도착한다.
@@ -1078,6 +1159,9 @@ async def inicis_return(req: Request):
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
         return _paid_redirect(oid)
+    if order['status'] == 'CANCELLED':               # 미결제 자동정리로 취소된 주문 — 승인 요청을 보내지 않는다(과금 없음)
+        _pay_log(oid, 'AUTH_AFTER_CANCEL', '취소된 주문의 결제 인증 — 승인 요청 생략')
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 다시 주문해 주세요')
 
     # ── STEP3 승인요청 ──
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
@@ -1151,11 +1235,14 @@ async def inicis_return(req: Request):
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
-                   "WHERE order_id=? AND status<>'PAID'", (tid, method, '', kst_iso(), oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (tid, method, '', kst_iso(), oid))
     except Exception:                                 # paid_at 컬럼 미생성 DB 대비
         with db() as c:
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
-                   "WHERE order_id=? AND status<>'PAID'", (tid, method, '', oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (tid, method, '', oid))
+    if _cancelled_during_approval(oid, tid, 'PC'):
+        _ini_net_cancel(net_cancel_url, auth_token)  # 승인 직후 10분 내 망취소 — 고객 과금 되돌림
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 결제는 자동 취소됩니다')
     _award_purchase_points(oid)
     _ga4_mp_purchase(oid)                             # 서버사이드 purchase 백업 (무해 실패)
     try:
@@ -1237,6 +1324,9 @@ async def inicis_mobile_return(req: Request):
         return _fail('주문을 찾을 수 없습니다')
     if order['status'] == 'PAID':                    # 멱등: 이미 승인
         return _paid_redirect(oid)
+    if order['status'] == 'CANCELLED':               # 미결제 자동정리로 취소된 주문 — 승인 요청 생략(과금 없음)
+        _pay_log(oid, 'AUTH_AFTER_CANCEL', '취소된 주문의 모바일 결제 인증 — 승인 요청 생략')
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 다시 주문해 주세요')
 
     # ── 승인요청 (P_REQ_URL 에 P_MID + P_TID) ──
     payload = urllib.parse.urlencode({
@@ -1300,11 +1390,13 @@ async def inicis_mobile_return(req: Request):
     try:
         with db() as c:                              # 중복 승인 레이스 방지 가드
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=?, paid_at=? "
-                   "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', kst_iso(), oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (pay_tid, method, '', kst_iso(), oid))
     except Exception:                                 # paid_at 컬럼 미생성 DB 대비
         with db() as c:
             c.exec("UPDATE orders SET status='PAID', payment_key=?, pay_method=?, receipt_url=? "
-                   "WHERE order_id=? AND status<>'PAID'", (pay_tid, method, '', oid))
+                   "WHERE order_id=? AND status NOT IN ('PAID','CANCELLED')", (pay_tid, method, '', oid))
+    if _cancelled_during_approval(oid, pay_tid, '모바일'):
+        return _fail('결제 시간이 초과되어 주문이 취소되었습니다 — 결제 취소는 고객센터에서 처리해 드립니다')
     _award_purchase_points(oid)
     _ga4_mp_purchase(oid)                             # 서버사이드 purchase 백업 (무해 실패)
     try:
@@ -1314,11 +1406,12 @@ async def inicis_mobile_return(req: Request):
     return _paid_redirect(oid)
 
 def _noti_client_ip(req) -> str:
-    """노티 발신 IP — Cloudflare 프록시 뒤라 CF-Connecting-IP 를 우선한다.
-       이니시스 공지 IP: 203.238.37.15 / 183.109.71.153 (기록용 — 차단하지 않는다.
-       IP 로 막다가 이니시스 대역 변경 시 입금통보가 전멸하는 쪽이 훨씬 위험하고,
-       위조 방어는 주문존재·금액일치·상태가드가 이미 수행한다)."""
+    """노티 발신 IP — Cloudflare 경유가 확인되면 CF-Connecting-IP, 아니면 프록시가 덧붙인 XFF 맨 오른쪽.
+       허용목록 판정은 paysec.ip_gate(기본 log 모드). 위조 방어의 본체는 거래조회 검증(paysec.verify_*)이다."""
     try:
+        if not edgeguard.trust_proxy_headers(req.state):
+            xs = [x.strip() for x in (req.headers.get('x-forwarded-for') or '').split(',') if x.strip()]
+            return xs[-1] if xs else ((req.client.host if req.client else '') or '-')
         return (req.headers.get('cf-connecting-ip')
                 or req.headers.get('x-forwarded-for', '').split(',')[0].strip()
                 or (req.client.host if req.client else '') or '-')
@@ -1366,6 +1459,15 @@ def _vbank_deposit_apply(oid: str, amt: int, tid: str, via: str, extra: str = ''
         except Exception:
             pass
         return 'mismatch', '금액 불일치'
+    # ── 진위 검증 (2026-11-10) — 노티 본문은 위조 가능하다. 거래조회로 입금완료(Y)를 확인한 뒤에만 전환 ──
+    if paysec.verify_enabled():
+        verdict, vnote, _vt = paysec.verify_deposit(order, tid, _noti_inquire)
+        if verdict != 'ok':
+            _pay_log(oid, 'NOTI_UNVERIFIED', '%s · %s' % (via, vnote))
+            if verdict == 'reject':
+                _noti_security_audit('입금통보검증실패', oid, '%s · %s' % (via, vnote))
+            return ('retry' if verdict == 'retry' else 'unverified'), vnote
+        extra = (extra + ' · ' if extra else '') + vnote
     # 채번TID(payment_key)는 환불 API 의 기준값 — 입금TID(no_tid)로 덮지 않는다.
     # 비어 있을 때만 통보 TID 로 보충한다.
     with db() as c:
@@ -1385,6 +1487,37 @@ def _vbank_deposit_apply(oid: str, amt: int, tid: str, via: str, extra: str = ''
     except Exception:
         pass
     return 'paid', '입금 확인'
+
+def _noti_inquire(tid: str, oid: str = ''):
+    """노티 검증용 거래조회 — TID 에 박힌 MID 의 INIAPI key 로 조회(구 MID 주문 대응)."""
+    cred = None
+    try:
+        import admin_v2 as _av
+        cred = _av._inicis_cred_for_tid(tid)
+    except Exception:
+        cred = None
+    mid, key = (cred[0], cred[1]) if cred else (INICIS_MID, INICIS_INIAPI)
+    return paysec.inquiry_v1(mid, key, tid, oid)
+
+def _noti_security_audit(action: str, target: str, detail: str):
+    try:
+        import admin_v2 as _av
+        _av.audit({'name': 'SYSTEM', 'role': 'NOTI'}, action, target, detail[:300])
+    except Exception:
+        pass
+
+def _noti_ip_check(req, via: str) -> bool:
+    """발신 IP 허용목록 — enforce 모드에서만 차단, log 모드는 감사 기록만."""
+    ip = _noti_client_ip(req)
+    ok, note = paysec.ip_gate(ip)
+    if note:
+        _noti_security_audit('노티발신IP', via, note)
+    return ok
+
+def _noti_reply(code: str) -> PlainTextResponse:
+    """_vbank_deposit_apply 결과 → 이니시스 응답. OK 외에는 재전송된다(24시간·약 10분 주기).
+       missing·retry·unverified 는 FAIL — 진짜 입금이면 재조회 기회가 남고, 위조면 아무 일도 없다."""
+    return PlainTextResponse('FAIL' if code in ('missing', 'retry', 'unverified') else 'OK')
 
 def _noti_unparsed_audit(via: str, req, form: dict):
     """주문번호를 못 찾은 노티 — 원문을 감사로그에 남겨 사람이 추적할 수 있게 한다.
@@ -1430,6 +1563,8 @@ async def inicis_vbank_noti(req: Request):
             form.setdefault(k, v)
         if not form:                                  # 파라미터 없는 접근(모니터링 핑 등)
             return PlainTextResponse('OK')
+        if not _noti_ip_check(req, '/inicis/vbank-noti'):
+            return PlainTextResponse('FAIL', status_code=403)
 
         def _amt(*keys):
             for k in keys:
@@ -1454,7 +1589,7 @@ async def inicis_vbank_noti(req: Request):
                 _pay_log(oid, 'VBANK_NOTI', 'PC 노티 수신 · 거래구분 %s (미처리) · %s원' % (tmsg, format(amt, ',')))
                 return PlainTextResponse('OK')
             code, _note = _vbank_deposit_apply(oid, amt, tid, 'PC노티', extra)
-            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+            return _noti_reply(code)
 
         # ── ② PRO/모바일 계열: P_STATUS ──────────────────────────────
         oid = str(form.get('P_OID') or form.get('oid') or form.get('MOID')
@@ -1468,7 +1603,7 @@ async def inicis_vbank_noti(req: Request):
         if st == '02':                                # 입금통보 — 유일한 PAID 전환 신호
             extra = ('입금자 %s · %s' % (form.get('P_UNAME') or '-', form.get('P_FN_NM') or '')).strip(' ·')
             code, _note = _vbank_deposit_apply(oid, amt, tid, 'P노티(02)', extra)
-            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+            return _noti_reply(code)
         if st == '00':                                # 채번통보 — 입금 아님. 기록만.
             _pay_log(oid, 'VBANK_ISSUED', '채번통보 수신(P_STATUS=00) · %s원 — 입금 아님, 대기 유지' % format(amt, ','))
             return PlainTextResponse('OK')
@@ -1504,6 +1639,8 @@ async def inicis_mobile_noti(req: Request):
             form.setdefault(k, v)
         if not form:
             return PlainTextResponse('OK')
+        if not _noti_ip_check(req, '/inicis/mobile-noti'):
+            return PlainTextResponse('FAIL', status_code=403)
 
         status = str(form.get('P_STATUS', '')).strip()
         oid    = str(form.get('P_OID', '') or form.get('P_NOTI', '')).strip()
@@ -1522,13 +1659,28 @@ async def inicis_mobile_noti(req: Request):
         if status == '02':                            # 가상계좌 입금통보 → PAID
             extra = ('입금자 %s · %s' % (form.get('P_UNAME') or '-', form.get('P_FN_NM') or '')).strip(' ·')
             code, _note = _vbank_deposit_apply(oid, amt, tid, '모바일노티(02)', extra)
-            return PlainTextResponse('FAIL' if code == 'missing' else 'OK')
+            return _noti_reply(code)
 
         if status == '00' and vbankish:               # 채번통보 — 입금 아님. 기록만.
             _pay_log(oid, 'VBANK_ISSUED', '모바일 채번통보 수신(00) · %s원 — 입금 아님, 대기 유지' % format(amt, ','))
             return PlainTextResponse('OK')
 
-        if status == '00':                            # 1trs 승인통보(카드 등) — 종전 동작 유지
+        if status == '00':                            # 1trs 승인통보(카드 등)
+            # 진위 검증 (2026-11-10) — 노티 본문만 믿고 PAID 로 바꾸지 않는다. 거래조회로 승인(0)·금액 확인.
+            #   조회 전에 읽기만 하고, 확인되면 같은 상태 가드로 전환한다(트랜잭션 안에서 외부 호출 금지).
+            with db() as c:
+                order0 = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
+            if not order0:
+                _noti_unparsed_audit('모바일노티(주문없음)', req, form)
+                return PlainTextResponse('FAIL')
+            if (order0['status'] not in ('PAID', 'CANCELLED') and amt == int(order0['amount'])
+                    and paysec.verify_enabled()):
+                verdict, vnote, _vt = paysec.verify_approval(order0, tid, _noti_inquire)
+                if verdict != 'ok':
+                    _pay_log(oid, 'NOTI_UNVERIFIED', '모바일 승인통보 · %s' % vnote)
+                    if verdict == 'reject':
+                        _noti_security_audit('승인통보검증실패', oid, vnote)
+                    return PlainTextResponse('FAIL')
             with db() as c:
                 order = c.one('SELECT * FROM orders WHERE order_id=?', (oid,))
                 _late = bool(order and order['status'] == 'CANCELLED')
@@ -1827,7 +1979,7 @@ def client_ip(req: Request) -> str:
     운영은 Cloudflare → Render 구조라 CF-Connecting-IP 가 실제 접속 IP 다. X-Forwarded-For 의 맨 왼쪽은
     클라이언트가 임의로 넣을 수 있으므로, 없을 때는 프록시가 덧붙인 맨 오른쪽 값을 쓴다."""
     h = req.headers
-    ip = (h.get('cf-connecting-ip') or '').strip()
+    ip = (h.get('cf-connecting-ip') or '').strip() if edgeguard.trust_proxy_headers(req.state) else ''
     if not ip:
         xs = [x.strip() for x in (h.get('x-forwarded-for') or '').split(',') if x.strip()]
         ip = xs[-1] if xs else ''
@@ -1932,7 +2084,8 @@ def readyz():
     if not DB_READY:
         raise HTTPException(503, 'db connecting')
     with db() as c: c.one('SELECT 1 AS ok')
-    return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite'}
+    return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite',
+            'pay_config': 'invalid' if PAY_CONFIG_ERRORS else ('warn' if PAY_CONFIG_WARNINGS else 'ok')}
 
 @app.get('/')
 def root(): return RedirectResponse('/home', status_code=301)

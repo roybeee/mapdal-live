@@ -2206,8 +2206,22 @@ def api_order_detail(oid: str, request: Request):
               'parts': ' · '.join('%s×%d' % (re.sub(r'\s+', ' ', str(x.get('n') or x.get('id'))).strip().split(' — ')[-1], num(x.get('q') or 1))
                                   for x in (it.get('parts') or []) if isinstance(x, dict))}
              for it in jload(r.get('items'), [])]
+    _pts_view = _order_points_view(r.get('order_id'))
+    _sfl = _shipfee_links(r['order_id'])
+    # 통합 이력·금액 내역(ordercs) — 실패해도 주문 상세는 열려야 한다
+    try:
+        import ordercs as _ocs
+        _timeline = _ocs.timeline(r, plog)
+        _amounts = _ocs.amount_view(r, _pts_view)
+        if _sfl and not str(r['order_id']).startswith('SF-'):
+            _amounts['extra_ship_paid'] = num(_sfl.get('paid_amount'))
+            _amounts['total_paid'] = _amounts['amount'] + _amounts['extra_ship_paid']
+    except Exception as _oe:
+        print('[ordercs] detail %s: %s' % (r.get('order_id'), _oe), flush=True)
+        _timeline, _amounts = None, None
     return {'order_id': r['order_id'], 'created': r.get('created'), 'status': r.get('status'),
             'fulfill': r.get('fulfill') or 'NEW', 'amount': num(r.get('amount')),
+            'timeline': _timeline, 'amounts': _amounts,
             'buyer': {'name': b.get('name', ''), 'phone': b.get('phone', ''), 'zip': b.get('zip', ''),
                       # 주문자 이메일 — 2026-08-03 이후 주문은 필수 수집. 이전 주문은 공백.
                       'email': b.get('email', '') or '',
@@ -2229,7 +2243,7 @@ def api_order_detail(oid: str, request: Request):
             'can_pay_lookup': bool(_ptid and _inicis_cred_for_tid(_ptid)),
             'paid_at': (r.get('paid_at') or '')[:19].replace('T', ' '),
             'pay_log': plog, 'pending_reason': preason,
-            'points_used': _order_points_view(r.get('order_id')),
+            'points_used': _pts_view,
             # 구매 국가(접속 국가) — 저장분 또는 과거 주문 추정. 미조회분은 화면이 열릴 때 1회 조회(auto_lookup).
             'geo': geo_view(r, RANK.get(a.get('role'), 0)),
             'member_id': r.get('member_id') or '',
@@ -2243,7 +2257,7 @@ def api_order_detail(oid: str, request: Request):
             'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
             'shipped_at': (r.get('shipped_at') or '')[:16].replace('T', ' '),
             'can_confirm': can_confirm(r),
-            'shipfee': _shipfee_links(r['order_id']),
+            'shipfee': _sfl,
             'can_restore': bool(r.get('status') == 'CANCELLED' and ('vbank' in str(r.get('pay_method') or '').lower()) and '수동환불' not in str(r.get('admin_memo') or '')),
             'can_refund': bool(_state['paykey'] and r.get(_state['paykey']) and r.get('status') == 'PAID'),
             # 결제 당시 MID(TID 판별) — MID 교체 시 어느 상점관리자 소속 거래인지 즉시 식별.
@@ -3071,13 +3085,40 @@ def api_cancel(oid: str, request: Request, body: dict = Body(...)):
     r = one('SELECT * FROM orders WHERE order_id = ?', (oid,))
     if not r: raise HTTPException(404, 'not found')
     reason = (body.get('reason') or '관리자 취소').strip()[:200]
+    # 취소 실행 가드(2026-11-19) — '고객 요청' 은 접수된 취소 요청이 있거나 요청 경로·내용을 적어야 실행된다.
+    #   고객이 철회한 주문이 기본 문구 '고객 요청' 으로 취소된 사고의 재발 방지. 사유 코드를 보내지 않는
+    #   구 화면은 문구로 추정한다(ordercs.reason_code).
+    import ordercs as _ocs
+    _explicit = str(body.get('reason_code') or '').strip().upper() in _ocs.REASONS
+    _code = _ocs.reason_code(body.get('reason_code'), reason)
+    _close_ids = []
+    if r.get('status') != 'CANCELLED':
+        _close_ids = _ocs.guard(r, _code, body.get('channel'), body.get('channel_note'))
+        if _explicit or _code == 'CUSTOMER':
+            _memo = (body.get('memo') if _explicit else '') or ''
+            reason = _ocs.build_reason(_code, _memo, body.get('channel'), body.get('channel_note'))
     if r.get('confirmed_at') and r.get('status') != 'CANCELLED':
         if not body.get('force'):
             raise HTTPException(409, '구매확정된 주문입니다 (%s) — 구매확정 후에는 환불·취소가 불가합니다. '
                                      '예외 처리는 OWNER가 강제 취소할 수 있습니다.' % str(r['confirmed_at'])[:16].replace('T', ' '))
         need(a, 3, '구매확정 주문 강제 취소')
         reason = ('[구매확정 후 강제취소] ' + reason)[:200]
-    return _order_cancel_core(a, r, reason, manual=bool(body.get('manual')))
+    res = _order_cancel_core(a, r, reason, manual=bool(body.get('manual')))
+    if _close_ids:                                    # 접수돼 있던 취소 요청을 같은 처리로 종결
+        _ocs.close_requests(_close_ids, '주문 취소 및 환불이 완료되었습니다' if res.get('refunded') else '주문이 취소되었습니다')
+    if body.get('notify'):                            # 확인창에서 발송을 고른 경우에만 — 실패해도 취소는 유지
+        res['notice'] = _ocs.send_notice(a, r, _code, res.get('shipfee'))
+    res['reason'] = reason
+    return res
+
+@admin_router.get('/admin/api/orders/{oid}/cancel-check')
+def api_cancel_check(oid: str, request: Request):
+    """취소 확인창용 — 열 때마다 새로 조회한다(화면을 열어 둔 사이 철회된 요청 반영)."""
+    a = get_actor(request); need(a, 2, '결제취소(환불)')
+    r = one('SELECT * FROM orders WHERE order_id = ?', (oid,))
+    if not r: raise HTTPException(404, 'not found')
+    import ordercs as _ocs
+    return _ocs.cancel_context(r)
 
 # ── 가상계좌 입금기한 만료 자동정리 (2026-08-25) ────────────────────────
 #   입금기한을 당일 23:59로 좁히면서(app.py _vbank_due) 미입금 건이 매일 쌓인다.
@@ -3879,11 +3920,18 @@ def api_orders_csv(request: Request):
     w = (' WHERE ' + ' AND '.join(where)) if where else ''
     rs = rows('SELECT * FROM orders%s ORDER BY created DESC LIMIT 20000' % w, tuple(args))
     head = ['주문번호', '일시', '결제상태', '처리상태', '금액', '주문자', '연락처', '이메일', '우편번호', '주소', '품목', '총수량', '배송방식', '택배사', '송장번호', '관리자메모', '영수증URL', '응모정보',
-            '구매국가', '국가코드', '국가판정']            # 2026-09-01 — 뒤에 붙여 기존 열 위치를 유지
+            '구매국가', '국가코드', '국가판정',            # 2026-09-01 — 뒤에 붙여 기존 열 위치를 유지
+            # 2026-11-19 — 금액 내역·취소 정보·추출 기준. 결제상태는 '추출 시각의 현재 상태' 다.
+            '상품합계', '쿠폰코드', '쿠폰할인', '배송비', '취소일시', '취소사유', '주문구분', '추출시각']
     lines = [','.join(head)]
+    import ordercs as _ocs
+    _now = now_iso().replace('T', ' ')
     for r in rs:
         b = jload(r.get('buyer'), {}); its = jload(r.get('items'), [])
         _gv = geo_view(r)
+        try: _am = _ocs.amount_view(r, _order_points_view(r.get('order_id')) if r.get('status') != 'PENDING' else None)
+        except Exception: _am = {}
+        _ce = (_ocs._cancel_entry(r) or {}) if r.get('status') == 'CANCELLED' else {}
         names = ' / '.join('%s x%d' % ((it.get('n') or it.get('name') or it.get('id') or ''), num(it.get('q') or 1)) for it in its)
         lines.append(','.join(esc_csv(v) for v in [
             r.get('order_id'), (r.get('created') or '')[:19].replace('T', ' '), r.get('status'), r.get('fulfill') or 'NEW',
@@ -3894,7 +3942,10 @@ def api_orders_csv(request: Request):
             courier_name(r.get('courier') or '') if (r.get('courier') or '') else '', r.get('tracking') or '',
             r.get('admin_memo') or '', r.get('receipt_url') or '',
             _sel_text(b.get('selections')),
-            _gv['text'], _gv['cc'], _gv['src_label']]))
+            _gv['text'], _gv['cc'], _gv['src_label'],
+            _am.get('items_total', ''), _am.get('coupon_code', ''), _am.get('coupon_off', '') or '',
+            _am.get('ship_fee', ''), str(_ce.get('t') or '')[:19].replace('T', ' '), _ce.get('m') or '',
+            _am.get('kind', ''), _now]))
     audit(a, 'CSV다운로드', 'orders', '%d건' % len(rs))
     return Response('\ufeff' + '\n'.join(lines), media_type='text/csv; charset=utf-8',
                     headers={'Content-Disposition': 'attachment; filename="mapdal_orders_%s.csv"' % kst_today().strftime('%Y%m%d')})
@@ -14272,6 +14323,10 @@ def api_cs_req_cancel_order(request: Request, body: dict = Body(...)):
                                  '반품/교환은 상품 회수 확인 후 [주문] 탭에서 처리하세요')
     if (rq.get('status') or '') == '완료':
         raise HTTPException(400, '이미 완료된 요청입니다')
+    if (rq.get('status') or '') in ('철회', '거절'):   # 목록을 열어 둔 사이 고객이 철회한 요청 — 실행 금지
+        raise HTTPException(409, '고객이 %s 이 요청을 %s — 주문을 취소하지 않았습니다. 목록을 새로고침하세요.'
+                                 % (str(rq.get('updated') or '')[:16].replace('T', ' '),
+                                    '철회했습니다' if rq.get('status') == '철회' else '거절 처리했습니다'))
     oid = (rq.get('order_id') or '').strip()
     if not oid:
         raise HTTPException(400, '요청에 연결된 주문번호가 없습니다 — [요청만 종결]을 사용하세요')
@@ -14288,7 +14343,11 @@ def api_cs_req_cancel_order(request: Request, body: dict = Body(...)):
         (memo, now_iso(), rq['id']))
     audit(a, '취소요청 원클릭', rq['id'],
           '%s / %s%s' % (oid, memo, ' / 환불실행' if res.get('refunded') else ''))
-    return {'ok': True, 'order_id': oid, 'refunded': bool(res.get('refunded')),
+    notice = None
+    if body.get('notify') and not already:
+        import ordercs as _ocs
+        notice = _ocs.send_notice(a, r, 'CUSTOMER', res.get('shipfee'))
+    return {'ok': True, 'order_id': oid, 'refunded': bool(res.get('refunded')), 'notice': notice,
             'already_cancelled': already, 'memo': memo,
             'stock_restored_items': num(res.get('stock_restored_items')),
             'points_revoked': num(res.get('points_revoked'))}
@@ -14822,7 +14881,16 @@ def api_m_order_detail(oid: str, request: Request):
             'can_confirm': can_confirm(r),
             'confirmed_at': (r.get('confirmed_at') or '')[:16].replace('T', ' '),
             'shipfee': _member_shipfee(oid),
+            'cancel_info': _member_cancel_info(r),
             'open_request': dict(open_req) if open_req else None}
+
+
+def _member_cancel_info(r):
+    try:
+        import ordercs as _ocs
+        return _ocs.customer_cancel_info(r)
+    except Exception:
+        return None
 
 
 def _member_shipfee(oid):

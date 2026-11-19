@@ -1290,12 +1290,21 @@ def links_for_order(oid):
                      "WHERE order_id LIKE ? AND items LIKE ? ORDER BY created", (SF_PREFIX + '%', '%' + SF_ITEM + ch['id'] + '%')):
         if r.get('status') not in ('PAID', 'CANCELLED'):
             continue                                   # 결제창만 열고 끝낸 시도(PENDING·FAILED)는 표시하지 않음
+        if r.get('status') == 'CANCELLED' and not r.get('paid_at'):
+            continue                                   # 승인 없이 자동취소된 시도 — 결제된 적이 없으므로 '취소(환불)' 로 보이면 안 된다
         pays.append({'order_id': r['order_id'], 'status': r.get('status'), 'amount': av.num(r.get('amount')),
                      'paid_at': str(r.get('paid_at') or r.get('created') or '')[:16].replace('T', ' '),
                      'method': r.get('pay_method') or '', 'receipt': r.get('receipt_url') or ''})
     paid = [p for p in pays if p['status'] == 'PAID']
     st = 'PAID' if paid else (ch.get('status') or 'OPEN')
-    label = {'PAID': '결제완료', 'OPEN': '미결제', 'UNPAID': '미결제', 'WAIVED': '청구 면제', 'CANCELLED': '청구 취소'}.get(st, st)
+    if not paid and st in ('OPEN', 'UNPAID'):
+        try:                                           # 원주문이 전부 취소됐거나 결제 후 환불된 청구를 '미결제' 로 부르지 않는다
+            if due_of(ch) <= 0:
+                st = 'REFUNDED' if pays else 'VOID'
+        except Exception:
+            pass
+    label = {'PAID': '결제완료', 'OPEN': '미결제', 'UNPAID': '미결제', 'WAIVED': '청구 면제', 'CANCELLED': '청구 취소',
+             'REFUNDED': '환불됨 (원주문 취소)', 'VOID': '원주문 취소'}.get(st, st)
     return {'charge_id': ch['id'], 'state': st, 'state_kr': label, 'charge_amount': av.num(ch.get('amount')),
             'orders': _orders_of(ch), 'payments': pays, 'paid_amount': sum(p['amount'] for p in paid),
             'created': str(ch.get('created') or '')[:16].replace('T', ' ')}

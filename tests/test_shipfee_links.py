@@ -59,3 +59,15 @@ def test_member_detail_shows_paid_shipfee(client):
     d = client.get("/api/member/orders/MD-20261019-BBBBBB").json()
     assert d["shipfee"]["payments"][0]["amount"] == 3000 and "token" not in json.dumps(d["shipfee"])
     assert client.get("/api/member/orders/MD-20261019-CCCCCC").json()["shipfee"] is None
+
+
+def test_unpaid_attempt_hidden_and_refunded_state(client):
+    """승인 없이 자동취소된 시도는 '취소(환불)' 로 보이지 않고, 원주문 취소로 환불된 청구는 '미결제' 가 아니다."""
+    it = json.dumps([{"id": "shipfee::ch1", "n": "[추가 배송비]", "p": 3000, "q": 1}])
+    admin.run("INSERT INTO orders VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+              ("SF-20261021-000000", "CANCELLED", it, 3000, None, "2026-10-21T09:59:00", None, "", "{}", "CANCELLED", None))
+    s = shipfee.links_for_order("MD-20261019-AAAAAA")
+    assert [p["order_id"] for p in s["payments"]] == ["SF-20261021-222222"]
+    admin.run("UPDATE orders SET status='CANCELLED' WHERE order_id IN ('MD-20261019-AAAAAA','MD-20261019-BBBBBB','SF-20261021-222222')")
+    s = shipfee.links_for_order("MD-20261019-AAAAAA")
+    assert s["state"] == "REFUNDED" and "미결제" not in s["state_kr"] and len(s["payments"]) == 1

@@ -146,7 +146,7 @@ async function orderDetail(oid){const o=await api('/api/member/orders/'+encodeUR
  '<table><tr><th>품목</th><th class="r">단가</th><th class="r">수량</th></tr>'+
  o.items.map(i=>'<tr><td>'+esc(i.name)+'</td><td class="r mono">'+won(i.price)+'</td><td class="r mono">'+i.qty+'</td></tr>').join('')+'</table>'+
  '<div class="oship"><b style="font-size:12.5px;display:block;margin-bottom:8px">배송 진행</b><div class="steps">'+['주문접수','결제완료','배송준비중','배송중','배송완료'].map((s,i)=>'<b class="'+(o.step===0?'':(i+1<o.step?'on':(i+1===o.step?'on cur':'')))+'">'+s+'</b>').join('')+'</div>'+
- (o.step===0?'<div class="hint" style="margin:0">'+esc(o.status_kr)+' 처리된 주문입니다.</div>'
+ (o.step===0?'<div class="hint" style="margin:0">'+esc(o.status_kr)+' 처리된 주문입니다.'+((o.cancel_info&&o.cancel_info.at)?'<br>취소 일시 '+esc(o.cancel_info.at)+(o.cancel_info.reason?' · 사유: '+esc(o.cancel_info.reason):'')+(o.cancel_info.refunded?' · 결제하신 수단으로 환불되었습니다':''):'')+'</div>'
   :o.tracking?'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="font-size:12.5px">'+esc((o.courier_kr?o.courier_kr+' ':'')+o.tracking)+'</span>'+(o.track_url?'<a class="b" target="_blank" rel="noopener" href="'+esc(o.track_url)+'">배송조회</a>':'')+'</div>'
   :'<div class="hint" style="margin:0">'+(o.step>=4?'상품이 출고되어 배송 중입니다. 운송장 번호가 등록되면 이곳에서 바로 조회할 수 있습니다.':o.step===3?'상품을 준비하고 있습니다. 발송과 함께 운송장 번호가 등록됩니다.':o.step===2?'결제가 확인되었습니다. 곧 상품 준비를 시작합니다.':'결제(입금) 확인 전 주문입니다. 확인 후 상품 준비가 시작됩니다.')+'</div>')+'</div>'+
  (o.vbank&&o.vbank.num?'<div style="background:#fff7e0;border-left:3px solid #b58900;padding:10px 12px;margin-top:10px;font-size:13px"><b>입금 계좌 안내</b><br>'+
